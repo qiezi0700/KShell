@@ -1,0 +1,92 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]: K
+      - generic [ref=e7]: KShell
+    - generic [ref=e8]:
+      - button "文件" [ref=e9] [cursor=pointer]
+      - button "编辑" [ref=e10] [cursor=pointer]
+      - button "视图" [ref=e11] [cursor=pointer]
+      - button "工具" [ref=e12] [cursor=pointer]
+      - button "帮助" [ref=e13] [cursor=pointer]
+    - generic [ref=e15]:
+      - button [ref=e16] [cursor=pointer]:
+        - img [ref=e17]
+      - button [ref=e18] [cursor=pointer]:
+        - img [ref=e19]
+      - button [ref=e21] [cursor=pointer]:
+        - img [ref=e22]
+  - generic [ref=e25]:
+    - complementary [ref=e26]:
+      - generic [ref=e27]:
+        - tablist [ref=e28]:
+          - tab "会话" [selected] [ref=e29] [cursor=pointer]
+          - tab "密钥" [ref=e30] [cursor=pointer]
+          - tab "隧道" [ref=e31] [cursor=pointer]
+        - tabpanel "会话" [ref=e32]:
+          - generic [ref=e33]:
+            - button [ref=e34] [cursor=pointer]:
+              - img
+            - button [ref=e35] [cursor=pointer]:
+              - img
+            - button [ref=e36] [cursor=pointer]:
+              - img
+            - textbox "搜索会话…" [ref=e38]
+          - generic [ref=e42]:
+            - generic [ref=e43] [cursor=pointer]:
+              - img [ref=e44]
+              - img [ref=e46]
+              - generic [ref=e48]: 生产环境
+              - generic [ref=e49]: "2"
+            - generic [ref=e50] [cursor=pointer]:
+              - img [ref=e51]
+              - generic [ref=e54]: web-01
+              - generic [ref=e55]: 10.0.1.11
+            - generic [ref=e56] [cursor=pointer]:
+              - img [ref=e57]
+              - generic [ref=e60]: db-01
+              - generic [ref=e61]: 10.0.1.21
+            - generic [ref=e62] [cursor=pointer]:
+              - img [ref=e63]
+              - img [ref=e65]
+              - generic [ref=e67]: 测试环境
+              - generic [ref=e68]: "1"
+            - generic [ref=e69] [cursor=pointer]:
+              - img [ref=e70]
+              - generic [ref=e73]: staging
+              - generic [ref=e74]: 10.0.2.10
+    - main [ref=e75]:
+      - button [ref=e78] [cursor=pointer]:
+        - img [ref=e79]
+      - generic [ref=e82]:
+        - generic [ref=e83]: ›_
+        - heading "KShell" [level=2] [ref=e84]
+        - paragraph [ref=e85]: 选择左侧会话开始连接,或新建一个连接。
+        - generic [ref=e86]:
+          - button "新建 SSH 连接" [ref=e87] [cursor=pointer]:
+            - img
+            - text: 新建 SSH 连接
+          - button "导入配置" [ref=e88] [cursor=pointer]
+        - generic [ref=e89]:
+          - generic [ref=e90]:
+            - generic [ref=e91]: Ctrl
+            - generic [ref=e92]: "N"
+            - text: 新建连接
+          - generic [ref=e93]:
+            - generic [ref=e94]: Ctrl
+            - generic [ref=e95]: T
+            - text: 新建标签
+          - generic [ref=e96]:
+            - generic [ref=e97]: Ctrl
+            - generic [ref=e98]: W
+            - text: 关闭标签
+          - generic [ref=e99]:
+            - generic [ref=e100]: Ctrl
+            - generic [ref=e101]: K
+            - text: 命令面板
+  - contentinfo [ref=e102]:
+    - generic [ref=e103]: 就绪
+    - generic [ref=e105]: 0 会话
+    - generic [ref=e106]: UTF-8
+    - generic [ref=e107]: LF
+    - generic [ref=e108]: v0.1.0
