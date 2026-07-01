@@ -24,6 +24,10 @@ src-tauri/gen
 *.user
 *.userosscache
 
+# AI 协作工具
+.claude
+.opencode
+
 # 日志与缓存
 *.log
 *.tsbuildinfo
