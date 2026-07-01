@@ -18,7 +18,15 @@ export interface TerminalTab extends BaseTab {
   storedSessionId?: string
 }
 
-export type Tab = TerminalTab
+export interface SftpTab extends BaseTab {
+  type: 'sftp'
+  sessionId: string
+  sftpId: string | null  // 打开后填充
+  host: string
+  user: string
+}
+
+export type Tab = TerminalTab | SftpTab
 
 export const tabs = ref<Tab[]>([])
 export const activeTabId = ref<string | null>(null)

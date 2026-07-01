@@ -5,7 +5,8 @@ import { onMounted, watchEffect } from 'vue'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
-import Terminal from '@/components/terminal/Terminal.vue'
+import TerminalSplit from '@/components/terminal/TerminalSplit.vue'
+import SftpView from '@/components/sftp/SftpView.vue'
 import { tabs, activeTabId, closeTab } from '@/stores/tabs'
 import { openNewConnection } from '@/stores/dialogs'
 
@@ -147,11 +148,21 @@ onMounted(() => {
           :key="tab.id"
           class="absolute inset-0"
         >
-          <Terminal
+          <TerminalSplit
             v-if="tab.type === 'terminal'"
             :tab-id="tab.id"
             :session-id="tab.sessionId"
             :channel-id="tab.channelId"
+            :host="tab.host"
+            :user="tab.user"
+          />
+          <SftpView
+            v-else-if="tab.type === 'sftp'"
+            :tab-id="tab.id"
+            :session-id="tab.sessionId"
+            :sftp-id="tab.sftpId"
+            :host="tab.host"
+            :user="tab.user"
           />
         </div>
       </template>

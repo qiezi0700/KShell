@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, shallowRef } from 'vue'
+import { onMounted, onBeforeUnmount, ref, shallowRef, nextTick } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -70,10 +70,17 @@ onMounted(async () => {
   t.loadAddon(f)
   t.loadAddon(new WebLinksAddon())
   t.open(container.value)
-  f.fit()
   t.focus()
   term.value = t
   fit.value = f
+
+  // 首屏 fit 必须发生在 writeln 与 sshOpenShell 之前:
+  // TerminalSplit 打开时 SFTP 占 40% 高度,若直接用 xterm 默认 80×24 开 shell,
+  // 后端按 24 行分配 PTY,而可视区实际只有十来行,shell 首屏输出会落到不可见行,
+  // 看起来就像被下方的 SFTP 面板遮挡。这里等一帧,让 flex 布局稳定后再 fit。
+  await nextTick()
+  await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+  f.fit()
 
   t.writeln(`\x1b[90m正在连接 ${props.sessionId.slice(0, 8)}… \x1b[0m`)
 

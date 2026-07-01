@@ -19,8 +19,9 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# SSH
-russh = "0.52"
+# SSH(用 ring 后端避免 aws-lc-rs 在 Windows 上需要 NASM)
+russh = { version = "0.61", default-features = false, features = ["flate2", "ring", "rsa"] }
+russh-sftp = "2.3"
 
 # async / concurrent
 tokio = { version = "1", features = ["full"] }

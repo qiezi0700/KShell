@@ -17,6 +17,7 @@ import {
   saveGroup,
 } from '@/stores/sessions'
 import { openConfirm, openPrompt } from '@/stores/prompt'
+import { toast } from '@/stores/toast'
 import { activeStoredSessionIds } from '@/stores/tabs'
 import type { StoredSession } from '@/api/sessions'
 import { DEFAULT_GROUP_NAME } from '@/stores/sessions'
@@ -72,12 +73,7 @@ async function onSessionDblclick(s: StoredSession) {
     const msg = typeof e === 'string' ? e : (e as any)?.message ?? String(e)
     // 公钥校验失败已由 host-key 弹框处理
     if (msg.includes('主机公钥校验未通过')) return
-    await openConfirm({
-      title: '连接失败',
-      message: msg,
-      confirmText: '知道了',
-      cancelText: '关闭',
-    })
+    toast.error(msg, '连接失败')
   }
 }
 
@@ -97,7 +93,7 @@ async function newGroup() {
   try {
     await saveGroup(name.trim())
   } catch (e) {
-    await openConfirm({ title: '创建失败', message: String(e), confirmText: '知道了' })
+    toast.error(String(e), '创建失败')
   }
 }
 
@@ -112,7 +108,7 @@ async function renameGroup(id: string, oldName: string) {
   try {
     await saveGroup(name.trim(), id)
   } catch (e) {
-    await openConfirm({ title: '重命名失败', message: String(e), confirmText: '知道了' })
+    toast.error(String(e), '重命名失败')
   }
 }
 
@@ -128,7 +124,7 @@ async function delGroup(id: string, name: string) {
   try {
     await removeGroup(id)
   } catch (e) {
-    await openConfirm({ title: '删除失败', message: String(e), confirmText: '知道了' })
+    toast.error(String(e), '删除失败')
   }
 }
 
@@ -143,7 +139,7 @@ async function delSession(s: StoredSession) {
   try {
     await removeSession(s.id)
   } catch (e) {
-    await openConfirm({ title: '删除失败', message: String(e), confirmText: '知道了' })
+    toast.error(String(e), '删除失败')
   }
 }
 </script>

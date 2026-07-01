@@ -4,6 +4,7 @@ use dashmap::DashMap;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::crypto::CryptoKey;
+use crate::sftp::SftpHandle;
 use crate::ssh::known_hosts::KnownHosts;
 use crate::ssh::{ChannelHandle, SshSession};
 use crate::store::Store;
@@ -18,6 +19,7 @@ pub type ChannelId = String;
 /// - `known_hosts`:主机公钥信任库
 /// - `pending_host_confirms`:check_server_key 等待用户确认首次连接的 oneshot 发送端
 /// - `crypto`:凭据加密用的机器绑定 key
+/// - `sftp_sessions`:SFTP 会话池,复用 SSH 连接
 pub struct AppState {
     pub sessions: DashMap<SessionId, Arc<Mutex<SshSession>>>,
     pub channels: DashMap<ChannelId, ChannelHandle>,
@@ -25,6 +27,7 @@ pub struct AppState {
     pub known_hosts: Arc<RwLock<KnownHosts>>,
     pub pending_host_confirms: DashMap<String, tokio::sync::oneshot::Sender<bool>>,
     pub crypto: CryptoKey,
+    pub sftp_sessions: DashMap<String, SftpHandle>,
 }
 
 impl AppState {
@@ -36,6 +39,7 @@ impl AppState {
             known_hosts: Arc::new(RwLock::new(known_hosts)),
             pending_host_confirms: DashMap::new(),
             crypto,
+            sftp_sessions: DashMap::new(),
         }
     }
 

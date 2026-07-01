@@ -1,6 +1,7 @@
 mod commands;
 mod crypto;
 mod ssh;
+mod sftp;
 mod state;
 mod store;
 
@@ -51,6 +52,33 @@ pub fn run() {
             // 主机公钥校验
             commands::ssh_confirm_host,
             commands::ssh_remove_known_host,
+            // SFTP
+            sftp::commands::sftp_open,
+            sftp::commands::sftp_close,
+            sftp::commands::sftp_list,
+            sftp::commands::sftp_mkdir,
+            sftp::commands::sftp_rmdir,
+            sftp::commands::sftp_rm,
+            sftp::commands::sftp_rename,
+            sftp::commands::sftp_chmod,
+            sftp::commands::sftp_stat,
+            sftp::commands::sftp_read_file,
+            sftp::commands::sftp_write_file,
+            sftp::commands::sftp_copy_file,
+            sftp::commands::sftp_home,
+            sftp::commands::sftp_upload,
+            sftp::commands::sftp_download,
+            sftp::commands::sftp_cancel_transfer,
+            // 本地文件操作
+            sftp::commands::local_list,
+            sftp::commands::local_mkdir,
+            sftp::commands::local_rmdir,
+            sftp::commands::local_rm,
+            sftp::commands::local_rename,
+            sftp::commands::local_copy,
+            sftp::commands::local_home,
+            sftp::commands::local_read_file,
+            sftp::commands::local_write_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
