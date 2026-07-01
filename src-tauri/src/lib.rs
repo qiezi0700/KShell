@@ -52,6 +52,10 @@ pub fn run() {
             // 主机公钥校验
             commands::ssh_confirm_host,
             commands::ssh_remove_known_host,
+            // 端口隧道
+            ssh::tunnel::tunnel_list,
+            ssh::tunnel::tunnel_add,
+            ssh::tunnel::tunnel_remove,
             // SFTP
             sftp::commands::sftp_open,
             sftp::commands::sftp_close,

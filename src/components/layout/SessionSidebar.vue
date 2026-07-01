@@ -8,6 +8,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { openNewConnection } from '@/stores/dialogs'
+import TunnelPanel from '@/components/tunnels/TunnelPanel.vue'
 import {
   groupTree,
   quickConnect,
@@ -258,8 +259,8 @@ async function delSession(s: StoredSession) {
       <TabsContent value="keys" class="p-3 text-[12px] text-muted-foreground">
         密钥管理(待实现)
       </TabsContent>
-      <TabsContent value="tunnels" class="p-3 text-[12px] text-muted-foreground">
-        端口隧道(待实现)
+      <TabsContent value="tunnels" class="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <TunnelPanel />
       </TabsContent>
     </Tabs>
   </aside>

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use russh::client::{self, Handle};
+use russh::client::{self, Handle, Msg};
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -163,6 +163,35 @@ impl client::Handler for ClientHandler {
                     Ok(accepted)
                 }
             }
+        }
+    }
+
+    /// 远程端口转发:服务端收到外部连接后开 channel 回调到这里。
+    /// 按 (connected_address, connected_port) 路由到对应规则并连接本地目标。
+    #[allow(clippy::manual_async_fn)]
+    fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: russh::Channel<Msg>,
+        connected_address: &str,
+        connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        _session: &mut russh::client::Session,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        let app = self.app.clone();
+        let app_for_tunnel = app.clone();
+        let connected_address = connected_address.to_string();
+        async move {
+            let state = app.state::<AppState>();
+            crate::ssh::tunnel::handle_remote_forwarded_connection(
+                app_for_tunnel,
+                &*state,
+                channel,
+                &connected_address,
+                connected_port,
+            )
+            .await;
+            Ok(())
         }
     }
 }

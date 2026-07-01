@@ -7,11 +7,12 @@ use tokio::sync::{Mutex, RwLock};
 use crate::crypto::CryptoKey;
 use crate::sftp::SftpHandle;
 use crate::ssh::known_hosts::KnownHosts;
-use crate::ssh::{ChannelHandle, SshSession};
+use crate::ssh::{ChannelHandle, SshSession, tunnel::TunnelEntry};
 use crate::store::Store;
 
 pub type SessionId = String;
 pub type ChannelId = String;
+pub type TunnelId = String;
 
 /// 全局运行时状态。
 ///
@@ -22,6 +23,7 @@ pub type ChannelId = String;
 /// - `crypto`:凭据加密用的机器绑定 key
 /// - `sftp_sessions`:SFTP 会话池,复用 SSH 连接
 /// - `transfer_cancels`:进行中的传输任务对应的取消标志(前端调 sftp_cancel_transfer 时置位)
+/// - `tunnels`:M6 端口转发规则,按 tunnel_id 索引;按 session_id 分组清理
 pub struct AppState {
     pub sessions: DashMap<SessionId, Arc<Mutex<SshSession>>>,
     pub channels: DashMap<ChannelId, ChannelHandle>,
@@ -31,6 +33,7 @@ pub struct AppState {
     pub crypto: CryptoKey,
     pub sftp_sessions: DashMap<String, SftpHandle>,
     pub transfer_cancels: DashMap<String, Arc<AtomicBool>>,
+    pub tunnels: DashMap<TunnelId, TunnelEntry>,
 }
 
 impl AppState {
@@ -44,6 +47,7 @@ impl AppState {
             crypto,
             sftp_sessions: DashMap::new(),
             transfer_cancels: DashMap::new(),
+            tunnels: DashMap::new(),
         }
     }
 

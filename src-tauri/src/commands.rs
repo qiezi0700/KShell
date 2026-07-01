@@ -215,9 +215,13 @@ pub async fn ssh_close_channel(
 
 #[tauri::command]
 pub async fn ssh_disconnect(
+    app: AppHandle,
     state: State<'_, AppState>,
     session_id: SessionId,
 ) -> Result<(), String> {
+    // 先关闭该会话下的所有隧道,避免 session 移除后隧道回调无法路由
+    crate::ssh::tunnel::tunnel_close_session(&app, &state, &session_id).await;
+
     // 关闭该会话下所有通道
     let ch_ids: Vec<_> = state
         .channels
