@@ -26,6 +26,7 @@ export interface TransferProgress {
 export interface TransferDone {
   transferId: string
   success: boolean
+  cancelled: boolean
   error: string | null
 }
 

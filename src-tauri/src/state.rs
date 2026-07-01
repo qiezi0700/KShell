@@ -1,3 +1,4 @@
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -20,6 +21,7 @@ pub type ChannelId = String;
 /// - `pending_host_confirms`:check_server_key 等待用户确认首次连接的 oneshot 发送端
 /// - `crypto`:凭据加密用的机器绑定 key
 /// - `sftp_sessions`:SFTP 会话池,复用 SSH 连接
+/// - `transfer_cancels`:进行中的传输任务对应的取消标志(前端调 sftp_cancel_transfer 时置位)
 pub struct AppState {
     pub sessions: DashMap<SessionId, Arc<Mutex<SshSession>>>,
     pub channels: DashMap<ChannelId, ChannelHandle>,
@@ -28,6 +30,7 @@ pub struct AppState {
     pub pending_host_confirms: DashMap<String, tokio::sync::oneshot::Sender<bool>>,
     pub crypto: CryptoKey,
     pub sftp_sessions: DashMap<String, SftpHandle>,
+    pub transfer_cancels: DashMap<String, Arc<AtomicBool>>,
 }
 
 impl AppState {
@@ -40,6 +43,7 @@ impl AppState {
             pending_host_confirms: DashMap::new(),
             crypto,
             sftp_sessions: DashMap::new(),
+            transfer_cancels: DashMap::new(),
         }
     }
 

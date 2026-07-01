@@ -190,7 +190,9 @@ async function localMkdirAction() {
 async function localDelete(e: RemoteEntry) {
   const ok = await openConfirm({
     title: '确认删除',
-    message: `删除 ${e.isDir ? '目录' : '文件'}: ${e.name}?`,
+    message: e.isDir
+      ? `删除目录 ${e.name} 及其全部内容?此操作不可撤销。`
+      : `删除文件 ${e.name}?`,
     destructive: true,
     confirmText: '删除',
   })

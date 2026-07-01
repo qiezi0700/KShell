@@ -9,10 +9,12 @@ import {
   Trash2,
   ListTree,
   ChevronDown,
+  X,
+  Ban,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { transfersRef, activeCount, clearFinished } from '@/stores/transfers'
+import { transfersRef, activeCount, clearFinished, cancelTransfer } from '@/stores/transfers'
 
 const expanded = ref(false)
 
@@ -88,7 +90,18 @@ function pct(t: { transferred: number; total: number }) {
           <Loader2 v-if="t.status === 'transferring'" class="size-3 shrink-0 animate-spin text-primary" />
           <CheckCircle2 v-else-if="t.status === 'done'" class="size-3 shrink-0 text-success" />
           <AlertCircle v-else-if="t.status === 'error'" class="size-3 shrink-0 text-destructive" />
+          <Ban v-else-if="t.status === 'cancelled'" class="size-3 shrink-0 text-muted-foreground" />
           <span v-else class="w-3 shrink-0" />
+          <!-- 取消按钮:仅进行中/等待中可点 -->
+          <button
+            v-if="t.status === 'transferring' || t.status === 'pending'"
+            class="flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-destructive"
+            :title="'取消'"
+            @click="cancelTransfer(t.id)"
+          >
+            <X class="size-3" />
+          </button>
+          <span v-else class="w-4 shrink-0" />
         </div>
       </ScrollArea>
     </div>

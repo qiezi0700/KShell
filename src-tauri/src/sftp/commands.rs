@@ -3,17 +3,24 @@
 //! upload/download 在后台 tokio 任务中分块传输,通过 emit 事件推送进度。
 //! 断点续传:调用方传 offset,后端 seek 到该位置继续。
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use russh_sftp::client::fs::Metadata;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use crate::state::AppState;
 
 use super::session;
+
+/// 传输被用户取消时,do_upload/do_download 返回这个错误,
+/// emit_done 据此把 cancelled 字段置 true,前端可区分展示为"已取消"。
+const CANCEL_MSG: &str = "传输已取消";
 
 fn err<E: std::fmt::Display>(e: E) -> String {
     format!("{e:#}")
@@ -59,6 +66,7 @@ pub struct TransferProgress {
 pub struct TransferDone {
     pub transfer_id: String,
     pub success: bool,
+    pub cancelled: bool,
     pub error: Option<String>,
 }
 
@@ -335,9 +343,10 @@ pub fn local_mkdir(path: String) -> Result<(), String> {
     std::fs::create_dir_all(&path).map_err(|e| format!("创建目录失败: {e}"))
 }
 
+/// 删除本地目录(递归)。前端确认弹窗必须提示"及其全部内容",避免误删。
 #[tauri::command]
 pub fn local_rmdir(path: String) -> Result<(), String> {
-    std::fs::remove_dir(&path).map_err(|e| format!("删除目录失败: {e}"))
+    std::fs::remove_dir_all(&path).map_err(|e| format!("删除目录失败: {e}"))
 }
 
 #[tauri::command]
@@ -431,16 +440,17 @@ pub async fn sftp_upload(
     offset: u64,
 ) -> Result<(), String> {
     let sftp = get_sftp(&state, &sftp_id)?;
-
-    let total = std::fs::metadata(&local_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let total = std::fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
+    let cancel = register_cancel(&state, &transfer_id);
 
     let app_clone = app.clone();
     let transfer_id_clone = transfer_id.clone();
     tokio::spawn(async move {
-        let result = do_upload(&sftp, &local_path, &remote_path, offset, total, &app, &transfer_id).await;
-        emit_done(&app_clone, &transfer_id_clone, result);
+        let result = do_upload(
+            &sftp, &local_path, &remote_path, offset, total, &app_clone, &transfer_id_clone, &cancel,
+        )
+        .await;
+        finish_transfer(&app_clone, &transfer_id_clone, result);
     });
 
     Ok(())
@@ -461,20 +471,37 @@ pub async fn sftp_download(
 
     let meta = sftp.metadata(&remote_path).await.map_err(err)?;
     let total = meta.len();
+    let cancel = register_cancel(&state, &transfer_id);
 
     let app_clone = app.clone();
     let transfer_id_clone = transfer_id.clone();
     tokio::spawn(async move {
-        let result = do_download(&sftp, &remote_path, &local_path, offset, total, &app, &transfer_id).await;
-        emit_done(&app_clone, &transfer_id_clone, result);
+        let result = do_download(
+            &sftp,
+            &remote_path,
+            &local_path,
+            offset,
+            total,
+            &app_clone,
+            &transfer_id_clone,
+            &cancel,
+        )
+        .await;
+        finish_transfer(&app_clone, &transfer_id_clone, result);
     });
 
     Ok(())
 }
 
-/// 取消传输:前端关闭对应的监听即可,后端任务自然结束。
+/// 取消进行中的传输:置位取消标志,do_upload/do_download 在下一次分块循环时返回。
 #[tauri::command]
-pub async fn sftp_cancel_transfer(_transfer_id: String) -> Result<(), String> {
+pub async fn sftp_cancel_transfer(
+    state: State<'_, AppState>,
+    transfer_id: String,
+) -> Result<(), String> {
+    if let Some(flag) = state.transfer_cancels.get(&transfer_id) {
+        flag.store(true, Ordering::Relaxed);
+    }
     Ok(())
 }
 
@@ -490,6 +517,7 @@ async fn do_upload(
     total: u64,
     app: &AppHandle,
     transfer_id: &str,
+    cancel: &AtomicBool,
 ) -> Result<()> {
     let mut local = tokio::fs::File::open(local_path)
         .await
@@ -518,6 +546,9 @@ async fn do_upload(
     let event = format!("sftp://transfer/{transfer_id}/progress");
 
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(anyhow::anyhow!(CANCEL_MSG));
+        }
         let n = local.read(&mut buf).await.context("读取本地文件失败")?;
         if n == 0 {
             break;
@@ -563,6 +594,7 @@ async fn do_download(
     total: u64,
     app: &AppHandle,
     transfer_id: &str,
+    cancel: &AtomicBool,
 ) -> Result<()> {
     let mut remote = sftp.open(remote_path).await.context("打开远端文件失败")?;
 
@@ -590,6 +622,9 @@ async fn do_download(
     let event = format!("sftp://transfer/{transfer_id}/progress");
 
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(anyhow::anyhow!(CANCEL_MSG));
+        }
         let n = remote.read(&mut buf).await.context("读取远端文件失败")?;
         if n == 0 {
             break;
@@ -627,20 +662,43 @@ async fn do_download(
     Ok(())
 }
 
+/// 传输结束统一收尾:摘掉 cancel token,给前端发 done 事件。
+fn finish_transfer(app: &AppHandle, transfer_id: &str, result: Result<()>) {
+    // 无论成功/失败/取消,都清理 cancel token 防内存泄漏
+    app.state::<AppState>()
+        .transfer_cancels
+        .remove(transfer_id);
+    emit_done(app, transfer_id, result);
+}
+
 fn emit_done(app: &AppHandle, transfer_id: &str, result: Result<()>) {
     let event = format!("sftp://transfer/{transfer_id}/done");
-    let (success, error) = match result {
-        Ok(()) => (true, None),
-        Err(e) => (false, Some(format!("{e:#}"))),
+    let (success, cancelled, error) = match result {
+        Ok(()) => (true, false, None),
+        Err(e) => {
+            let msg = format!("{e:#}");
+            let is_cancel = msg.contains(CANCEL_MSG);
+            (false, is_cancel, Some(msg))
+        }
     };
     let _ = app.emit(
         &event,
         TransferDone {
             transfer_id: transfer_id.to_string(),
             success,
+            cancelled,
             error,
         },
     );
+}
+
+/// 在 state 里登记一个取消标志,返回 Arc 供传输任务在循环中查询
+fn register_cancel(state: &State<'_, AppState>, transfer_id: &str) -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(false));
+    state
+        .transfer_cancels
+        .insert(transfer_id.to_string(), flag.clone());
+    flag
 }
 
 // ============================================================

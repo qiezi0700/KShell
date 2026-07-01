@@ -5,6 +5,7 @@ import {
   onTransferDone,
   sftpUpload,
   sftpDownload,
+  sftpCancelTransfer,
   type TransferProgress,
 } from '@/api/sftp'
 import type { UnlistenFn } from '@tauri-apps/api/event'
@@ -105,7 +106,7 @@ async function runTransfer(item: TransferItem) {
   })
   const onDone = await onTransferDone(item.id, d => {
     update({
-      status: d.success ? 'done' : 'error',
+      status: d.success ? 'done' : d.cancelled ? 'cancelled' : 'error',
       error: d.error,
       speed: 0,
     })
@@ -131,9 +132,25 @@ function cleanup(id: string) {
   unlisteners.delete(id)
 }
 
-/** 清除已完成/失败的任务(保留进行中的) */
+/** 清除已完成/失败/取消的任务(保留进行中的) */
 export function clearFinished() {
   const finished = items.value.filter(t => t.status === 'done' || t.status === 'error' || t.status === 'cancelled')
   finished.forEach(t => cleanup(t.id))
   items.value = items.value.filter(t => t.status === 'transferring' || t.status === 'pending')
+}
+
+/**
+ * 请求取消一个进行中的传输。
+ * 后端置位 cancel token,当前分块循环结束后返回;done 事件会带 cancelled=true。
+ * 已结束的任务调用无副作用。
+ */
+export async function cancelTransfer(id: string): Promise<void> {
+  const item = items.value.find(t => t.id === id)
+  if (!item) return
+  if (item.status !== 'transferring' && item.status !== 'pending') return
+  try {
+    await sftpCancelTransfer(id)
+  } catch {
+    // 忽略后端不存在等错误
+  }
 }
