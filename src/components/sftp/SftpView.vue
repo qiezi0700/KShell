@@ -707,7 +707,7 @@ function joinPath(dir: string, name: string): string {
         @drop="onDrop($event, 'local')"
         @mousedown="activeSide = 'local'"
       >
-        <div class="flex items-center justify-between border-b border-border bg-muted/30 px-3 py-1 text-[11px] font-medium">
+        <div class="flex items-center justify-between border-b border-border bg-muted/30 px-3 py-1 text-[length:var(--text-xs)] font-medium">
           <span>本地</span>
           <span class="text-muted-foreground">{{ localCwd }}</span>
         </div>
@@ -747,7 +747,7 @@ function joinPath(dir: string, name: string): string {
         @drop="onDrop($event, 'remote')"
         @mousedown="activeSide = 'remote'"
       >
-        <div class="flex items-center justify-between border-b border-border bg-muted/30 px-3 py-1 text-[11px] font-medium">
+        <div class="flex items-center justify-between border-b border-border bg-muted/30 px-3 py-1 text-[length:var(--text-xs)] font-medium">
           <span>远端 {{ user }}@{{ host }}</span>
           <span class="text-muted-foreground">{{ remoteCwd }}</span>
         </div>
@@ -777,14 +777,14 @@ function joinPath(dir: string, name: string): string {
         <DialogHeader>
           <DialogTitle class="flex items-center gap-2">
             <span>{{ preview.name }}</span>
-            <span v-if="preview.dirty" class="text-[11px] text-muted-foreground">未保存</span>
+            <span v-if="preview.dirty" class="text-[length:var(--text-xs)] text-muted-foreground">未保存</span>
           </DialogTitle>
         </DialogHeader>
         <textarea
           v-model="preview.content"
           @input="onPreviewInput"
           spellcheck="false"
-          class="h-[60vh] w-full resize-none rounded-md bg-muted/50 p-3 font-mono text-[12px] leading-5 outline-none focus:ring-1 focus:ring-primary"
+          class="h-[60vh] w-full resize-none rounded-md bg-muted/50 p-3 font-mono text-[length:var(--text-sm)] leading-5 outline-none focus:ring-1 focus:ring-primary"
         />
         <div class="flex justify-end gap-2">
           <Button variant="ghost" size="sm" @click="preview = null">关闭</Button>

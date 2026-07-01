@@ -46,8 +46,8 @@ const colorMap = {
           :class="colorMap[t.type]"
         />
         <div class="min-w-0 flex-1">
-          <div class="text-[12px] font-medium text-foreground">{{ t.title }}</div>
-          <div v-if="t.message" class="mt-0.5 break-words text-[11px] text-muted-foreground">{{ t.message }}</div>
+          <div class="text-[length:var(--text-sm)] font-medium text-foreground">{{ t.title }}</div>
+          <div v-if="t.message" class="mt-0.5 break-words text-[length:var(--text-xs)] text-muted-foreground">{{ t.message }}</div>
         </div>
         <button
           class="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground"

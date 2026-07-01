@@ -43,7 +43,7 @@ function pct(t: { transferred: number; total: number }) {
   >
     <!-- 标题栏(可折叠) -->
     <button
-      class="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] font-medium"
+      class="flex w-full items-center gap-2 px-3 py-1.5 text-[length:var(--text-xs)] font-medium"
       @click="expanded = !expanded"
     >
       <ListTree class="size-3.5 shrink-0 text-primary" />
@@ -65,7 +65,7 @@ function pct(t: { transferred: number; total: number }) {
     <!-- 展开时显示列表 -->
     <div v-if="expanded" class="border-t border-border">
       <div class="flex items-center justify-end px-2 py-1">
-        <Button variant="ghost" size="sm" class="h-5 text-[10px]" @click="clearFinished">
+        <Button variant="ghost" size="sm" class="text-[length:var(--text-xs)]" :style="{ height: 'var(--size-row-sm)' }" @click="clearFinished">
           <Trash2 class="size-3" /> 清除已完成
         </Button>
       </div>
@@ -73,7 +73,7 @@ function pct(t: { transferred: number; total: number }) {
         <div
           v-for="t in transfersRef"
           :key="t.id"
-          class="flex items-center gap-2 px-3 py-1 text-[11px]"
+          class="flex items-center gap-2 px-3 py-1 text-[length:var(--text-xs)]"
         >
           <ArrowRight
             v-if="t.direction === 'upload' || t.direction === 'uploadDir'"

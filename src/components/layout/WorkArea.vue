@@ -9,6 +9,7 @@ import TerminalSplit from '@/components/terminal/TerminalSplit.vue'
 import SftpView from '@/components/sftp/SftpView.vue'
 import { tabs, activeTabId, closeTab } from '@/stores/tabs'
 import { openNewConnection } from '@/stores/dialogs'
+import { sidebarVisible } from '@/stores/ui'
 
 const iconMap = {
   terminal: TerminalSquare,
@@ -28,6 +29,7 @@ const shortcuts = [
 const keys = useMagicKeys()
 whenever(keys['Ctrl+N'], () => openNewConnection())
 whenever(keys['Ctrl+T'], () => openNewConnection())
+whenever(keys['Ctrl+B'], () => (sidebarVisible.value = !sidebarVisible.value))
 whenever(keys['Ctrl+W'], () => {
   if (activeTabId.value) closeTab(activeTabId.value)
 })
@@ -74,18 +76,18 @@ onMounted(() => {
 
 <template>
   <main class="flex min-w-0 flex-1 flex-col bg-background">
-    <div class="flex h-[30px] shrink-0 border-b border-border bg-titlebar">
+    <div class="flex shrink-0 border-b border-border bg-titlebar" :style="{ height: 'var(--size-tabbar)' }">
       <div class="flex flex-1 overflow-x-auto">
         <div
           v-for="tab in tabs"
           :key="tab.id"
           :class="cn(
-            'group flex h-full min-w-[120px] max-w-[200px] cursor-pointer items-center gap-1.5 border-r border-border pl-3 pr-2 text-[12px]',
+            'group flex h-full min-w-[120px] max-w-[200px] cursor-pointer items-center gap-1.5 border-r border-border pl-3 pr-2',
             activeTabId === tab.id
               ? 'bg-background text-foreground shadow-[inset_0_2px_0_var(--color-primary)]'
               : 'text-muted-foreground hover:text-foreground',
           )"
-          @click="activeTabId = tab.id"
+          :style="{ fontSize: 'var(--text-sm)' }"          @click="activeTabId = tab.id"
         >
           <component
             :is="iconMap[tab.type]"
@@ -103,7 +105,8 @@ onMounted(() => {
       <Tooltip>
         <TooltipTrigger as-child>
           <button
-            class="flex w-[30px] items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground"
+            class="flex items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground"
+            :style="{ width: 'var(--size-tabbar)' }"
             @click="openNewConnection()"
           >
             <Plus class="size-4" />
@@ -128,12 +131,12 @@ onMounted(() => {
             <Button variant="outline">导入配置</Button>
           </div>
 
-          <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-[11px] text-muted-foreground">
+          <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-[length:var(--text-xs)] text-muted-foreground">
             <div v-for="s in shortcuts" :key="s[2]">
               <kbd
                 v-for="k in s.slice(0, -1)"
                 :key="k"
-                class="mr-1 inline-block rounded-[3px] border border-border bg-panel-2 px-1.5 py-px font-mono text-[10px] text-foreground"
+                class="mr-1 inline-block rounded-[3px] border border-border bg-panel-2 px-1.5 py-px font-mono text-[length:var(--text-xs)] text-foreground"
               >{{ k }}</kbd>
               {{ s[s.length - 1] }}
             </div>

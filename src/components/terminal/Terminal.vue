@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, shallowRef, nextTick } from 'vue'
+import { onMounted, onBeforeUnmount, ref, shallowRef, nextTick, watch } from 'vue'
+import { activeTabId } from '@/stores/tabs'
+import { clearTerminalTrigger, clearScrollbackTrigger } from '@/stores/ui'
+import { fontSize } from '@/stores/preferences'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -30,6 +33,7 @@ const errMsg = ref<string | null>(null)
 let unlistenData: UnlistenFn | null = null
 let unlistenExit: UnlistenFn | null = null
 let resizeObserver: ResizeObserver | null = null
+let wheelHandler: ((e: WheelEvent) => void) | null = null
 let currentChannelId: string | null = null
 
 const encoder = new TextEncoder()
@@ -39,7 +43,7 @@ onMounted(async () => {
 
   const t = new Terminal({
     fontFamily: 'JetBrains Mono, Cascadia Code, Consolas, Menlo, monospace',
-    fontSize: 13,
+    fontSize: fontSize.value,
     lineHeight: 1.15,
     cursorBlink: true,
     scrollback: 5000,
@@ -103,6 +107,26 @@ onMounted(async () => {
       if (currentChannelId) sshWrite(currentChannelId, encoder.encode(data))
     })
 
+    // Ctrl+滚轮缩放终端字体(独立于全局偏好,仅当前终端)
+    t.attachCustomKeyEventHandler(() => true)
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return
+      e.preventDefault()
+      e.stopPropagation()
+      const t = term.value
+      const f = fit.value
+      if (!t || !f) return
+      const cur = t.options.fontSize ?? 13
+      const next = e.deltaY < 0 ? Math.min(32, cur + 1) : Math.max(8, cur - 1)
+      if (next === cur) return
+      t.options.fontSize = next
+      f.fit()
+      const { cols, rows } = t
+      if (currentChannelId) sshResize(currentChannelId, cols, rows)
+    }
+    container.value!.addEventListener('wheel', onWheel, { capture: true })
+    wheelHandler = onWheel
+
     resizeObserver = new ResizeObserver(() => {
       f.fit()
       const { cols, rows } = t
@@ -117,6 +141,9 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(async () => {
+  if (wheelHandler && container.value) {
+    container.value.removeEventListener('wheel', wheelHandler, { capture: true } as EventListenerOptions)
+  }
   resizeObserver?.disconnect()
   unlistenData?.()
   unlistenExit?.()
@@ -133,6 +160,30 @@ defineExpose({
     closeTab(props.tabId)
   },
 })
+
+// 菜单「编辑 → 清屏」:仅活跃 tab 响应
+watch(clearTerminalTrigger, () => {
+  if (activeTabId.value !== props.tabId) return
+  term.value?.clear()
+})
+
+// 菜单「编辑 → 清除滚动缓冲」:仅活跃 tab 响应
+watch(clearScrollbackTrigger, () => {
+  if (activeTabId.value !== props.tabId) return
+  term.value?.write('\x1b[3J')
+})
+
+// 偏好设置字号变化:更新 xterm + refit + 通知后端 PTY resize
+watch(fontSize, () => {
+  if (activeTabId.value !== props.tabId) return
+  const t = term.value
+  const f = fit.value
+  if (!t || !f) return
+  t.options.fontSize = fontSize.value
+  f.fit()
+  const { cols, rows } = t
+  if (currentChannelId) sshResize(currentChannelId, cols, rows)
+})
 </script>
 
 <template>
@@ -140,13 +191,13 @@ defineExpose({
     <div ref="container" class="absolute inset-0 p-2 bg-[#1e1f22]" />
     <div
       v-if="status === 'connecting'"
-      class="pointer-events-none absolute right-3 top-3 rounded-sm bg-muted/80 px-2 py-1 text-[10px] text-muted-foreground"
+      class="pointer-events-none absolute right-3 top-3 rounded-sm bg-muted/80 px-2 py-1 text-[length:var(--text-xs)] text-muted-foreground"
     >
       连接中…
     </div>
     <div
       v-else-if="status === 'error'"
-      class="pointer-events-none absolute right-3 top-3 rounded-sm bg-destructive/80 px-2 py-1 text-[10px] text-white"
+      class="pointer-events-none absolute right-3 top-3 rounded-sm bg-destructive/80 px-2 py-1 text-[length:var(--text-xs)] text-white"
     >
       连接失败
     </div>

@@ -12,12 +12,16 @@ import TransferPanel from './components/sftp/TransferPanel.vue'
 import ToastContainer from './components/dialogs/ToastContainer.vue'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { initHostKeyGuard, destroyHostKeyGuard } from '@/stores/host-key'
+import { initTheme, destroyTheme } from '@/stores/preferences'
+import { sidebarVisible, statusBarVisible } from '@/stores/ui'
 
 onMounted(() => {
+  initTheme()
   initHostKeyGuard().catch(() => {})
 })
 
 onBeforeUnmount(() => {
+  destroyTheme()
   destroyHostKeyGuard()
 })
 </script>
@@ -27,10 +31,10 @@ onBeforeUnmount(() => {
     <div class="flex h-full flex-col bg-background" @contextmenu.prevent>
       <TitleBar />
       <div class="flex min-h-0 flex-1">
-        <SessionSidebar />
+        <SessionSidebar v-show="sidebarVisible" />
         <WorkArea />
       </div>
-      <StatusBar />
+      <StatusBar v-show="statusBarVisible" />
     </div>
     <NewConnectionDialog />
     <ConfirmDialog />

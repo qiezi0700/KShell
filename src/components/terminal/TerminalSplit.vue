@@ -92,7 +92,7 @@ onBeforeUnmount(() => {
 
     <!-- SFTP 切换按钮(始终在终端右下角) -->
     <button
-      class="absolute bottom-2 right-3 z-10 flex items-center gap-1 rounded-md border border-border bg-popover px-2 py-1 text-[11px] text-muted-foreground shadow-sm hover:bg-muted hover:text-foreground"
+      class="absolute bottom-2 right-3 z-10 flex items-center gap-1 rounded-md border border-border bg-popover px-2 py-1 text-[length:var(--text-xs)] text-muted-foreground shadow-sm hover:bg-muted hover:text-foreground"
       @click="toggleSftp"
       :title="sftpVisible ? '隐藏文件管理' : '显示文件管理'"
     >

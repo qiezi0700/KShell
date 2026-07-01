@@ -195,19 +195,19 @@ defineExpose({ closeMenu })
   <div class="flex h-full flex-col" @click="closeMenu">
     <!-- 工具栏 -->
     <div class="flex items-center gap-1 border-b border-border px-2 py-1">
-      <Button variant="ghost" size="icon" class="size-6" @click="goUp" title="上级">
+      <Button variant="ghost" size="icon" :style="{ width: 'var(--size-row-md)', height: 'var(--size-row-md)' }" @click="goUp" title="上级">
         <ArrowUp class="size-3.5" />
       </Button>
-      <Button variant="ghost" size="icon" class="size-6" @click="emit('home')" title="家目录">
+      <Button variant="ghost" size="icon" :style="{ width: 'var(--size-row-md)', height: 'var(--size-row-md)' }" @click="emit('home')" title="家目录">
         <Home class="size-3.5" />
       </Button>
-      <Button variant="ghost" size="icon" class="size-6" @click="emit('refresh')" title="刷新">
+      <Button variant="ghost" size="icon" :style="{ width: 'var(--size-row-md)', height: 'var(--size-row-md)' }" @click="emit('refresh')" title="刷新">
         <RefreshCw class="size-3.5" />
       </Button>
       <Button
         variant="ghost"
         size="icon"
-        class="size-6"
+        :style="{ width: 'var(--size-row-md)', height: 'var(--size-row-md)' }"
         :disabled="isThisPcLevel"
         @click="emit('mkdir')"
         title="新建目录"
@@ -216,13 +216,14 @@ defineExpose({ closeMenu })
       </Button>
       <Input
         v-model="pathInput"
-        class="h-6 text-[11px]"
+        class="text-[length:var(--text-xs)]"
+        :style="{ height: 'var(--size-row-sm)' }"
         @keydown.enter="onPathEnter"
       />
     </div>
 
     <!-- 面包屑:chevron + button 成对出现,首项前不带 chevron -->
-    <div class="flex items-center gap-0.5 overflow-x-auto border-b border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+    <div class="flex items-center gap-0.5 overflow-x-auto border-b border-border px-2 text-muted-foreground" :style="{ height: 'var(--size-row-sm)', fontSize: 'var(--text-xs)' }">
       <template v-for="(c, i) in crumbs" :key="i">
         <ChevronRight v-if="i > 0" class="size-3 shrink-0" />
         <button
@@ -235,7 +236,7 @@ defineExpose({ closeMenu })
     <!-- 文件列表 -->
     <ScrollArea class="flex-1">
       <div
-        class="select-none text-[12px]"
+        class="select-none text-[length:var(--text-sm)]"
         @contextmenu="onContextmenu($event, null)"
         @click="clearSelect"
       >
@@ -251,18 +252,19 @@ defineExpose({ closeMenu })
           v-for="e in entries"
           :key="e.name"
           :class="cn(
-            'flex cursor-pointer items-center gap-2 px-2 py-1 hover:bg-muted/50',
+            'flex cursor-pointer items-center gap-2 px-2 hover:bg-muted/50',
             selected === e.name && 'bg-primary/10',
           )"
+          :style="{ height: 'var(--size-row-list)' }"
           draggable="true"
           @click="onItemClick(e)"
           @dblclick="onItemDblclick(e)"
           @contextmenu="onContextmenu($event, e)"
         >
-          <component :is="iconFor(e)" class="size-4 shrink-0 text-muted-foreground" />
+          <component :is="iconFor(e)" class="shrink-0 text-muted-foreground" :style="{ width: 'var(--size-icon-md)', height: 'var(--size-icon-md)' }" />
           <span class="flex-1 truncate">{{ e.name }}</span>
-          <span class="w-20 shrink-0 text-right text-[10px] text-muted-foreground">{{ fmtSize(e.size) }}</span>
-          <span class="w-28 shrink-0 text-right text-[10px] text-muted-foreground">{{ fmtDate(e.modified) }}</span>
+          <span class="w-24 shrink-0 text-right text-muted-foreground whitespace-nowrap" :style="{ fontSize: 'var(--text-xs)' }">{{ fmtSize(e.size) }}</span>
+          <span class="w-32 shrink-0 text-right text-muted-foreground whitespace-nowrap" :style="{ fontSize: 'var(--text-xs)' }">{{ fmtDate(e.modified) }}</span>
         </div>
       </div>
     </ScrollArea>
@@ -271,7 +273,7 @@ defineExpose({ closeMenu })
     <Teleport to="body">
       <div
         v-if="menu"
-        class="fixed z-50 min-w-[120px] rounded-md border border-border bg-popover py-1 text-[12px] shadow-md"
+        class="fixed z-50 min-w-[120px] rounded-md border border-border bg-popover py-1 text-[length:var(--text-sm)] shadow-md"
         :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
         @click.stop
       >

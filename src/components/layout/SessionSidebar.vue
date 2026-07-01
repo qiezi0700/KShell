@@ -183,13 +183,14 @@ async function delSession(s: StoredSession) {
           <div class="py-1">
             <div
               v-if="filtered.length === 0"
-              class="px-3 py-6 text-center text-[11px] text-muted-foreground"
+              class="px-3 py-6 text-center text-[length:var(--text-xs)] text-muted-foreground"
             >
               {{ query ? '没有匹配的会话' : '暂无会话,点上方 + 新建一个' }}
             </div>
             <template v-for="node in filtered" :key="node.group.id || '__orphan__'">
               <div
-                class="group flex h-6 cursor-pointer items-center gap-1.5 px-2 text-[12px] font-medium text-muted-foreground hover:bg-muted"
+                class="group flex cursor-pointer items-center gap-1.5 px-2 font-medium text-muted-foreground hover:bg-muted"
+                :style="{ height: 'var(--size-row-md)', fontSize: 'var(--text-sm)' }"
                 @click="toggle(node.group.id)"
               >
                 <ChevronRight
@@ -198,7 +199,7 @@ async function delSession(s: StoredSession) {
                 />
                 <Folder class="size-3.5 shrink-0 text-warning" />
                 <span class="flex-1 truncate">{{ node.group.name }}</span>
-                <span class="text-[11px] text-muted-foreground/70">{{ node.sessions.length }}</span>
+                <span class="text-[length:var(--text-xs)] text-muted-foreground/70">{{ node.sessions.length }}</span>
                 <template v-if="node.group.id && !isDefaultGroup(node.group.name)">
                   <button
                     class="hidden size-4 items-center justify-center rounded-sm hover:bg-background/60 group-hover:flex"
@@ -218,11 +219,12 @@ async function delSession(s: StoredSession) {
                   :key="child.id"
                   :title="`${child.username}@${child.host}:${child.port}(双击连接)`"
                   :class="cn(
-                    'group flex h-6 cursor-pointer items-center gap-1.5 pl-7 pr-2 text-[12px]',
+                    'group flex cursor-pointer items-center gap-1.5 pl-7 pr-2',
                     selectedId === child.id
                       ? 'bg-primary/20 text-foreground'
                       : 'text-foreground hover:bg-muted',
                   )"
+                  :style="{ height: 'var(--size-row-md)', fontSize: 'var(--text-sm)' }"
                   @click="selectedId = child.id"
                   @dblclick="onSessionDblclick(child)"
                 >
@@ -238,7 +240,7 @@ async function delSession(s: StoredSession) {
                       activeStoredSessionIds.has(child.id) && 'text-foreground',
                     )"
                   >{{ child.name }}</span>
-                  <span class="font-mono text-[10px] text-muted-foreground">{{ child.host }}</span>
+                  <span class="font-mono text-[length:var(--text-xs)] text-muted-foreground">{{ child.host }}</span>
                   <button
                     class="hidden size-4 items-center justify-center rounded-sm hover:bg-muted-foreground/20 hover:text-foreground group-hover:flex"
                     @click.stop="editSession(child)"
@@ -256,7 +258,7 @@ async function delSession(s: StoredSession) {
         </ScrollArea>
       </TabsContent>
 
-      <TabsContent value="keys" class="p-3 text-[12px] text-muted-foreground">
+      <TabsContent value="keys" class="p-3 text-[length:var(--text-sm)] text-muted-foreground">
         密钥管理(待实现)
       </TabsContent>
       <TabsContent value="tunnels" class="flex min-h-0 flex-1 flex-col overflow-hidden">

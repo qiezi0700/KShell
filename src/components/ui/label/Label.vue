@@ -9,7 +9,7 @@ const props = defineProps<LabelProps & { class?: string }>()
   <Label
     v-bind="props"
     :class="cn(
-      'text-[12px] font-medium leading-none text-foreground peer-disabled:cursor-not-allowed peer-disabled:opacity-70',
+      'text-[length:var(--text-sm)] font-medium leading-none text-foreground peer-disabled:cursor-not-allowed peer-disabled:opacity-70',
       props.class,
     )"
   >

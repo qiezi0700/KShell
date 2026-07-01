@@ -3,7 +3,7 @@
 </script>
 
 <template>
-  <footer class="flex h-[22px] shrink-0 items-center gap-3 border-t border-border bg-titlebar px-2 text-[11px] text-muted-foreground">
+  <footer class="flex shrink-0 items-center gap-3 border-t border-border bg-titlebar px-2 text-muted-foreground" :style="{ height: 'var(--size-statusbar)', fontSize: 'var(--text-xs)' }">
     <span class="inline-flex items-center gap-1.5">
       <span class="size-[7px] rounded-full bg-success" />
       就绪

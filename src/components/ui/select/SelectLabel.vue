@@ -13,7 +13,7 @@ const delegated = computed(() => {
 <template>
   <SelectLabel
     v-bind="delegated"
-    :class="cn('px-2 py-1 text-[11px] font-semibold text-muted-foreground', props.class)"
+    :class="cn('px-2 py-1 text-[length:var(--text-xs)] font-semibold text-muted-foreground', props.class)"
   >
     <slot />
   </SelectLabel>

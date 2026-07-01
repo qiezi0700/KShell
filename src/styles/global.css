@@ -42,9 +42,32 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
-/* 默认走深色(KShell 是深色为主) */
+/* 默认走深色(KShell 是深色为主)
+   --primary-hue 参数化主题色,JS 动态修改即可切换
+   --font-size-ui 界面基准字号,其他字号基于它计算 */
 :root {
   --radius: 0.375rem;
+  --primary-hue: 260;
+  --font-size-ui: 13px;
+
+  /* 语义化字号:基于 --font-size-ui 计算,跟随偏好设置缩放 */
+  --text-xs: calc(var(--font-size-ui) - 3px);   /* 10px @13 */
+  --text-sm: calc(var(--font-size-ui) - 1px);   /* 12px @13 */
+  --text-base: var(--font-size-ui);             /* 13px @13 */
+  --text-md: calc(var(--font-size-ui) + 1px);   /* 14px @13 */
+  --text-lg: calc(var(--font-size-ui) + 3px);   /* 16px @13 */
+
+  /* 语义化尺寸:基于 --font-size-ui 计算,跟随偏好设置缩放 */
+  --size-titlebar: calc(var(--font-size-ui) + 19px);   /* 32px @13 */
+  --size-tabbar: calc(var(--font-size-ui) + 17px);     /* 30px @13 */
+  --size-statusbar: calc(var(--font-size-ui) + 9px);   /* 22px @13 */
+  --size-row-sm: calc(var(--font-size-ui) + 5px);      /* 18px @13,菜单按钮/列表行 */
+  --size-row-md: calc(var(--font-size-ui) + 11px);     /* 24px @13,侧边栏分组行 */
+  --size-input: calc(var(--font-size-ui) + 13px);      /* 26px @13,输入框 */
+  --size-control: calc(var(--font-size-ui) + 19px);    /* 32px @13,窗口控制按钮宽度 */
+  --size-icon-sm: calc(var(--font-size-ui) + 5px);     /* 18px @13,小图标 */
+  --size-icon-md: calc(var(--font-size-ui) + 11px);    /* 24px @13,列表图标 */
+  --size-row-list: calc(var(--font-size-ui) + 10px);   /* 23px @13,文件列表行高 */
 
   --background: oklch(0.19 0.005 260);
   --foreground: oklch(0.92 0.005 260);
@@ -54,7 +77,7 @@
   --popover: oklch(0.24 0.005 260);
   --popover-foreground: oklch(0.92 0.005 260);
 
-  --primary: oklch(0.62 0.19 260);
+  --primary: oklch(0.62 0.19 var(--primary-hue));
   --primary-foreground: oklch(0.98 0 0);
 
   --secondary: oklch(0.28 0.005 260);
@@ -71,7 +94,7 @@
 
   --border: oklch(0.30 0.005 260);
   --input: oklch(0.26 0.005 260);
-  --ring: oklch(0.62 0.19 260);
+  --ring: oklch(0.62 0.19 var(--primary-hue));
 
   /* KShell 自定义 */
   --panel: oklch(0.22 0.005 260);
@@ -84,6 +107,45 @@
   color-scheme: dark;
 }
 
+/* 亮色主题:仅覆盖需要变化的变量,--primary-hue 沿用 :root */
+.light {
+  --background: oklch(0.98 0.003 260);
+  --foreground: oklch(0.20 0.005 260);
+
+  --card: oklch(0.96 0.003 260);
+  --card-foreground: oklch(0.20 0.005 260);
+  --popover: oklch(0.98 0.003 260);
+  --popover-foreground: oklch(0.20 0.005 260);
+
+  --primary: oklch(0.55 0.19 var(--primary-hue));
+  --primary-foreground: oklch(0.98 0 0);
+
+  --secondary: oklch(0.92 0.005 260);
+  --secondary-foreground: oklch(0.20 0.005 260);
+
+  --muted: oklch(0.93 0.005 260);
+  --muted-foreground: oklch(0.50 0.01 260);
+
+  --accent: oklch(0.92 0.005 260);
+  --accent-foreground: oklch(0.20 0.005 260);
+
+  --destructive: oklch(0.58 0.22 25);
+  --destructive-foreground: oklch(0.98 0 0);
+
+  --border: oklch(0.88 0.005 260);
+  --input: oklch(0.90 0.005 260);
+  --ring: oklch(0.55 0.19 var(--primary-hue));
+
+  --panel: oklch(0.96 0.003 260);
+  --panel-2: oklch(0.93 0.003 260);
+  --titlebar: oklch(0.97 0.003 260);
+  --sidebar: oklch(0.97 0.003 260);
+  --success: oklch(0.55 0.15 165);
+  --warning: oklch(0.68 0.14 80);
+
+  color-scheme: light;
+}
+
 @layer base {
   * {
     @apply border-border;
@@ -92,8 +154,9 @@
     @apply h-full w-full overflow-hidden;
   }
   body {
-    @apply bg-background text-foreground text-[13px] antialiased select-none;
+    @apply bg-background text-foreground antialiased select-none;
     font-family: var(--font-sans);
+    font-size: var(--font-size-ui, 13px);
   }
   button { cursor: pointer; }
 

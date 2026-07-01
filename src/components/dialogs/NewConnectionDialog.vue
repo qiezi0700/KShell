@@ -252,7 +252,7 @@ async function submit() {
             <button
               type="button"
               :class="cn(
-                'flex flex-1 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[12px] transition-colors',
+                'flex flex-1 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[length:var(--text-sm)] transition-colors',
                 form.authKind === 'password'
                   ? 'border-primary bg-primary/10 text-foreground'
                   : 'border-border text-muted-foreground hover:text-foreground',
@@ -264,7 +264,7 @@ async function submit() {
             <button
               type="button"
               :class="cn(
-                'flex flex-1 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[12px] transition-colors',
+                'flex flex-1 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[length:var(--text-sm)] transition-colors',
                 form.authKind === 'private_key'
                   ? 'border-primary bg-primary/10 text-foreground'
                   : 'border-border text-muted-foreground hover:text-foreground',
@@ -357,7 +357,7 @@ async function submit() {
 
         <div
           v-if="err"
-          class="rounded-sm border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-[11px] text-destructive"
+          class="rounded-sm border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-[length:var(--text-xs)] text-destructive"
         >
           {{ err }}
         </div>
