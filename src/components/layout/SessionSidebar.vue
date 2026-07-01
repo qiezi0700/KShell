@@ -8,12 +8,8 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { openNewConnection } from '@/stores/dialogs'
-import { openVaultUnlock } from '@/components/dialogs/VaultUnlockDialog.vue'
-import { vaultPassword } from '@/stores/vault'
 import {
   groupTree,
-  hasFullCredentials,
-  loadSessionCredentials,
   quickConnect,
   refreshAll,
   removeGroup,
@@ -67,49 +63,28 @@ function toggle(gid: string) {
   expanded.value[k] = !expanded.value[k]
 }
 
-/** 双击会话:凭据全时直连,否则打开预填对话框补输 */
+/** 双击会话:用已保存凭据直连 */
 async function onSessionDblclick(s: StoredSession) {
   selectedId.value = s.id
-  if (!vaultPassword.value) {
-    const ok = await openVaultUnlock()
-    if (!ok) return
+  try {
+    await quickConnect(s)
+  } catch (e) {
+    const msg = typeof e === 'string' ? e : (e as any)?.message ?? String(e)
+    // 公钥校验失败已由 host-key 弹框处理
+    if (msg.includes('主机公钥校验未通过')) return
+    await openConfirm({
+      title: '连接失败',
+      message: msg,
+      confirmText: '知道了',
+      cancelText: '关闭',
+    })
   }
-  if (await hasFullCredentials(s)) {
-    try {
-      const ok = await quickConnect(s)
-      if (ok) return
-    } catch (e) {
-      await openConfirm({
-        title: '连接失败',
-        message: String(e),
-        confirmText: '知道了',
-        cancelText: '关闭',
-      })
-      return
-    }
-  }
-  // 凭据不全 → 把 Stronghold 里有的先填上,再打开对话框补输
-  const creds = await loadSessionCredentials(s)
-  openNewConnection({
-    ...s,
-    password: creds.password ?? '',
-    passphrase: creds.passphrase ?? '',
-  } as StoredSession)
 }
 
-/** 单击"编辑"按钮:强制打开对话框走编辑模式 */
+/** 单击"编辑"按钮:打开对话框走编辑模式 */
 async function editSession(s: StoredSession) {
   selectedId.value = s.id
-  if (!vaultPassword.value) {
-    const ok = await openVaultUnlock()
-    if (!ok) return
-  }
-  const creds = await loadSessionCredentials(s)
-  openNewConnection({
-    ...s,
-    password: creds.password ?? '',
-    passphrase: creds.passphrase ?? '',
-  } as StoredSession)
+  openNewConnection(s)
 }
 
 async function newGroup() {

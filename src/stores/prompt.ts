@@ -1,6 +1,6 @@
 import { ref, shallowRef } from 'vue'
 
-// 命令式 confirm/prompt。挂到 App.vue 的 ConfirmDialog/PromptDialog 观察这里的 state
+// 命令式 confirm/prompt/passwordPrompt。挂到 App.vue 的对应 Dialog 观察这里的 state
 // 并把用户交互结果 resolve 回来。避免使用浏览器原生 window.confirm/prompt。
 
 export interface ConfirmOptions {
@@ -21,17 +21,31 @@ export interface PromptOptions {
   cancelText?: string
 }
 
+export interface PasswordPromptOptions {
+  title: string
+  message?: string
+  /** 占位提示 */
+  placeholder?: string
+  confirmText?: string
+  cancelText?: string
+}
+
 interface ConfirmState extends ConfirmOptions {
   resolve: (v: boolean) => void
 }
 interface PromptState extends PromptOptions {
   resolve: (v: string | null) => void
 }
+interface PasswordPromptState extends PasswordPromptOptions {
+  resolve: (v: string | null) => void
+}
 
 export const confirmState = shallowRef<ConfirmState | null>(null)
 export const promptState = shallowRef<PromptState | null>(null)
+export const passwordPromptState = shallowRef<PasswordPromptState | null>(null)
 export const confirmOpen = ref(false)
 export const promptOpen = ref(false)
+export const passwordPromptOpen = ref(false)
 
 /** 弹一个确认框,返回用户是否点确认。取消或关闭均返回 false。 */
 export function openConfirm(opts: ConfirmOptions): Promise<boolean> {
@@ -49,6 +63,14 @@ export function openPrompt(opts: PromptOptions): Promise<string | null> {
   })
 }
 
+/** 弹一个密码输入框(掩码显示)。取消返回 null,确认返回字符串。 */
+export function openPasswordPrompt(opts: PasswordPromptOptions): Promise<string | null> {
+  return new Promise((resolve) => {
+    passwordPromptState.value = { ...opts, resolve }
+    passwordPromptOpen.value = true
+  })
+}
+
 export function resolveConfirm(value: boolean) {
   const s = confirmState.value
   confirmOpen.value = false
@@ -60,5 +82,12 @@ export function resolvePrompt(value: string | null) {
   const s = promptState.value
   promptOpen.value = false
   promptState.value = null
+  s?.resolve(value)
+}
+
+export function resolvePasswordPrompt(value: string | null) {
+  const s = passwordPromptState.value
+  passwordPromptOpen.value = false
+  passwordPromptState.value = null
   s?.resolve(value)
 }

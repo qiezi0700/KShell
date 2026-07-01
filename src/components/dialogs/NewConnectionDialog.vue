@@ -21,8 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { openVaultUnlock } from '@/components/dialogs/VaultUnlockDialog.vue'
-import { vaultPassword } from '@/stores/vault'
+import { cn } from '@/lib/utils'
 import { newConnectionPrefill, showNewConnection } from '@/stores/dialogs'
 import { addTab, nextTabId } from '@/stores/tabs'
 import { sshConnect, type SshConfig } from '@/api/ssh'
@@ -33,7 +32,9 @@ import {
   groupsRef,
   refreshAll,
   saveSession,
+  type SaveSessionInput,
 } from '@/stores/sessions'
+import type { StoredSession } from '@/api/sessions'
 
 // 特殊值:表示"不保存,仅本次连接"
 const NO_SAVE = '__no_save__'
@@ -69,7 +70,7 @@ onMounted(() => {
   refreshAll().catch(() => {})
 })
 
-watch(showNewConnection, (open) => {
+watch(showNewConnection, async (open) => {
   if (!open) return
   showPassword.value = false
   showPassphrase.value = false
@@ -82,9 +83,10 @@ watch(showNewConnection, (open) => {
     form.port = p.port
     form.user = p.username
     form.authKind = p.authKind
-    form.password = p.password ?? ''
     form.keyPath = p.keyPath ?? ''
-    form.passphrase = p.passphrase ?? ''
+    // 凭据不持久化,每次都需重新输入
+    form.password = ''
+    form.passphrase = ''
     // 如果预填会话属于"默认分组",统一用 DEFAULT_GROUP 这个占位符
     const inDefault =
       p.groupId && groupsRef.value.find((g) => g.id === p.groupId)?.name === DEFAULT_GROUP_NAME
@@ -121,8 +123,8 @@ async function pickKeyFile() {
     if (typeof selected === 'string' && selected) {
       form.keyPath = selected
     }
-  } catch (e) {
-    console.warn('[kshell] 打开文件对话框失败:', e)
+  } catch {
+    // 文件选择取消或失败,静默忽略
   }
 }
 
@@ -131,15 +133,6 @@ async function submit() {
   if (!form.host || !form.user) {
     err.value = '主机与用户名不能为空'
     return
-  }
-
-  // 如果要保存,先确保 Stronghold 已解锁
-  if (form.groupId !== NO_SAVE && !vaultPassword.value) {
-    const ok = await openVaultUnlock()
-    if (!ok) {
-      err.value = '请先解锁保险箱以保存凭据'
-      return
-    }
   }
 
   busy.value = true
@@ -176,7 +169,7 @@ async function submit() {
       )
 
       try {
-        const saved = await saveSession({
+        const input: SaveSessionInput = {
           id: duplicate?.id || form.savedSessionId || undefined,
           groupId: targetGroup,
           name: form.name || `${form.user}@${form.host}`,
@@ -187,11 +180,12 @@ async function submit() {
           keyPath: form.authKind === 'private_key' ? form.keyPath : null,
           password: form.authKind === 'password' ? form.password || null : null,
           passphrase: form.authKind === 'private_key' ? form.passphrase || null : null,
-        })
+        }
+        const saved = await saveSession(input)
         // 新建连接后,把这个会话 id 绑定到 tab,侧栏才能显示"已打开"状态
         if (!form.savedSessionId) form.savedSessionId = saved.id
-      } catch (e) {
-        console.warn('[kshell] 会话入库失败:', e)
+      } catch {
+        // 入库失败不阻断终端 tab,仅不保存会话
       }
     }
 
@@ -208,7 +202,10 @@ async function submit() {
     showNewConnection.value = false
     reset()
   } catch (e: any) {
-    err.value = typeof e === 'string' ? e : e?.message ?? String(e)
+    const msg = typeof e === 'string' ? e : e?.message ?? String(e)
+    // 公钥校验失败已由 host-key 弹框自解释,不再重复提示
+    if (msg.includes('主机公钥校验未通过')) return
+    err.value = msg
   } finally {
     busy.value = false
   }

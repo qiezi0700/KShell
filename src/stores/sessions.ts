@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 import {
   deleteGroup as apiDeleteGroup,
   deleteSession as apiDeleteSession,
+  getSessionCredentials,
   listGroups,
   listSessions,
   upsertGroup,
@@ -10,10 +11,8 @@ import {
   type Group,
   type StoredSession,
 } from '@/api/sessions'
-import { vaultDelete, vaultGet, vaultKey, vaultSet } from '@/api/vault'
 import { sshConnect, type SshConfig } from '@/api/ssh'
 import { addTab, nextTabId } from '@/stores/tabs'
-import { vaultPassword } from '@/stores/vault'
 
 /** 默认分组名。首次保存时若不存在会自动创建。 */
 export const DEFAULT_GROUP_NAME = '默认分组'
@@ -93,51 +92,35 @@ export interface SaveSessionInput {
   username: string
   authKind: AuthKind
   keyPath?: string | null
+  // 凭据不持久化,仅用于本次连接;保存时忽略这两个字段
   password?: string | null
   passphrase?: string | null
 }
 
+/** 保存会话到 SQLite。密码/passphrase 明文传入,后端加密入库。 */
 export async function saveSession(input: SaveSessionInput): Promise<StoredSession> {
-  // 密码/passphrase 不存 SQLite,只把元数据入库
-  const saved = await upsertSession({
-    id: input.id,
-    groupId: input.groupId,
-    name: input.name,
-    host: input.host,
-    port: input.port,
-    username: input.username,
-    authKind: input.authKind,
-    keyPath: input.keyPath,
-  })
+  const saved = await upsertSession(
+    {
+      id: input.id,
+      groupId: input.groupId,
+      name: input.name,
+      host: input.host,
+      port: input.port,
+      username: input.username,
+      authKind: input.authKind,
+      keyPath: input.keyPath,
+    },
+    input.password ?? '',
+    input.passphrase ?? '',
+  )
   const idx = sessions.value.findIndex((s) => s.id === saved.id)
   if (idx >= 0) sessions.value.splice(idx, 1, saved)
   else sessions.value = [...sessions.value, saved]
-
-  // 若用户提供了敏感凭据,写 Stronghold
-  const pw = vaultPassword.value
-  if (pw) {
-    if (input.authKind === 'password' && input.password) {
-      await vaultSet({ password: pw, key: vaultKey(saved.id, 'password'), value: input.password })
-    }
-    if (input.authKind === 'private_key' && input.passphrase) {
-      await vaultSet({
-        password: pw,
-        key: vaultKey(saved.id, 'passphrase'),
-        value: input.passphrase,
-      })
-    }
-  }
   return saved
 }
 
 export async function removeSession(id: string) {
   await apiDeleteSession(id)
-  // 同步删除 Stronghold 里的凭据
-  const pw = vaultPassword.value
-  if (pw) {
-    await vaultDelete({ password: pw, key: vaultKey(id, 'password') }).catch(() => {})
-    await vaultDelete({ password: pw, key: vaultKey(id, 'passphrase') }).catch(() => {})
-  }
   sessions.value = sessions.value.filter((s) => s.id !== id)
 }
 
@@ -156,39 +139,12 @@ export async function removeGroup(id: string) {
   sessions.value = sessions.value.map((s) => (s.groupId === id ? { ...s, groupId: null } : s))
 }
 
-/** 从 Stronghold 读取会话完整凭据 */
-export async function loadSessionCredentials(
-  s: StoredSession,
-): Promise<{ password: string | null; passphrase: string | null }> {
-  const pw = vaultPassword.value
-  if (!pw) return { password: null, passphrase: null }
-  if (s.authKind === 'password') {
-    const p = await vaultGet({ password: pw, key: vaultKey(s.id, 'password') }).catch(() => null)
-    return { password: p ?? null, passphrase: null }
-  }
-  const p = await vaultGet({ password: pw, key: vaultKey(s.id, 'passphrase') }).catch(() => null)
-  return { password: null, passphrase: p ?? null }
-}
-
 /**
- * 判断已保存会话是否具备直接连接所需的凭据:
- * - 密码认证:Stronghold 里有 password
- * - 私钥认证:必须有 keyPath(passphrase 可选)
- */
-export async function hasFullCredentials(s: StoredSession): Promise<boolean> {
-  if (s.authKind === 'password') {
-    const creds = await loadSessionCredentials(s)
-    return Boolean(creds.password)
-  }
-  return Boolean(s.keyPath)
-}
-
-/**
- * 使用已保存凭据直接连接并新建 tab。凭据不全时返回 false,调用方应改走对话框。
+ * 双击已保存会话:从后端读取解密凭据,直接连接并新建 tab。
+ * 凭据缺失(密码认证但无密码)返回 false,调用方应改走对话框。
  */
 export async function quickConnect(s: StoredSession): Promise<boolean> {
-  if (!(await hasFullCredentials(s))) return false
-  const creds = await loadSessionCredentials(s)
+  const creds = await getSessionCredentials(s.id)
   const cfg: SshConfig =
     s.authKind === 'password'
       ? {

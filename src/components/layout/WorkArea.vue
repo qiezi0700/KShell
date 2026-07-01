@@ -33,7 +33,6 @@ whenever(keys['Ctrl+W'], () => {
 // Ctrl+K 命令面板:先放占位,避免 keydown 透传到 xterm
 whenever(keys['Ctrl+K'], () => {
   // TODO: 命令面板
-  console.log('[kshell] command palette')
 })
 
 // Tab 切换:Ctrl+PgUp/PgDown

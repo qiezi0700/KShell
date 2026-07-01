@@ -2,15 +2,15 @@
 
 自研的跨平台 Shell 桌面客户端,产品原型参考 FinalShell,UI 自主设计。
 
-> 状态:M1 SSH 终端 MVP 已代码完成,等待真机联调。
+> 状态:M1.5 + M2 已代码完成,等待真机联调。
 
 ## 功能规划
 
 | 里程碑 | 内容 | 状态 |
 |--------|------|------|
 | M1 | SSH 终端(密码/私钥认证)+ 多标签 + PTY resize | ✅ 代码完成 |
-| M1.5 | known_hosts 指纹校验 + 首次连接确认 | ⏳ |
-| M2 | 会话持久化(SQLite)+ 凭据加密(Stronghold) | ⏳ |
+| M1.5 | known_hosts 指纹校验 + 首次连接确认 + mismatch 拒绝 | ✅ 代码完成 |
+| M2 | 会话持久化(SQLite)+ 凭据加密(Stronghold) | ✅ 代码完成 |
 | M3 | SFTP 双栏文件管理 | ⏳ |
 | M4 | 服务器监控面板(CPU/内存/网络,ECharts) | ⏳ |
 | M5 | Docker 面板(容器/镜像/网络) | ⏳ |
@@ -29,7 +29,9 @@
 - Tauri 2(Rust)
 - russh 0.52(纯 Rust SSH 客户端)
 - tokio + DashMap(会话/通道状态)
-- tauri-plugin-shell
+- rusqlite 0.32(会话/分组持久化,bundled)
+- tauri-plugin-stronghold(凭据加密,IOTA Stronghold + argon2)
+- tauri-plugin-dialog / tauri-plugin-shell
 
 **目标平台**:Windows / macOS / Linux
 
@@ -54,11 +56,15 @@ KShell/
 │   ├── src/
 │   │   ├── lib.rs                # Tauri Builder 入口
 │   │   ├── commands.rs           # #[tauri::command] 定义
-│   │   ├── state.rs              # AppState(sessions / channels)
-│   │   └── ssh/
-│   │       ├── mod.rs
-│   │       ├── client.rs         # russh 连接 + 认证
-│   │       └── channel.rs        # PTY / shell 通道
+│   │   ├── state.rs              # AppState(sessions / channels / store / known_hosts)
+│   │   ├── ssh/
+│   │   │   ├── mod.rs
+│   │   │   ├── client.rs         # russh 连接 + 认证 + known_hosts 校验
+│   │   │   ├── channel.rs        # PTY / shell 通道
+│   │   │   └── known_hosts.rs    # 主机公钥信任库(JSON)
+│   │   └── store/
+│   │       ├── mod.rs            # SQLite 门面(groups/sessions CRUD + 迁移)
+│   │       └── model.rs          # 数据结构(Group/Session/AuthKind)
 │   ├── tauri.conf.json
 │   └── Cargo.toml
 ├── pnpm-workspace.yaml           # pnpm 11 allowBuilds
@@ -114,11 +120,11 @@ pnpm tauri:build
 - 通道池 `DashMap<ChannelId, ChannelHandle>`,后台 tokio 任务通过 mpsc unbounded 通道驱动
 - PTY 数据流由后端 `emit("ssh://{ch}/data")` 推送至前端,`ssh_write` 反向传入
 
-## 已知限制(M1)
+## 已知限制(M1.5 / M2)
 
-- 服务器公钥校验暂时全部接受,尚未接入 known_hosts
-- 密码/私钥密码只驻留内存,关闭对话框即丢失
 - 未实现 SSH agent、keyboard-interactive、代理跳板
+- 主密码(Stronghold)首次设置无二次确认,输错将导致凭据无法解密
+- known_hosts 为应用自管 JSON,不与系统 ~/.ssh/known_hosts 互通
 
 ## License
 

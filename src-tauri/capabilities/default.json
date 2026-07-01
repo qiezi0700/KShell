@@ -14,7 +14,6 @@
     "dialog:allow-save",
     "dialog:allow-message",
     "dialog:allow-ask",
-    "dialog:allow-confirm",
-    "stronghold:default"
+    "dialog:allow-confirm"
   ]
 }

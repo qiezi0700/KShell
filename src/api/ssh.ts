@@ -58,3 +58,50 @@ export async function onChannelExit(
     handler(e.payload)
   })
 }
+
+// ============================================================
+// 主机公钥校验(M1.5)
+// ============================================================
+
+export interface HostKeyConfirmPayload {
+  confirmId: string
+  host: string
+  port: number
+  fingerprint: string
+  keyType: string
+}
+
+export interface HostKeyMismatchPayload {
+  host: string
+  port: number
+  expectedFingerprint: string
+  actualFingerprint: string
+}
+
+/** 用户确认/拒绝信任首次连接的主机公钥 */
+export async function sshConfirmHost(confirmId: string, accept: boolean): Promise<void> {
+  await invoke('ssh_confirm_host', { confirmId, accept })
+}
+
+/** 移除某主机的已信任公钥记录(mismatch 后用户确认换钥时用) */
+export async function sshRemoveKnownHost(host: string, port: number): Promise<void> {
+  await invoke('ssh_remove_known_host', { host, port })
+}
+
+/** 监听首次连接的公钥确认请求 */
+export async function onHostKeyConfirm(
+  handler: (payload: HostKeyConfirmPayload) => void,
+): Promise<UnlistenFn> {
+  return await listen<HostKeyConfirmPayload>('ssh://host-key/confirm', e => {
+    handler(e.payload)
+  })
+}
+
+/** 监听公钥不匹配警告 */
+export async function onHostKeyMismatch(
+  handler: (payload: HostKeyMismatchPayload) => void,
+): Promise<UnlistenFn> {
+  return await listen<HostKeyMismatchPayload>('ssh://host-key/mismatch', e => {
+    handler(e.payload)
+  })
+}

@@ -26,12 +26,6 @@ export interface StoredSession {
   updatedAt: string
 }
 
-// 内存中使用的会话 + 凭据(从 Stronghold 读出后填充,不落库)
-export interface SessionWithCredentials extends StoredSession {
-  password: string | null
-  passphrase: string | null
-}
-
 // ---- 分组 ----
 
 export function listGroups(): Promise<Group[]> {
@@ -65,9 +59,12 @@ export function listSessions(): Promise<StoredSession[]> {
 
 /**
  * upsert 会话。id 为空串代表新建。
+ * password / passphrase 为明文,后端加密后入库;空串表示不更新。
  */
 export function upsertSession(
   session: Partial<StoredSession> & { name: string; host: string; username: string; authKind: AuthKind },
+  password = '',
+  passphrase = '',
 ): Promise<StoredSession> {
   const payload: StoredSession = {
     id: session.id ?? '',
@@ -82,9 +79,18 @@ export function upsertSession(
     createdAt: session.createdAt ?? '',
     updatedAt: session.updatedAt ?? '',
   }
-  return invoke('session_upsert', { session: payload })
+  return invoke('session_upsert', {
+    input: { ...payload, password, passphrase },
+  })
 }
 
 export function deleteSession(id: string): Promise<void> {
   return invoke('session_delete', { id })
+}
+
+/** 读取某会话的解密后凭据(双击直连时用) */
+export function getSessionCredentials(
+  id: string,
+): Promise<{ password: string | null; passphrase: string | null }> {
+  return invoke('session_get_credentials', { id })
 }

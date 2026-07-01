@@ -3,7 +3,7 @@
 //! 单连接 + std::sync::Mutex 封装。桌面端并发压力很小,SQLite 单文件足够。
 //! 使用 rusqlite bundled 特性,避免用户机器缺 libsqlite3。
 //!
-//! M2.2 起,password / passphrase 不再存 SQLite,改走 Stronghold vault。
+//! password / passphrase 用机器绑定 AES-256-GCM 加密后存表,key 文件在 app_data_dir。
 
 pub mod model;
 
@@ -13,7 +13,8 @@ use std::sync::Mutex;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
-pub use model::{AuthKind, Group, Session};
+use crate::crypto::CryptoKey;
+pub use model::{Group, Session};
 
 /// 存储门面,持有 SQLite 连接。
 pub struct Store {
@@ -32,7 +33,9 @@ impl Store {
         // 开 WAL,桌面端多次读写体验更平滑
         conn.pragma_update(None, "journal_mode", "WAL").ok();
         conn.pragma_update(None, "foreign_keys", "ON").ok();
-        let store = Self { conn: Mutex::new(conn) };
+        let store = Self {
+            conn: Mutex::new(conn),
+        };
         store.migrate()?;
         Ok(store)
     }
@@ -73,44 +76,25 @@ impl Store {
         )
         .context("执行数据库迁移失败")?;
 
-        // M2.2 迁移:删除旧表中的 password / passphrase 列。
-        // SQLite 不支持 DROP COLUMN 标准语法,重建表。
-        let cols: Vec<String> = conn
-            .pragma_query_map(None, "table_info(sessions)", |row| row.get::<_, String>(1))?
+        // v3:加 password_encrypted / passphrase_encrypted 列(机器绑定加密存储)
+        let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
+        let cols: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
             .collect::<Result<_, _>>()?;
-        if cols.contains(&"password".to_string()) || cols.contains(&"passphrase".to_string()) {
-            conn.execute_batch(
-                r#"
-                CREATE TABLE sessions_new (
-                    id           TEXT PRIMARY KEY,
-                    group_id     TEXT REFERENCES groups(id) ON DELETE SET NULL,
-                    name         TEXT NOT NULL,
-                    host         TEXT NOT NULL,
-                    port         INTEGER NOT NULL DEFAULT 22,
-                    username     TEXT NOT NULL,
-                    auth_kind    TEXT NOT NULL,
-                    key_path     TEXT,
-                    sort         INTEGER NOT NULL DEFAULT 0,
-                    created_at   TEXT NOT NULL,
-                    updated_at   TEXT NOT NULL
-                );
-                INSERT INTO sessions_new(id, group_id, name, host, port, username, auth_kind,
-                                         key_path, sort, created_at, updated_at)
-                SELECT id, group_id, name, host, port, username, auth_kind,
-                       key_path, sort, created_at, updated_at
-                FROM sessions;
-                DROP TABLE sessions;
-                ALTER TABLE sessions_new RENAME TO sessions;
-                CREATE INDEX idx_sessions_group ON sessions(group_id);
-                "#,
-            )
-            .context("删除旧凭据列失败")?;
+        drop(stmt);
+        if !cols.contains(&"password_encrypted".to_string()) {
+            conn.execute_batch("ALTER TABLE sessions ADD COLUMN password_encrypted TEXT")
+                .context("添加 password_encrypted 列失败")?;
+        }
+        if !cols.contains(&"passphrase_encrypted".to_string()) {
+            conn.execute_batch("ALTER TABLE sessions ADD COLUMN passphrase_encrypted TEXT")
+                .context("添加 passphrase_encrypted 列失败")?;
         }
 
-        // 记录当前 schema 版本(占位,未来加字段时按版本增量迁移)
+        // 记录当前 schema 版本
         conn.execute(
             "INSERT OR IGNORE INTO schema_version(version) VALUES(?1)",
-            params![2i64],
+            params![3i64],
         )
         .ok();
         Ok(())
@@ -143,7 +127,14 @@ impl Store {
             conn.execute(
                 "INSERT INTO groups(id, name, parent_id, sort, created_at, updated_at)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-                params![g.id, g.name, g.parent_id, g.sort, g.created_at, g.updated_at],
+                params![
+                    g.id,
+                    g.name,
+                    g.parent_id,
+                    g.sort,
+                    g.created_at,
+                    g.updated_at
+                ],
             )?;
         } else {
             g.updated_at = now;
@@ -181,7 +172,14 @@ impl Store {
         Ok(out)
     }
 
-    pub fn upsert_session(&self, mut s: Session) -> Result<Session> {
+    /// upsert:id 为空则新建,否则按 id 更新。
+    /// password / passphrase 由调用方通过 crypto 加密后传入密文。
+    pub fn upsert_session(
+        &self,
+        mut s: Session,
+        password_encrypted: Option<String>,
+        passphrase_encrypted: Option<String>,
+    ) -> Result<Session> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let now = model::now_iso();
         if s.id.is_empty() {
@@ -190,22 +188,45 @@ impl Store {
             s.updated_at = now.clone();
             conn.execute(
                 "INSERT INTO sessions(id, group_id, name, host, port, username, auth_kind,
-                                      key_path, sort, created_at, updated_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                                      key_path, sort, created_at, updated_at,
+                                      password_encrypted, passphrase_encrypted)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
-                    s.id, s.group_id, s.name, s.host, s.port, s.username,
-                    s.auth_kind.as_str(), s.key_path, s.sort, s.created_at, s.updated_at,
+                    s.id,
+                    s.group_id,
+                    s.name,
+                    s.host,
+                    s.port,
+                    s.username,
+                    s.auth_kind.as_str(),
+                    s.key_path,
+                    s.sort,
+                    s.created_at,
+                    s.updated_at,
+                    password_encrypted,
+                    passphrase_encrypted,
                 ],
             )?;
         } else {
             s.updated_at = now;
             let affected = conn.execute(
                 "UPDATE sessions SET group_id=?2, name=?3, host=?4, port=?5, username=?6,
-                                     auth_kind=?7, key_path=?8, sort=?9, updated_at=?10
+                                     auth_kind=?7, key_path=?8, sort=?9, updated_at=?10,
+                                     password_encrypted=?11, passphrase_encrypted=?12
                  WHERE id=?1",
                 params![
-                    s.id, s.group_id, s.name, s.host, s.port, s.username,
-                    s.auth_kind.as_str(), s.key_path, s.sort, s.updated_at,
+                    s.id,
+                    s.group_id,
+                    s.name,
+                    s.host,
+                    s.port,
+                    s.username,
+                    s.auth_kind.as_str(),
+                    s.key_path,
+                    s.sort,
+                    s.updated_at,
+                    password_encrypted,
+                    passphrase_encrypted,
                 ],
             )?;
             if affected == 0 {
@@ -215,9 +236,36 @@ impl Store {
         Ok(s)
     }
 
+    /// 读取某会话的解密后凭据。无密文返回 None。
+    pub fn get_credentials(&self, id: &str, crypto: &CryptoKey) -> Result<Credentials> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let (pwd_enc, pass_enc): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT password_encrypted, passphrase_encrypted FROM sessions WHERE id=?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    anyhow::anyhow!("会话不存在: {id}")
+                }
+                other => anyhow::Error::from(other),
+            })?;
+        Ok(Credentials {
+            password: crypto.decrypt(pwd_enc.as_deref())?,
+            passphrase: crypto.decrypt(pass_enc.as_deref())?,
+        })
+    }
+
     pub fn delete_session(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         conn.execute("DELETE FROM sessions WHERE id=?1", params![id])?;
         Ok(())
     }
+}
+
+/// 解密后的会话凭据
+pub struct Credentials {
+    pub password: Option<String>,
+    pub passphrase: Option<String>,
 }

@@ -1,5 +1,6 @@
-pub mod client;
 pub mod channel;
+pub mod client;
+pub mod known_hosts;
 
-pub use client::{connect, AuthMethod, SshConfig, SshSession};
-pub use channel::{open_shell, ChannelCommand, ChannelHandle};
+pub use channel::{ChannelCommand, ChannelHandle};
+pub use client::{connect, SshConfig, SshSession};

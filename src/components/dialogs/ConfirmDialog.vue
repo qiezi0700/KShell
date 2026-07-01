@@ -21,7 +21,7 @@ function onOpenChange(open: boolean) {
     <DialogContent class="max-w-[400px]">
       <DialogHeader>
         <DialogTitle>{{ confirmState?.title }}</DialogTitle>
-        <DialogDescription v-if="confirmState?.message">
+        <DialogDescription v-if="confirmState?.message" class="whitespace-pre-line">
           {{ confirmState.message }}
         </DialogDescription>
       </DialogHeader>

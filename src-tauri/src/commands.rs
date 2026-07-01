@@ -1,47 +1,16 @@
 use std::sync::Arc;
 
+use serde::Serialize;
 use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::ssh::{self, ChannelCommand, SshConfig, SshSession};
+use crate::ssh::{self, ChannelCommand, SshConfig};
 use crate::state::{AppState, ChannelId, SessionId};
 use crate::store::{Group, Session};
 
 fn err<E: std::fmt::Display>(e: E) -> String {
     format!("{e:#}")
-}
-
-// ============================================================
-// 凭据保险箱(Stronghold)
-// ============================================================
-
-#[tauri::command]
-pub async fn vault_set(
-    app: AppHandle,
-    password: String,
-    key: String,
-    value: String,
-) -> Result<(), String> {
-    crate::vault::set(&app, &password, &key, value).await.map_err(err)
-}
-
-#[tauri::command]
-pub async fn vault_get(
-    app: AppHandle,
-    password: String,
-    key: String,
-) -> Result<Option<String>, String> {
-    crate::vault::get(&app, &password, &key).await.map_err(err)
-}
-
-#[tauri::command]
-pub async fn vault_delete(
-    app: AppHandle,
-    password: String,
-    key: String,
-) -> Result<(), String> {
-    crate::vault::delete(&app, &password, &key).await.map_err(err)
 }
 
 // ============================================================
@@ -68,9 +37,58 @@ pub fn sessions_list(state: State<'_, AppState>) -> Result<Vec<Session>, String>
     state.store()?.list_sessions().map_err(err)
 }
 
+/// upsert 会话时的前端入参。含明文凭据,后端加密后入库。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInput {
+    #[serde(flatten)]
+    pub session: Session,
+    /// 明文密码,空串视为不更新
+    #[serde(default)]
+    pub password: String,
+    /// 明文 passphrase,空串视为不更新
+    #[serde(default)]
+    pub passphrase: String,
+}
+
 #[tauri::command]
-pub fn session_upsert(state: State<'_, AppState>, session: Session) -> Result<Session, String> {
-    state.store()?.upsert_session(session).map_err(err)
+pub fn session_upsert(state: State<'_, AppState>, input: SessionInput) -> Result<Session, String> {
+    let pwd_enc = if input.password.is_empty() {
+        None
+    } else {
+        state.crypto.encrypt(&input.password).map_err(err)?
+    };
+    let pass_enc = if input.passphrase.is_empty() {
+        None
+    } else {
+        state.crypto.encrypt(&input.passphrase).map_err(err)?
+    };
+    state
+        .store()?
+        .upsert_session(input.session, pwd_enc, pass_enc)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub fn session_get_credentials(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<CredentialsOut, String> {
+    let creds = state
+        .store()?
+        .get_credentials(&id, &state.crypto)
+        .map_err(err)?;
+    Ok(CredentialsOut {
+        password: creds.password,
+        passphrase: creds.passphrase,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialsOut {
+    pub password: Option<String>,
+    pub passphrase: Option<String>,
 }
 
 #[tauri::command]
@@ -80,15 +98,45 @@ pub fn session_delete(state: State<'_, AppState>, id: String) -> Result<(), Stri
 
 #[tauri::command]
 pub async fn ssh_connect(
+    app: AppHandle,
     state: State<'_, AppState>,
     cfg: SshConfig,
 ) -> Result<SessionId, String> {
-    let session = ssh::connect(cfg).await.map_err(err)?;
+    let session = ssh::connect(app, cfg).await.map_err(err)?;
     let id: SessionId = Uuid::new_v4().to_string();
     state
         .sessions
         .insert(id.clone(), Arc::new(Mutex::new(session)));
     Ok(id)
+}
+
+// ============================================================
+// 主机公钥校验(M1.5)
+// ============================================================
+
+/// 前端收到 ssh://host-key/confirm 事件后,用户确认是否信任该主机。
+/// accept=true 则 check_server_key 继续握手并写入 known_hosts。
+#[tauri::command]
+pub async fn ssh_confirm_host(
+    state: State<'_, AppState>,
+    confirm_id: String,
+    accept: bool,
+) -> Result<(), String> {
+    if let Some((_, tx)) = state.pending_host_confirms.remove(&confirm_id) {
+        let _ = tx.send(accept);
+    }
+    Ok(())
+}
+
+/// 公钥不匹配时,用户确认服务器确实换钥后,移除旧记录以便重新走首次确认流程。
+#[tauri::command]
+pub async fn ssh_remove_known_host(
+    state: State<'_, AppState>,
+    host: String,
+    port: u16,
+) -> Result<(), String> {
+    let mut kh = state.known_hosts.write().await;
+    kh.remove(&host, port).map_err(err)
 }
 
 #[tauri::command]
@@ -183,7 +231,7 @@ pub async fn ssh_disconnect(
         }
     }
     if let Some((_, session)) = state.sessions.remove(&session_id) {
-        let mut guard = session.lock().await;
+        let guard = session.lock().await;
         let _ = guard
             .handle
             .disconnect(russh::Disconnect::ByApplication, "", "")

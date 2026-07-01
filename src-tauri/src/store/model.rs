@@ -81,17 +81,23 @@ pub struct Session {
     pub updated_at: String,
 }
 
-fn default_port() -> i64 { 22 }
+fn default_port() -> i64 {
+    22
+}
 
 impl Session {
     pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
         let auth_str: String = row.get(6)?;
-        let auth_kind = AuthKind::parse(&auth_str)
-            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+        let auth_kind = AuthKind::parse(&auth_str).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
                 6,
                 rusqlite::types::Type::Text,
-                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())),
-            ))?;
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    e.to_string(),
+                )),
+            )
+        })?;
         Ok(Self {
             id: row.get(0)?,
             group_id: row.get(1)?,
