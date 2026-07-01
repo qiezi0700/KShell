@@ -7,13 +7,20 @@ import {
   sftpDownload,
   sftpUploadDir,
   sftpDownloadDir,
+  sftpCopyDir,
   sftpCancelTransfer,
   type TransferProgress,
+  type TransferDone,
 } from '@/api/sftp'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 
-export type TransferDirection = 'upload' | 'download' | 'uploadDir' | 'downloadDir'
+export type TransferDirection = 'upload' | 'download' | 'uploadDir' | 'downloadDir' | 'copyRemote'
 export type TransferStatus = 'pending' | 'transferring' | 'done' | 'error' | 'cancelled'
+
+/** 可选的传输启动参数。onDone 用于"完成后自动删源"这类跟随动作,回调抛错不会影响其它监听 */
+export interface StartOptions {
+  onDone?: (d: TransferDone) => void
+}
 
 export interface TransferItem {
   id: string
@@ -29,6 +36,9 @@ export interface TransferItem {
   error: string | null
 }
 
+/** 每个任务的完成回调表,done 事件到达后触发一次并清理 */
+const doneCallbacks = new Map<string, (d: TransferDone) => void>()
+
 const items = ref<TransferItem[]>([])
 const unlisteners = new Map<string, UnlistenFn[]>()
 
@@ -42,14 +52,15 @@ function joinPath(dir: string, name: string): string {
   return `${dir}/${name}`
 }
 
-/** 添加一个传输任务并启动 */
+/** 添加一个传输任务并启动。返回 transfer id 供调用方追踪 */
 export async function startUpload(
   sftpId: string,
   localPath: string,
   remoteDir: string,
   fileName: string,
   size: number,
-): Promise<void> {
+  opts?: StartOptions,
+): Promise<string> {
   const id = uuidv4()
   const remotePath = joinPath(remoteDir, fileName)
   const item: TransferItem = {
@@ -66,7 +77,9 @@ export async function startUpload(
     error: null,
   }
   items.value = [item, ...items.value]
+  if (opts?.onDone) doneCallbacks.set(id, opts.onDone)
   await runTransfer(item)
+  return id
 }
 
 export async function startDownload(
@@ -75,7 +88,8 @@ export async function startDownload(
   localDir: string,
   fileName: string,
   size: number,
-): Promise<void> {
+  opts?: StartOptions,
+): Promise<string> {
   const id = uuidv4()
   const localPath = joinPath(localDir, fileName).replace(/\//g, '\\')
   const item: TransferItem = {
@@ -92,7 +106,9 @@ export async function startDownload(
     error: null,
   }
   items.value = [item, ...items.value]
+  if (opts?.onDone) doneCallbacks.set(id, opts.onDone)
   await runTransfer(item)
+  return id
 }
 
 /** 递归上传目录。total 初始未知,后端首个 progress 事件会带上聚合总字节 */
@@ -101,7 +117,8 @@ export async function startUploadDir(
   localDir: string,
   remoteParent: string,
   dirName: string,
-): Promise<void> {
+  opts?: StartOptions,
+): Promise<string> {
   const id = uuidv4()
   const remotePath = joinPath(remoteParent, dirName)
   const item: TransferItem = {
@@ -118,7 +135,9 @@ export async function startUploadDir(
     error: null,
   }
   items.value = [item, ...items.value]
+  if (opts?.onDone) doneCallbacks.set(id, opts.onDone)
   await runTransfer(item)
+  return id
 }
 
 /** 递归下载目录 */
@@ -127,7 +146,8 @@ export async function startDownloadDir(
   remoteDir: string,
   localParent: string,
   dirName: string,
-): Promise<void> {
+  opts?: StartOptions,
+): Promise<string> {
   const id = uuidv4()
   const localPath = joinPath(localParent, dirName).replace(/\//g, '\\')
   const item: TransferItem = {
@@ -144,7 +164,37 @@ export async function startDownloadDir(
     error: null,
   }
   items.value = [item, ...items.value]
+  if (opts?.onDone) doneCallbacks.set(id, opts.onDone)
   await runTransfer(item)
+  return id
+}
+
+/** 远端目录递归复制(同一 SFTP 会话内 src→dst)。走后端后台任务,进度/取消同上传下载 */
+export async function startCopyRemoteDir(
+  sftpId: string,
+  srcPath: string,
+  dstPath: string,
+  displayName: string,
+  opts?: StartOptions,
+): Promise<string> {
+  const id = uuidv4()
+  const item: TransferItem = {
+    id,
+    direction: 'copyRemote',
+    sftpId,
+    localPath: srcPath,
+    remotePath: dstPath,
+    name: displayName + '/',
+    total: 0,
+    transferred: 0,
+    speed: 0,
+    status: 'pending',
+    error: null,
+  }
+  items.value = [item, ...items.value]
+  if (opts?.onDone) doneCallbacks.set(id, opts.onDone)
+  await runTransfer(item)
+  return id
 }
 
 async function runTransfer(item: TransferItem) {
@@ -164,6 +214,11 @@ async function runTransfer(item: TransferItem) {
       error: d.error,
       speed: 0,
     })
+    const cb = doneCallbacks.get(item.id)
+    if (cb) {
+      doneCallbacks.delete(item.id)
+      try { cb(d) } catch { /* 回调抛错不能影响传输队列 */ }
+    }
     cleanup(item.id)
   })
   unlisteners.set(item.id, [onProgress, onDone])
@@ -182,10 +237,14 @@ async function runTransfer(item: TransferItem) {
       case 'downloadDir':
         await sftpDownloadDir(item.sftpId, item.remotePath, item.localPath, item.id)
         break
+      case 'copyRemote':
+        await sftpCopyDir(item.sftpId, item.localPath, item.remotePath, item.id)
+        break
     }
   } catch (e: any) {
     const msg = typeof e === 'string' ? e : e?.message ?? String(e)
     update({ status: 'error', error: msg })
+    doneCallbacks.delete(item.id)
     cleanup(item.id)
   }
 }

@@ -91,9 +91,14 @@ export function sftpCopyFile(sftpId: string, oldPath: string, newPath: string): 
   return invoke<void>('sftp_copy_file', { sftpId, oldPath, newPath })
 }
 
-/** 递归复制远端目录(SFTP 无服务端拷贝,后端逐文件搬,较慢;无进度) */
-export function sftpCopyDir(sftpId: string, srcPath: string, dstPath: string): Promise<void> {
-  return invoke<void>('sftp_copy_dir', { sftpId, srcPath, dstPath })
+/** 递归复制远端目录(SFTP 无服务端拷贝,后端后台逐文件搬,带进度/取消) */
+export function sftpCopyDir(
+  sftpId: string,
+  srcPath: string,
+  dstPath: string,
+  transferId: string,
+): Promise<void> {
+  return invoke<void>('sftp_copy_dir', { sftpId, srcPath, dstPath, transferId })
 }
 
 /** 获取远端家目录 */

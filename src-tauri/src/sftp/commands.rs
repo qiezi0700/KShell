@@ -299,33 +299,118 @@ async fn copy_remote_file(sftp: &SftpSession, src: &str, dst: &str) -> Result<()
     Ok(())
 }
 
-/// 递归复制远端目录。SFTP 无服务端拷贝,只能"读→写"逐文件搬,
-/// 大目录会比较慢。当前不接入传输面板/进度,前端应用 toast 提示"复制中"。
+/// 递归复制远端目录。SFTP 无服务端拷贝,只能"读→写"逐文件搬。
+/// 走后台 tokio 任务,汇入统一传输面板,支持取消 + 聚合字节进度。
 #[tauri::command]
 pub async fn sftp_copy_dir(
+    app: AppHandle,
     state: State<'_, AppState>,
     sftp_id: String,
     src_path: String,
     dst_path: String,
+    transfer_id: String,
 ) -> Result<(), String> {
     let sftp = get_sftp(&state, &sftp_id)?;
-    let (files, mut dirs) = walk_remote_dir(&sftp, &src_path).await.map_err(err)?;
-    sftp.create_dir(&dst_path)
+    let cancel = register_cancel(&state, &transfer_id);
+    let app_clone = app.clone();
+    let tid = transfer_id.clone();
+    tokio::spawn(async move {
+        let result = do_copy_remote_dir(&sftp, &src_path, &dst_path, &app_clone, &tid, &cancel).await;
+        finish_transfer(&app_clone, &tid, result);
+    });
+    Ok(())
+}
+
+async fn do_copy_remote_dir(
+    sftp: &SftpSession,
+    src_path: &str,
+    dst_path: &str,
+    app: &AppHandle,
+    transfer_id: &str,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    // 1. 预扫描源目录
+    let (files, mut dirs) = walk_remote_dir(sftp, src_path).await?;
+    let total: u64 = files.iter().map(|f| f.2).sum();
+
+    // 2. 建目标目录树
+    sftp.create_dir(dst_path)
         .await
-        .with_context(|| format!("创建远端目标目录失败: {dst_path}"))
-        .map_err(err)?;
-    // 浅目录先建,深目录后建
+        .with_context(|| format!("创建远端目标目录失败: {dst_path}"))?;
     dirs.sort_by(|a, b| a.matches('/').count().cmp(&b.matches('/').count()));
     for rel in &dirs {
         let full = format!("{}/{}", dst_path.trim_end_matches('/'), rel);
         let _ = sftp.create_dir(&full).await;
     }
+
+    // 3. 逐文件复制,progress 事件按聚合字节
+    let event = format!("sftp://transfer/{transfer_id}/progress");
+    let _ = app.emit(
+        &event,
+        TransferProgress {
+            transfer_id: transfer_id.to_string(),
+            transferred: 0,
+            total,
+            speed: 0.0,
+        },
+    );
+    let mut buf = vec![0u8; CHUNK_SIZE];
+    let mut transferred: u64 = 0;
+    let mut last_emit = std::time::Instant::now();
+    let mut last_bytes: u64 = 0;
+
     for (src_file, rel, _size) in files {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(anyhow::anyhow!(CANCEL_MSG));
+        }
         let dst_file = format!("{}/{}", dst_path.trim_end_matches('/'), rel);
-        copy_remote_file(&sftp, &src_file, &dst_file)
+        let mut s = sftp
+            .open(&src_file)
             .await
-            .map_err(err)?;
+            .with_context(|| format!("打开远端源文件失败: {src_file}"))?;
+        let mut d = sftp
+            .create(&dst_file)
+            .await
+            .with_context(|| format!("创建远端目标文件失败: {dst_file}"))?;
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(anyhow::anyhow!(CANCEL_MSG));
+            }
+            let n = s.read(&mut buf).await.context("读取远端源文件失败")?;
+            if n == 0 {
+                break;
+            }
+            d.write_all(&buf[..n]).await.context("写入远端目标文件失败")?;
+            transferred += n as u64;
+
+            let now = std::time::Instant::now();
+            if now.duration_since(last_emit).as_millis() >= 200 {
+                let elapsed = now.duration_since(last_emit).as_secs_f64().max(0.001);
+                let speed = ((transferred - last_bytes) as f64 / elapsed) / 1024.0;
+                let _ = app.emit(
+                    &event,
+                    TransferProgress {
+                        transfer_id: transfer_id.to_string(),
+                        transferred,
+                        total,
+                        speed,
+                    },
+                );
+                last_emit = now;
+                last_bytes = transferred;
+            }
+        }
+        d.flush().await.ok();
     }
+    let _ = app.emit(
+        &event,
+        TransferProgress {
+            transfer_id: transfer_id.to_string(),
+            transferred,
+            total,
+            speed: 0.0,
+        },
+    );
     Ok(())
 }
 

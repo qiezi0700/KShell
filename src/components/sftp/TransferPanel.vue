@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import {
   ArrowRight,
   ArrowLeft,
+  Copy,
   Loader2,
   CheckCircle2,
   AlertCircle,
@@ -78,6 +79,7 @@ function pct(t: { transferred: number; total: number }) {
             v-if="t.direction === 'upload' || t.direction === 'uploadDir'"
             class="size-3 shrink-0 text-primary"
           />
+          <Copy v-else-if="t.direction === 'copyRemote'" class="size-3 shrink-0 text-primary" />
           <ArrowLeft v-else class="size-3 shrink-0 text-success" />
           <span class="w-32 shrink-0 truncate" :title="t.name">{{ t.name }}</span>
           <div class="flex-1">

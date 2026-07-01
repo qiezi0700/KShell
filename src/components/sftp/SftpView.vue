@@ -37,12 +37,11 @@ import {
   localCopy,
   localStat,
   sftpCopyFile,
-  sftpCopyDir,
   type RemoteEntry,
 } from '@/api/sftp'
 import { openConfirm, openPrompt } from '@/stores/prompt'
 import { toast } from '@/stores/toast'
-import { startUpload, startDownload, startUploadDir, startDownloadDir } from '@/stores/transfers'
+import { startUpload, startDownload, startUploadDir, startDownloadDir, startCopyRemoteDir } from '@/stores/transfers'
 import { closeTab } from '@/stores/tabs'
 
 const props = defineProps<{
@@ -331,25 +330,27 @@ function onHUp() {
 // 传输
 // ============================================================
 
-/** 本地条目双击/右键 → 上传到远端当前目录。目录走递归上传。 */
-async function uploadFromLocal(e: RemoteEntry) {
+/** 本地条目双击/右键 → 上传到远端当前目录。目录走递归上传。opts.onDone 用于跟随动作 */
+async function uploadFromLocal(e: RemoteEntry, opts?: { onDone?: (success: boolean) => void }) {
   if (!sftpId.value) return
   const localPath = joinPath(localCwd.value, e.name)
+  const cb = opts?.onDone ? { onDone: (d: { success: boolean }) => opts.onDone!(d.success) } : undefined
   if (e.isDir) {
-    await startUploadDir(sftpId.value, localPath, remoteCwd.value, e.name)
+    await startUploadDir(sftpId.value, localPath, remoteCwd.value, e.name, cb)
   } else {
-    await startUpload(sftpId.value, localPath, remoteCwd.value, e.name, e.size)
+    await startUpload(sftpId.value, localPath, remoteCwd.value, e.name, e.size, cb)
   }
 }
 
-/** 远端条目双击/右键 → 下载到本地当前目录。目录走递归下载。 */
-async function downloadFromRemote(e: RemoteEntry) {
+/** 远端条目双击/右键 → 下载到本地当前目录。目录走递归下载 */
+async function downloadFromRemote(e: RemoteEntry, opts?: { onDone?: (success: boolean) => void }) {
   if (!sftpId.value) return
   const remotePath = joinPath(remoteCwd.value, e.name)
+  const cb = opts?.onDone ? { onDone: (d: { success: boolean }) => opts.onDone!(d.success) } : undefined
   if (e.isDir) {
-    await startDownloadDir(sftpId.value, remotePath, localCwd.value, e.name)
+    await startDownloadDir(sftpId.value, remotePath, localCwd.value, e.name, cb)
   } else {
-    await startDownload(sftpId.value, remotePath, localCwd.value, e.name, e.size)
+    await startDownload(sftpId.value, remotePath, localCwd.value, e.name, e.size, cb)
   }
 }
 
@@ -586,54 +587,79 @@ async function doPaste() {
           await localCopy(srcPath, dstPath)
           if (entry.isDir) await localRmdir(srcPath)
           else await localRm(srcPath)
+          toast.success(`已移动:${entry.name}`, '剪切完成')
         } else {
           if (!sftpId.value) return
           if (entry.isDir) {
-            toast.info('远端目录复制中…', '粘贴')
-            await sftpCopyDir(sftpId.value, srcPath, dstPath)
-            await sftpRmdir(sftpId.value, srcPath)
+            // 远端目录复制走后台任务,完成后由 onDone 删源;不阻塞 UI
+            await startCopyRemoteDir(sftpId.value, srcPath, dstPath, entry.name, {
+              onDone: async d => {
+                if (!d.success) return
+                try {
+                  await sftpRmdir(sftpId.value!, srcPath)
+                  await refreshRemote()
+                  toast.success(`已移动:${entry.name}`, '剪切完成')
+                } catch (e: any) {
+                  toast.error(String(e), '删除源目录失败')
+                }
+              },
+            })
+            toast.info(`已开始移动:${entry.name}`, '剪切')
           } else {
             await sftpCopyFile(sftpId.value, srcPath, dstPath)
             await sftpRm(sftpId.value, srcPath)
+            toast.success(`已移动:${entry.name}`, '剪切完成')
           }
         }
-        toast.success(`已移动:${entry.name}`, '剪切完成')
       } else {
         // 复制:同目录加"副本"后缀
         const newName = deriveCopyName(entry.name)
         const dstPath = joinPath(dir, newName)
         if (to === 'local') {
           await localCopy(srcPath, dstPath)
+          toast.success(`已粘贴为 ${newName}`, '粘贴完成')
         } else {
           if (!sftpId.value) return
           if (entry.isDir) {
-            toast.info('远端目录复制中…', '粘贴')
-            await sftpCopyDir(sftpId.value, srcPath, dstPath)
+            await startCopyRemoteDir(sftpId.value, srcPath, dstPath, newName, {
+              onDone: async d => {
+                if (d.success) await refreshRemote()
+              },
+            })
+            toast.info(`已开始复制到 ${newName}`, '粘贴')
           } else {
             await sftpCopyFile(sftpId.value, srcPath, dstPath)
+            toast.success(`已粘贴为 ${newName}`, '粘贴完成')
           }
         }
-        toast.success(`已粘贴为 ${newName}`, '粘贴完成')
       }
     } else {
-      // 跨栏:走传输管线
-      if (from === 'local' && to === 'remote') await uploadFromLocal(entry)
-      else if (from === 'remote' && to === 'local') await downloadFromRemote(entry)
-      if (mode === 'cut') {
-        // 剪切:传输完成前就删源不安全,这里保守做法是仅在文件路径下删源;
-        // 目录传输是后台任务,删源改为完成后由用户手动删除更稳妥。
-        // 当前简化:文件立即删源(与既有语义一致),目录跳过删源并提示。
-        if (entry.isDir) {
-          toast.info('目录跨栏剪切:传输完成后请手动删除源目录', '注意')
-        } else if (from === 'local') {
-          await localRm(srcPath)
-        } else if (sftpId.value) {
-          await sftpRm(sftpId.value, srcPath)
-        }
-      }
+      // 跨栏:走传输管线。剪切时用 onDone 在传输成功后删源,失败/取消不删
+      const cutCb = mode === 'cut'
+        ? {
+            onDone: async (success: boolean) => {
+              if (!success) return
+              try {
+                if (from === 'local') {
+                  if (entry.isDir) await localRmdir(srcPath)
+                  else await localRm(srcPath)
+                  await refreshLocal()
+                } else if (sftpId.value) {
+                  if (entry.isDir) await sftpRmdir(sftpId.value, srcPath)
+                  else await sftpRm(sftpId.value, srcPath)
+                  await refreshRemote()
+                }
+              } catch (e: any) {
+                toast.error(String(e), '删除源失败')
+              }
+            },
+          }
+        : undefined
+      if (from === 'local' && to === 'remote') await uploadFromLocal(entry, cutCb)
+      else if (from === 'remote' && to === 'local') await downloadFromRemote(entry, cutCb)
       toast.success(
-        `${mode === 'cut' ? '已移动' : '已开始传输'}:${entry.name}`,
-        mode === 'cut' ? '剪切完成' : '粘贴',
+        `${mode === 'cut' ? '已开始移动' : '已开始传输'}:${entry.name}`,
+        mode === 'cut' ? '剪切' : '粘贴',
       )
     }
     if (to === 'local') await refreshLocal()
