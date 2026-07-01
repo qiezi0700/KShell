@@ -13,6 +13,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import FilePane from './FilePane.vue'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
+import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
   sftpOpen,
   sftpClose,
@@ -33,6 +35,7 @@ import {
   localReadFile,
   localWriteFile,
   localCopy,
+  localStat,
   sftpCopyFile,
   type RemoteEntry,
 } from '@/api/sftp'
@@ -85,6 +88,9 @@ const remotePaneRef = ref<ComponentPublicInstance<{ closeMenu: () => void }> | n
 // 拖拽传输指示
 const dragOver = ref<'local' | 'remote' | null>(null)
 
+// Tauri v2 原生 drag-drop 事件的反注册函数
+let unlistenDragDrop: UnlistenFn | null = null
+
 onMounted(async () => {
   if (!sftpId.value) {
     try {
@@ -108,10 +114,29 @@ onMounted(async () => {
   }
   await Promise.all([refreshLocal(), refreshRemote()])
   window.addEventListener('keydown', onKeydown)
+
+  // 监听系统级文件拖入(拖 Windows 资源管理器里的文件到窗口)。
+  // WebView 的 DOM drop 事件在 Tauri v2 里拿不到真实磁盘路径,必须走这个 API。
+  // 只对本组件可见的双栏容器做命中测试,拖到其他标签页/侧边栏时忽略。
+  unlistenDragDrop = await getCurrentWebview().onDragDropEvent(event => {
+    const p = event.payload
+    if (p.type === 'enter' || p.type === 'over') {
+      dragOver.value = hitTestSide(p.position)
+    } else if (p.type === 'leave') {
+      dragOver.value = null
+    } else if (p.type === 'drop') {
+      const side = hitTestSide(p.position)
+      dragOver.value = null
+      if (side && p.paths.length > 0) {
+        void handleExternalDrop(side, p.paths)
+      }
+    }
+  })
 })
 
 onBeforeUnmount(async () => {
   window.removeEventListener('keydown', onKeydown)
+  unlistenDragDrop?.()
   if (hDragging.value) onHUp()
   if (sftpId.value) {
     try { await sftpClose(sftpId.value) } catch {}
@@ -343,6 +368,96 @@ async function onDrop(e: DragEvent, side: 'local' | 'remote') {
     await uploadFromLocal(entry)
   } else if (fromSide === 'remote' && side === 'local') {
     await downloadFromRemote(entry)
+  }
+}
+
+/**
+ * 命中测试:Tauri 传来的 position 是物理像素(相对窗口左上角),
+ * 需除以 devicePixelRatio 换算成 CSS 像素后再与 splitEl 的 rect 比较。
+ * 左半属本地栏、右半属远端栏,以 localWidthPct 划分。
+ */
+function hitTestSide(pos: { x: number; y: number }): 'local' | 'remote' | null {
+  const el = splitEl.value
+  if (!el) return null
+  const dpr = window.devicePixelRatio || 1
+  const x = pos.x / dpr
+  const y = pos.y / dpr
+  const r = el.getBoundingClientRect()
+  if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null
+  const boundary = r.left + (r.width * localWidthPct.value) / 100
+  return x < boundary ? 'local' : 'remote'
+}
+
+/** 从 OS 拖入的绝对路径中截取文件名(兼容 \ 与 /) */
+function basename(p: string): string {
+  const idx = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'))
+  return idx >= 0 ? p.slice(idx + 1) : p
+}
+
+/**
+ * 处理系统级文件拖入。
+ * 落到远端栏 → 上传到当前远端 cwd;落到本地栏 → 复制到当前本地 cwd。
+ * 目录暂不支持(需要递归 walk,统一给 toast 提示后跳过)。
+ */
+async function handleExternalDrop(side: 'local' | 'remote', paths: string[]) {
+  if (side === 'remote' && !sftpId.value) {
+    toast.error('SFTP 会话未就绪', '拖拽上传失败')
+    return
+  }
+  // 此电脑级不允许"复制到当前目录",直接拒绝
+  if (side === 'local' && localCwd.value === '') {
+    toast.warning('此电脑级不支持接收拖入文件,请先进入具体盘符', '拖拽')
+    return
+  }
+
+  let ok = 0
+  let skipped = 0
+  const errors: string[] = []
+
+  for (const p of paths) {
+    let stat
+    try {
+      stat = await localStat(p)
+    } catch (e: any) {
+      errors.push(`${basename(p)}: ${String(e)}`)
+      continue
+    }
+    if (stat.isDir) {
+      skipped++
+      continue
+    }
+    try {
+      if (side === 'remote') {
+        await startUpload(sftpId.value!, p, remoteCwd.value, stat.name, stat.size)
+      } else {
+        // 本地复制:若源与目标同目录,加"副本"后缀避免覆盖自身
+        const dst = joinPath(localCwd.value, stat.name)
+        const finalDst =
+          dst.toLowerCase() === p.toLowerCase()
+            ? joinPath(localCwd.value, deriveCopyName(stat.name))
+            : dst
+        await localCopy(p, finalDst)
+      }
+      ok++
+    } catch (e: any) {
+      errors.push(`${stat.name}: ${String(e)}`)
+    }
+  }
+
+  if (side === 'local') await refreshLocal()
+  // 远端上传是异步任务,不阻塞刷新;完成事件会自动更新传输面板
+
+  if (ok > 0) {
+    toast.success(
+      side === 'remote' ? `已开始上传 ${ok} 个文件` : `已复制 ${ok} 个文件到本地`,
+      '拖拽',
+    )
+  }
+  if (skipped > 0) {
+    toast.warning(`已跳过 ${skipped} 个目录(暂不支持目录拖拽)`, '拖拽')
+  }
+  if (errors.length > 0) {
+    toast.error(errors.slice(0, 3).join('\n'), '部分文件失败')
   }
 }
 

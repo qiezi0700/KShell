@@ -357,6 +357,40 @@ pub fn local_copy(old_path: String, new_path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 读取本地路径元数据(供前端在拖拽落地前区分文件/目录、获取大小)
+#[tauri::command]
+pub fn local_stat(path: String) -> Result<LocalEntry, String> {
+    let meta = std::fs::metadata(&path).map_err(|e| format!("读取元数据失败: {e}"))?;
+    let name = std::path::Path::new(&path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.clone());
+    #[cfg(unix)]
+    let perms = {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode()
+    };
+    #[cfg(not(unix))]
+    let perms = 0u32;
+    Ok(LocalEntry {
+        name,
+        is_dir: meta.is_dir(),
+        is_symlink: meta.file_type().is_symlink(),
+        size: meta.len(),
+        modified: meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| {
+                chrono::DateTime::<chrono::Utc>::from_timestamp(d.as_secs() as i64, 0)
+                    .map(|t| t.to_rfc3339())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default(),
+        permissions: perms,
+    })
+}
+
 /// 获取本地家目录
 #[tauri::command]
 pub fn local_home() -> Result<String, String> {

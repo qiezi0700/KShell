@@ -76,6 +76,7 @@ pub fn run() {
             sftp::commands::local_rm,
             sftp::commands::local_rename,
             sftp::commands::local_copy,
+            sftp::commands::local_stat,
             sftp::commands::local_home,
             sftp::commands::local_read_file,
             sftp::commands::local_write_file,

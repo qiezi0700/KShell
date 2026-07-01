@@ -123,6 +123,11 @@ export function localHome(): Promise<string> {
   return invoke<string>('local_home')
 }
 
+/** 读取本地路径元数据(用于拖拽前判断是否为目录、取大小) */
+export function localStat(path: string): Promise<LocalEntry> {
+  return invoke<LocalEntry>('local_stat', { path })
+}
+
 export function localReadFile(path: string): Promise<number[]> {
   return invoke<number[]>('local_read_file', { path })
 }
