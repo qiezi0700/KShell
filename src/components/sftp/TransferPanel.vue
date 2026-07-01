@@ -74,7 +74,10 @@ function pct(t: { transferred: number; total: number }) {
           :key="t.id"
           class="flex items-center gap-2 px-3 py-1 text-[11px]"
         >
-          <ArrowRight v-if="t.direction === 'upload'" class="size-3 shrink-0 text-primary" />
+          <ArrowRight
+            v-if="t.direction === 'upload' || t.direction === 'uploadDir'"
+            class="size-3 shrink-0 text-primary"
+          />
           <ArrowLeft v-else class="size-3 shrink-0 text-success" />
           <span class="w-32 shrink-0 truncate" :title="t.name">{{ t.name }}</span>
           <div class="flex-1">

@@ -91,6 +91,11 @@ export function sftpCopyFile(sftpId: string, oldPath: string, newPath: string): 
   return invoke<void>('sftp_copy_file', { sftpId, oldPath, newPath })
 }
 
+/** 递归复制远端目录(SFTP 无服务端拷贝,后端逐文件搬,较慢;无进度) */
+export function sftpCopyDir(sftpId: string, srcPath: string, dstPath: string): Promise<void> {
+  return invoke<void>('sftp_copy_dir', { sftpId, srcPath, dstPath })
+}
+
 /** 获取远端家目录 */
 export function sftpHome(sftpId: string): Promise<string> {
   return invoke<string>('sftp_home', { sftpId })
@@ -181,6 +186,26 @@ export function sftpDownload(
     transferId: opts.transferId,
     offset: opts.offset ?? 0,
   })
+}
+
+/** 递归上传:本地目录 → 远端目录。后端先扫描算总字节,再逐文件传输,支持取消 */
+export function sftpUploadDir(
+  sftpId: string,
+  localDir: string,
+  remoteDir: string,
+  transferId: string,
+): Promise<void> {
+  return invoke('sftp_upload_dir', { sftpId, localDir, remoteDir, transferId })
+}
+
+/** 递归下载:远端目录 → 本地目录 */
+export function sftpDownloadDir(
+  sftpId: string,
+  remoteDir: string,
+  localDir: string,
+  transferId: string,
+): Promise<void> {
+  return invoke('sftp_download_dir', { sftpId, remoteDir, localDir, transferId })
 }
 
 export function sftpCancelTransfer(transferId: string): Promise<void> {

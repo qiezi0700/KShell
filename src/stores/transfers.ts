@@ -5,12 +5,14 @@ import {
   onTransferDone,
   sftpUpload,
   sftpDownload,
+  sftpUploadDir,
+  sftpDownloadDir,
   sftpCancelTransfer,
   type TransferProgress,
 } from '@/api/sftp'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 
-export type TransferDirection = 'upload' | 'download'
+export type TransferDirection = 'upload' | 'download' | 'uploadDir' | 'downloadDir'
 export type TransferStatus = 'pending' | 'transferring' | 'done' | 'error' | 'cancelled'
 
 export interface TransferItem {
@@ -93,6 +95,58 @@ export async function startDownload(
   await runTransfer(item)
 }
 
+/** 递归上传目录。total 初始未知,后端首个 progress 事件会带上聚合总字节 */
+export async function startUploadDir(
+  sftpId: string,
+  localDir: string,
+  remoteParent: string,
+  dirName: string,
+): Promise<void> {
+  const id = uuidv4()
+  const remotePath = joinPath(remoteParent, dirName)
+  const item: TransferItem = {
+    id,
+    direction: 'uploadDir',
+    sftpId,
+    localPath: localDir,
+    remotePath,
+    name: dirName + '/',
+    total: 0,
+    transferred: 0,
+    speed: 0,
+    status: 'pending',
+    error: null,
+  }
+  items.value = [item, ...items.value]
+  await runTransfer(item)
+}
+
+/** 递归下载目录 */
+export async function startDownloadDir(
+  sftpId: string,
+  remoteDir: string,
+  localParent: string,
+  dirName: string,
+): Promise<void> {
+  const id = uuidv4()
+  const localPath = joinPath(localParent, dirName).replace(/\//g, '\\')
+  const item: TransferItem = {
+    id,
+    direction: 'downloadDir',
+    sftpId,
+    localPath,
+    remotePath: remoteDir,
+    name: dirName + '/',
+    total: 0,
+    transferred: 0,
+    speed: 0,
+    status: 'pending',
+    error: null,
+  }
+  items.value = [item, ...items.value]
+  await runTransfer(item)
+}
+
 async function runTransfer(item: TransferItem) {
   const update = (patch: Partial<TransferItem>) => {
     const idx = items.value.findIndex(t => t.id === item.id)
@@ -115,10 +169,19 @@ async function runTransfer(item: TransferItem) {
   unlisteners.set(item.id, [onProgress, onDone])
 
   try {
-    if (item.direction === 'upload') {
-      await sftpUpload({ sftpId: item.sftpId, transferId: item.id }, item.localPath, item.remotePath)
-    } else {
-      await sftpDownload({ sftpId: item.sftpId, transferId: item.id }, item.remotePath, item.localPath)
+    switch (item.direction) {
+      case 'upload':
+        await sftpUpload({ sftpId: item.sftpId, transferId: item.id }, item.localPath, item.remotePath)
+        break
+      case 'download':
+        await sftpDownload({ sftpId: item.sftpId, transferId: item.id }, item.remotePath, item.localPath)
+        break
+      case 'uploadDir':
+        await sftpUploadDir(item.sftpId, item.localPath, item.remotePath, item.id)
+        break
+      case 'downloadDir':
+        await sftpDownloadDir(item.sftpId, item.remotePath, item.localPath, item.id)
+        break
     }
   } catch (e: any) {
     const msg = typeof e === 'string' ? e : e?.message ?? String(e)

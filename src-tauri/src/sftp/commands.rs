@@ -144,6 +144,9 @@ pub async fn sftp_mkdir(
     sftp.create_dir(&path).await.map_err(err)
 }
 
+/// 删除远端目录(递归)。SFTP 协议的 RMDIR 只能删空目录,
+/// 这里自行遍历删掉所有文件与子目录,再从最深处向上删除。
+/// 前端确认弹窗必须提示"及其全部内容",与本地保持一致。
 #[tauri::command]
 pub async fn sftp_rmdir(
     state: State<'_, AppState>,
@@ -151,7 +154,30 @@ pub async fn sftp_rmdir(
     path: String,
 ) -> Result<(), String> {
     let sftp = get_sftp(&state, &sftp_id)?;
-    sftp.remove_dir(&path).await.map_err(err)
+    remove_remote_dir_recursive(&sftp, &path).await.map_err(err)
+}
+
+async fn remove_remote_dir_recursive(sftp: &SftpSession, root: &str) -> Result<()> {
+    // 收集所有相对根目录的文件路径与子目录相对路径,再一次性执行删除
+    let (files, dirs) = walk_remote_dir(sftp, root).await?;
+    for (full, _rel, _) in files {
+        sftp.remove_file(&full)
+            .await
+            .with_context(|| format!("删除远端文件失败: {full}"))?;
+    }
+    // 深度从大到小删空目录
+    let mut dirs = dirs;
+    dirs.sort_by(|a, b| b.matches('/').count().cmp(&a.matches('/').count()));
+    for rel in dirs {
+        let full = format!("{}/{}", root.trim_end_matches('/'), rel);
+        sftp.remove_dir(&full)
+            .await
+            .with_context(|| format!("删除远端目录失败: {full}"))?;
+    }
+    sftp.remove_dir(root)
+        .await
+        .with_context(|| format!("删除远端根目录失败: {root}"))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -249,17 +275,57 @@ pub async fn sftp_copy_file(
     new_path: String,
 ) -> Result<(), String> {
     let sftp = get_sftp(&state, &sftp_id)?;
-    let mut src = sftp.open(&old_path).await.map_err(err)?;
-    let mut dst = sftp.create(&new_path).await.map_err(err)?;
+    copy_remote_file(&sftp, &old_path, &new_path).await.map_err(err)
+}
+
+async fn copy_remote_file(sftp: &SftpSession, src: &str, dst: &str) -> Result<()> {
+    let mut s = sftp
+        .open(src)
+        .await
+        .with_context(|| format!("打开远端源文件失败: {src}"))?;
+    let mut d = sftp
+        .create(dst)
+        .await
+        .with_context(|| format!("创建远端目标文件失败: {dst}"))?;
     let mut buf = vec![0u8; 65536];
     loop {
-        let n = src.read(&mut buf).await.map_err(err)?;
+        let n = s.read(&mut buf).await.context("读取远端源文件失败")?;
         if n == 0 {
             break;
         }
-        dst.write_all(&buf[..n]).await.map_err(err)?;
+        d.write_all(&buf[..n]).await.context("写入远端目标文件失败")?;
     }
-    dst.flush().await.map_err(err)?;
+    d.flush().await.ok();
+    Ok(())
+}
+
+/// 递归复制远端目录。SFTP 无服务端拷贝,只能"读→写"逐文件搬,
+/// 大目录会比较慢。当前不接入传输面板/进度,前端应用 toast 提示"复制中"。
+#[tauri::command]
+pub async fn sftp_copy_dir(
+    state: State<'_, AppState>,
+    sftp_id: String,
+    src_path: String,
+    dst_path: String,
+) -> Result<(), String> {
+    let sftp = get_sftp(&state, &sftp_id)?;
+    let (files, mut dirs) = walk_remote_dir(&sftp, &src_path).await.map_err(err)?;
+    sftp.create_dir(&dst_path)
+        .await
+        .with_context(|| format!("创建远端目标目录失败: {dst_path}"))
+        .map_err(err)?;
+    // 浅目录先建,深目录后建
+    dirs.sort_by(|a, b| a.matches('/').count().cmp(&b.matches('/').count()));
+    for rel in &dirs {
+        let full = format!("{}/{}", dst_path.trim_end_matches('/'), rel);
+        let _ = sftp.create_dir(&full).await;
+    }
+    for (src_file, rel, _size) in files {
+        let dst_file = format!("{}/{}", dst_path.trim_end_matches('/'), rel);
+        copy_remote_file(&sftp, &src_file, &dst_file)
+            .await
+            .map_err(err)?;
+    }
     Ok(())
 }
 
@@ -359,10 +425,34 @@ pub fn local_rename(old_path: String, new_path: String) -> Result<(), String> {
     std::fs::rename(&old_path, &new_path).map_err(|e| format!("重命名失败: {e}"))
 }
 
-/// 复制本地文件(单文件,非目录)
+/// 复制本地路径。文件走 std::fs::copy;目录递归复制。前端 paste 逻辑不用区分。
 #[tauri::command]
 pub fn local_copy(old_path: String, new_path: String) -> Result<(), String> {
-    std::fs::copy(&old_path, &new_path).map_err(|e| format!("复制文件失败: {e}"))?;
+    let src = std::path::Path::new(&old_path);
+    let meta = std::fs::metadata(src).map_err(|e| format!("读取源信息失败: {e}"))?;
+    if meta.is_dir() {
+        copy_dir_recursive(src, std::path::Path::new(&new_path))
+            .map_err(|e| format!("复制目录失败: {e}"))
+    } else {
+        std::fs::copy(&old_path, &new_path).map_err(|e| format!("复制文件失败: {e}"))?;
+        Ok(())
+    }
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        let s = entry.path();
+        let d = dst.join(entry.file_name());
+        if ft.is_dir() {
+            copy_dir_recursive(&s, &d)?;
+        } else if ft.is_file() {
+            std::fs::copy(&s, &d)?;
+        }
+        // symlink 暂不递归,忽略
+    }
     Ok(())
 }
 
@@ -727,3 +817,313 @@ fn format_datetime(t: std::io::Result<std::time::SystemTime>) -> String {
 
 #[allow(dead_code)]
 fn _unused(_m: Metadata) {}
+
+// ============================================================
+// 目录递归传输(上传 / 下载)
+// ============================================================
+
+/// 上传本地目录到远端。走后台 tokio 任务,支持取消,聚合字节进度。
+#[tauri::command]
+pub async fn sftp_upload_dir(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    sftp_id: String,
+    local_dir: String,
+    remote_dir: String,
+    transfer_id: String,
+) -> Result<(), String> {
+    let sftp = get_sftp(&state, &sftp_id)?;
+    let cancel = register_cancel(&state, &transfer_id);
+    let app_clone = app.clone();
+    let tid = transfer_id.clone();
+    tokio::spawn(async move {
+        let result = do_upload_dir(&sftp, &local_dir, &remote_dir, &app_clone, &tid, &cancel).await;
+        finish_transfer(&app_clone, &tid, result);
+    });
+    Ok(())
+}
+
+/// 下载远端目录到本地。走后台 tokio 任务,支持取消,聚合字节进度。
+#[tauri::command]
+pub async fn sftp_download_dir(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    sftp_id: String,
+    remote_dir: String,
+    local_dir: String,
+    transfer_id: String,
+) -> Result<(), String> {
+    let sftp = get_sftp(&state, &sftp_id)?;
+    let cancel = register_cancel(&state, &transfer_id);
+    let app_clone = app.clone();
+    let tid = transfer_id.clone();
+    tokio::spawn(async move {
+        let result = do_download_dir(&sftp, &remote_dir, &local_dir, &app_clone, &tid, &cancel).await;
+        finish_transfer(&app_clone, &tid, result);
+    });
+    Ok(())
+}
+
+async fn do_upload_dir(
+    sftp: &SftpSession,
+    local_dir: &str,
+    remote_dir: &str,
+    app: &AppHandle,
+    transfer_id: &str,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    // 1. 预扫描本地
+    let root = std::path::PathBuf::from(local_dir);
+    let mut files: Vec<(std::path::PathBuf, String, u64)> = Vec::new();
+    let mut dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    scan_local_dir(&root, &root, &mut files, &mut dirs)
+        .with_context(|| format!("扫描本地目录失败: {local_dir}"))?;
+    let total: u64 = files.iter().map(|f| f.2).sum();
+
+    // 2. 建远端目录树(remote_dir 本身可能已存在,忽略错误)
+    let _ = sftp.create_dir(remote_dir).await;
+    // BTreeSet 按字典序,通常浅目录在前;深目录 create 时父目录已建
+    for rel in &dirs {
+        let full = format!("{}/{}", remote_dir.trim_end_matches('/'), rel);
+        let _ = sftp.create_dir(&full).await;
+    }
+
+    // 3. 逐文件上传,progress 事件按聚合字节
+    let event = format!("sftp://transfer/{transfer_id}/progress");
+    let _ = app.emit(
+        &event,
+        TransferProgress {
+            transfer_id: transfer_id.to_string(),
+            transferred: 0,
+            total,
+            speed: 0.0,
+        },
+    );
+    let mut buf = vec![0u8; CHUNK_SIZE];
+    let mut transferred: u64 = 0;
+    let mut last_emit = std::time::Instant::now();
+    let mut last_bytes: u64 = 0;
+
+    for (lp, rel, _size) in files {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(anyhow::anyhow!(CANCEL_MSG));
+        }
+        let rp = format!("{}/{}", remote_dir.trim_end_matches('/'), rel);
+        let mut local = tokio::fs::File::open(&lp)
+            .await
+            .with_context(|| format!("打开本地文件失败: {}", lp.display()))?;
+        let mut remote = sftp
+            .create(&rp)
+            .await
+            .with_context(|| format!("创建远端文件失败: {rp}"))?;
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(anyhow::anyhow!(CANCEL_MSG));
+            }
+            let n = local.read(&mut buf).await.context("读取本地文件失败")?;
+            if n == 0 {
+                break;
+            }
+            remote.write_all(&buf[..n]).await.context("写入远端文件失败")?;
+            transferred += n as u64;
+
+            let now = std::time::Instant::now();
+            if now.duration_since(last_emit).as_millis() >= 200 {
+                let elapsed = now.duration_since(last_emit).as_secs_f64().max(0.001);
+                let speed = ((transferred - last_bytes) as f64 / elapsed) / 1024.0;
+                let _ = app.emit(
+                    &event,
+                    TransferProgress {
+                        transfer_id: transfer_id.to_string(),
+                        transferred,
+                        total,
+                        speed,
+                    },
+                );
+                last_emit = now;
+                last_bytes = transferred;
+            }
+        }
+        remote.flush().await.ok();
+    }
+    let _ = app.emit(
+        &event,
+        TransferProgress {
+            transfer_id: transfer_id.to_string(),
+            transferred,
+            total,
+            speed: 0.0,
+        },
+    );
+    Ok(())
+}
+
+async fn do_download_dir(
+    sftp: &SftpSession,
+    remote_dir: &str,
+    local_dir: &str,
+    app: &AppHandle,
+    transfer_id: &str,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    // 1. 预扫描远端
+    let (files, dirs) = walk_remote_dir(sftp, remote_dir).await?;
+    let total: u64 = files.iter().map(|f| f.2).sum();
+
+    // 2. 建本地目录树
+    std::fs::create_dir_all(local_dir)
+        .with_context(|| format!("创建本地目录失败: {local_dir}"))?;
+    let mut dirs = dirs;
+    dirs.sort_by(|a, b| a.matches('/').count().cmp(&b.matches('/').count()));
+    for rel in &dirs {
+        let full = std::path::Path::new(local_dir).join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        std::fs::create_dir_all(&full)
+            .with_context(|| format!("创建本地子目录失败: {}", full.display()))?;
+    }
+
+    // 3. 逐文件下载
+    let event = format!("sftp://transfer/{transfer_id}/progress");
+    let _ = app.emit(
+        &event,
+        TransferProgress {
+            transfer_id: transfer_id.to_string(),
+            transferred: 0,
+            total,
+            speed: 0.0,
+        },
+    );
+    let mut buf = vec![0u8; CHUNK_SIZE];
+    let mut transferred: u64 = 0;
+    let mut last_emit = std::time::Instant::now();
+    let mut last_bytes: u64 = 0;
+
+    for (remote_path, rel, _size) in files {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(anyhow::anyhow!(CANCEL_MSG));
+        }
+        let local_path = std::path::Path::new(local_dir)
+            .join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let mut remote = sftp
+            .open(&remote_path)
+            .await
+            .with_context(|| format!("打开远端文件失败: {remote_path}"))?;
+        let mut local = tokio::fs::File::create(&local_path)
+            .await
+            .with_context(|| format!("创建本地文件失败: {}", local_path.display()))?;
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(anyhow::anyhow!(CANCEL_MSG));
+            }
+            let n = remote.read(&mut buf).await.context("读取远端文件失败")?;
+            if n == 0 {
+                break;
+            }
+            local.write_all(&buf[..n]).await.context("写入本地文件失败")?;
+            transferred += n as u64;
+            let now = std::time::Instant::now();
+            if now.duration_since(last_emit).as_millis() >= 200 {
+                let elapsed = now.duration_since(last_emit).as_secs_f64().max(0.001);
+                let speed = ((transferred - last_bytes) as f64 / elapsed) / 1024.0;
+                let _ = app.emit(
+                    &event,
+                    TransferProgress {
+                        transfer_id: transfer_id.to_string(),
+                        transferred,
+                        total,
+                        speed,
+                    },
+                );
+                last_emit = now;
+                last_bytes = transferred;
+            }
+        }
+        local.flush().await.ok();
+    }
+    let _ = app.emit(
+        &event,
+        TransferProgress {
+            transfer_id: transfer_id.to_string(),
+            transferred,
+            total,
+            speed: 0.0,
+        },
+    );
+    Ok(())
+}
+
+/// 递归扫描本地目录:收集所有文件(绝对路径、相对根的 posix 路径、大小)与子目录相对路径
+fn scan_local_dir(
+    root: &std::path::Path,
+    cur: &std::path::Path,
+    files: &mut Vec<(std::path::PathBuf, String, u64)>,
+    dirs: &mut std::collections::BTreeSet<String>,
+) -> Result<()> {
+    for entry in std::fs::read_dir(cur)
+        .with_context(|| format!("读取目录失败: {}", cur.display()))?
+    {
+        let entry = entry.context("读取条目失败")?;
+        let ft = entry.file_type().context("读取类型失败")?;
+        let path = entry.path();
+        if ft.is_dir() {
+            let rel = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            dirs.insert(rel);
+            scan_local_dir(root, &path, files, dirs)?;
+        } else if ft.is_file() {
+            let meta = entry.metadata().context("读取元数据失败")?;
+            let rel = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            files.push((path, rel, meta.len()));
+        }
+        // symlink 暂不递归
+    }
+    Ok(())
+}
+
+/// 迭代式(避免 async 递归)扫描远端目录:返回 (文件列表, 子目录相对路径列表)
+/// 文件列表元素:(完整远端路径, 相对根 posix 路径, 大小)
+async fn walk_remote_dir(
+    sftp: &SftpSession,
+    root: &str,
+) -> Result<(Vec<(String, String, u64)>, Vec<String>)> {
+    let mut files: Vec<(String, String, u64)> = Vec::new();
+    let mut dirs: Vec<String> = Vec::new();
+    let mut stack: Vec<String> = vec![String::new()]; // 相对根的路径,空串表示根本身
+    while let Some(rel) = stack.pop() {
+        let cur = if rel.is_empty() {
+            root.to_string()
+        } else {
+            format!("{}/{}", root.trim_end_matches('/'), rel)
+        };
+        let entries = sftp
+            .read_dir(&cur)
+            .await
+            .with_context(|| format!("读取远端目录失败: {cur}"))?;
+        for e in entries {
+            let name = e.file_name();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let meta = e.metadata();
+            let sub_rel = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{}", rel, name)
+            };
+            let full = format!("{}/{}", cur.trim_end_matches('/'), name);
+            if meta.is_dir() {
+                dirs.push(sub_rel.clone());
+                stack.push(sub_rel);
+            } else {
+                files.push((full, sub_rel, meta.len()));
+            }
+        }
+    }
+    Ok((files, dirs))
+}

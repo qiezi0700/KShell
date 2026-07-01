@@ -37,11 +37,12 @@ import {
   localCopy,
   localStat,
   sftpCopyFile,
+  sftpCopyDir,
   type RemoteEntry,
 } from '@/api/sftp'
 import { openConfirm, openPrompt } from '@/stores/prompt'
 import { toast } from '@/stores/toast'
-import { startUpload, startDownload } from '@/stores/transfers'
+import { startUpload, startDownload, startUploadDir, startDownloadDir } from '@/stores/transfers'
 import { closeTab } from '@/stores/tabs'
 
 const props = defineProps<{
@@ -330,18 +331,26 @@ function onHUp() {
 // 传输
 // ============================================================
 
-/** 本地文件双击 → 上传到远端当前目录 */
+/** 本地条目双击/右键 → 上传到远端当前目录。目录走递归上传。 */
 async function uploadFromLocal(e: RemoteEntry) {
-  if (!sftpId.value || e.isDir) return
+  if (!sftpId.value) return
   const localPath = joinPath(localCwd.value, e.name)
-  await startUpload(sftpId.value, localPath, remoteCwd.value, e.name, e.size)
+  if (e.isDir) {
+    await startUploadDir(sftpId.value, localPath, remoteCwd.value, e.name)
+  } else {
+    await startUpload(sftpId.value, localPath, remoteCwd.value, e.name, e.size)
+  }
 }
 
-/** 远端文件双击 → 下载到本地当前目录 */
+/** 远端条目双击/右键 → 下载到本地当前目录。目录走递归下载。 */
 async function downloadFromRemote(e: RemoteEntry) {
-  if (!sftpId.value || e.isDir) return
+  if (!sftpId.value) return
   const remotePath = joinPath(remoteCwd.value, e.name)
-  await startDownload(sftpId.value, remotePath, localCwd.value, e.name, e.size)
+  if (e.isDir) {
+    await startDownloadDir(sftpId.value, remotePath, localCwd.value, e.name)
+  } else {
+    await startDownload(sftpId.value, remotePath, localCwd.value, e.name, e.size)
+  }
 }
 
 // 拖拽:local → remote(上传),remote → local(下载)
@@ -364,8 +373,7 @@ async function onDrop(e: DragEvent, side: 'local' | 'remote') {
   const raw = e.dataTransfer?.getData('text/plain')
   if (!raw) return
   const { side: fromSide, entry } = JSON.parse(raw) as { side: string; entry: RemoteEntry }
-  if (entry.isDir) return // 目录暂不支持拖拽传输(需递归,后续实现)
-
+  // 目录也允许:uploadFromLocal / downloadFromRemote 内部会按 isDir 分派
   if (fromSide === 'local' && side === 'remote') {
     await uploadFromLocal(entry)
   } else if (fromSide === 'remote' && side === 'local') {
@@ -424,13 +432,13 @@ async function handleExternalDrop(side: 'local' | 'remote', paths: string[]) {
       errors.push(`${basename(p)}: ${String(e)}`)
       continue
     }
-    if (stat.isDir) {
-      skipped++
-      continue
-    }
     try {
       if (side === 'remote') {
-        await startUpload(sftpId.value!, p, remoteCwd.value, stat.name, stat.size)
+        if (stat.isDir) {
+          await startUploadDir(sftpId.value!, p, remoteCwd.value, stat.name)
+        } else {
+          await startUpload(sftpId.value!, p, remoteCwd.value, stat.name, stat.size)
+        }
       } else {
         // 本地复制:若源与目标同目录,加"副本"后缀避免覆盖自身
         const dst = joinPath(localCwd.value, stat.name)
@@ -451,15 +459,15 @@ async function handleExternalDrop(side: 'local' | 'remote', paths: string[]) {
 
   if (ok > 0) {
     toast.success(
-      side === 'remote' ? `已开始上传 ${ok} 个文件` : `已复制 ${ok} 个文件到本地`,
+      side === 'remote' ? `已开始上传 ${ok} 个条目` : `已复制 ${ok} 个条目到本地`,
       '拖拽',
     )
   }
   if (skipped > 0) {
-    toast.warning(`已跳过 ${skipped} 个目录(暂不支持目录拖拽)`, '拖拽')
+    toast.warning(`已跳过 ${skipped} 个条目`, '拖拽')
   }
   if (errors.length > 0) {
-    toast.error(errors.slice(0, 3).join('\n'), '部分文件失败')
+    toast.error(errors.slice(0, 3).join('\n'), '部分条目失败')
   }
 }
 
@@ -559,31 +567,69 @@ async function doPaste() {
   }
   const { from, path: srcPath, entry, mode } = clip.value
   const to = activeSide.value
-  if (entry.isDir) {
-    toast.warning('目录的复制/剪切暂未实现,请使用拖拽传输。', '暂不支持')
-    return
-  }
   try {
     if (from === to) {
-      // 同栏:copy → 副本,cut → 同目录无意义
+      // 同栏
       const dir = to === 'local' ? localCwd.value : remoteCwd.value
       if (mode === 'cut') {
-        toast.info('源与目标在同一目录,已忽略', '无需剪切')
-        return
+        // 同目录剪切无意义(跨目录同栏当前 UI 无法表达,只能靠切换 cwd 后再粘贴,
+        // 但那时 clip.path 已经含原目录,dir !== 原目录,才落到复制/移动分支;
+        // 此处 dir === 原目录才是"同目录",忽略)
+        const srcDir = srcPath.slice(0, srcPath.lastIndexOf(dir.includes('\\') ? '\\' : '/'))
+        if (srcDir === dir) {
+          toast.info('源与目标在同一目录,已忽略', '无需剪切')
+          return
+        }
+        // 同栏但跨目录的剪切:先复制到新位置再删除源
+        const dstPath = joinPath(dir, entry.name)
+        if (to === 'local') {
+          await localCopy(srcPath, dstPath)
+          if (entry.isDir) await localRmdir(srcPath)
+          else await localRm(srcPath)
+        } else {
+          if (!sftpId.value) return
+          if (entry.isDir) {
+            toast.info('远端目录复制中…', '粘贴')
+            await sftpCopyDir(sftpId.value, srcPath, dstPath)
+            await sftpRmdir(sftpId.value, srcPath)
+          } else {
+            await sftpCopyFile(sftpId.value, srcPath, dstPath)
+            await sftpRm(sftpId.value, srcPath)
+          }
+        }
+        toast.success(`已移动:${entry.name}`, '剪切完成')
+      } else {
+        // 复制:同目录加"副本"后缀
+        const newName = deriveCopyName(entry.name)
+        const dstPath = joinPath(dir, newName)
+        if (to === 'local') {
+          await localCopy(srcPath, dstPath)
+        } else {
+          if (!sftpId.value) return
+          if (entry.isDir) {
+            toast.info('远端目录复制中…', '粘贴')
+            await sftpCopyDir(sftpId.value, srcPath, dstPath)
+          } else {
+            await sftpCopyFile(sftpId.value, srcPath, dstPath)
+          }
+        }
+        toast.success(`已粘贴为 ${newName}`, '粘贴完成')
       }
-      const newName = deriveCopyName(entry.name)
-      const dstPath = joinPath(dir, newName)
-      if (to === 'local') await localCopy(srcPath, dstPath)
-      else { if (!sftpId.value) return; await sftpCopyFile(sftpId.value, srcPath, dstPath) }
-      toast.success(`已粘贴为 ${newName}`, '粘贴完成')
     } else {
-      // 跨栏:传输
+      // 跨栏:走传输管线
       if (from === 'local' && to === 'remote') await uploadFromLocal(entry)
       else if (from === 'remote' && to === 'local') await downloadFromRemote(entry)
       if (mode === 'cut') {
-        // 删除源(不经确认,剪切是用户意图)
-        if (from === 'local') await localRm(srcPath)
-        else { if (!sftpId.value) return; await sftpRm(sftpId.value, srcPath) }
+        // 剪切:传输完成前就删源不安全,这里保守做法是仅在文件路径下删源;
+        // 目录传输是后台任务,删源改为完成后由用户手动删除更稳妥。
+        // 当前简化:文件立即删源(与既有语义一致),目录跳过删源并提示。
+        if (entry.isDir) {
+          toast.info('目录跨栏剪切:传输完成后请手动删除源目录', '注意')
+        } else if (from === 'local') {
+          await localRm(srcPath)
+        } else if (sftpId.value) {
+          await sftpRm(sftpId.value, srcPath)
+        }
       }
       toast.success(
         `${mode === 'cut' ? '已移动' : '已开始传输'}:${entry.name}`,

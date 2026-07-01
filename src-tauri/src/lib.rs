@@ -68,6 +68,9 @@ pub fn run() {
             sftp::commands::sftp_home,
             sftp::commands::sftp_upload,
             sftp::commands::sftp_download,
+            sftp::commands::sftp_upload_dir,
+            sftp::commands::sftp_download_dir,
+            sftp::commands::sftp_copy_dir,
             sftp::commands::sftp_cancel_transfer,
             // 本地文件操作
             sftp::commands::local_list,
