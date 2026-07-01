@@ -1,17 +1,29 @@
+# 依赖
 node_modules
+
+# 构建产物
 dist
 dist-ssr
 *.local
 
+# 系统文件
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 
-# tauri / rust
+# Tauri / Rust
 src-tauri/target
 src-tauri/gen
 
-# ide
+# IDE
 .vscode/*
 !.vscode/extensions.json
 .idea
+*.suo
+*.user
+*.userosscache
+
+# 日志与缓存
 *.log
+*.tsbuildinfo
