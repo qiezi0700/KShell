@@ -195,7 +195,6 @@ pnpm tauri:build
 - 凭据加密采用机器绑定 AES-256-GCM(`key.bin` 随机密钥),无主密码;key 文件丢失将导致凭据无法解密
 - known_hosts 为应用自管 JSON,不与系统 ~/.ssh/known_hosts 互通
 - SFTP 取消传输为后端桩,目录复制/剪切的远端递归删除边界仍有少量遗留
-- 端口隧道面板未完成前端接线(`TunnelPanel.vue` 为占位)
 - M5 Docker 面板规划以插件化形式实现,后端复用 `ssh_exec` 调用 docker CLI
 
 ## License
