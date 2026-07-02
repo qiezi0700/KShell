@@ -33,6 +33,11 @@ export async function sshResize(channelId: string, cols: number, rows: number): 
   await invoke('ssh_resize', { channelId, cols, rows })
 }
 
+/** 在已有 SSH 会话上一次性执行命令,返回合并的 stdout+stderr 文本。 */
+export async function sshExec(sessionId: string, command: string): Promise<string> {
+  return await invoke<string>('ssh_exec', { sessionId, command })
+}
+
 export async function sshCloseChannel(channelId: string): Promise<void> {
   await invoke('ssh_close_channel', { channelId })
 }

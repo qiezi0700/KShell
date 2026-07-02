@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { Minus, Square, X, Github } from 'lucide-vue-next'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import {
@@ -15,10 +15,17 @@ import ShortcutsDialog from '@/components/dialogs/ShortcutsDialog.vue'
 import PreferencesDialog from '@/components/dialogs/PreferencesDialog.vue'
 import { openNewConnection } from '@/stores/dialogs'
 import { openConfirm } from '@/stores/prompt'
-import { tabs } from '@/stores/tabs'
+import { tabs, activeTabId } from '@/stores/tabs'
 import { sidebarVisible, statusBarVisible, clearTerminal, clearScrollback } from '@/stores/ui'
+import { monitorDialogOpen } from '@/stores/monitor'
+import { openKeyManager } from '@/stores/keys'
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
+// 当前是否有活跃终端会话(决定"服务器监控"菜单是否可用)
+const hasActiveTerminal = computed(
+  () => activeTabId.value != null && tabs.value.find((t) => t.id === activeTabId.value)?.type === 'terminal',
+)
 
 async function withWindow(op: 'minimize' | 'toggleMaximize' | 'close') {
   if (!isTauri) return
@@ -78,11 +85,11 @@ async function quitApp() {
     :style="{ height: 'var(--size-titlebar)' }"
   >
     <div data-tauri-drag-region class="flex h-full items-center gap-1.5 pl-2.5 pr-2">
-      <span class="flex items-center justify-center rounded-[3px] bg-gradient-to-br from-primary to-violet-500 font-bold text-white" :style="{ width: 'var(--size-icon-sm)', height: 'var(--size-icon-sm)', fontSize: 'var(--text-xs)' }">K</span>
-      <span class="font-medium text-foreground" :style="{ fontSize: 'var(--text-sm)' }">KShell</span>
+      <span class="flex items-center justify-center rounded-sm bg-gradient-to-br from-primary to-violet-500 font-semibold text-white" :style="{ width: 'var(--size-icon-sm)', height: 'var(--size-icon-sm)', fontSize: 'var(--text-xs)' }">K</span>
+      <span class="text-title text-foreground">KShell</span>
     </div>
 
-    <div data-tauri-drag-region class="flex h-full items-center gap-0.5 px-1">
+    <div data-tauri-drag-region class="flex h-full items-center gap-0.5 px-1.5">
       <!-- 文件 -->
       <DropdownMenu>
         <DropdownMenuTrigger as-child>
@@ -161,6 +168,13 @@ async function quitApp() {
             <DropdownMenuShortcut>Ctrl+K</DropdownMenuShortcut>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
+          <DropdownMenuItem :disabled="!hasActiveTerminal" @select="monitorDialogOpen = true">
+            服务器监控…
+          </DropdownMenuItem>
+          <DropdownMenuItem @select="openKeyManager()">
+            SSH 密钥库…
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
           <DropdownMenuItem disabled>
             管理已知主机…
           </DropdownMenuItem>
@@ -199,11 +213,10 @@ async function quitApp() {
       <Tooltip>
         <TooltipTrigger as-child>
           <button
-            class="flex h-full items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground"
-            :style="{ width: 'var(--size-control)' }"
+            class="flex h-full w-[var(--size-control)] items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground"
             @click="minimize"
           >
-            <Minus class="size-3" />
+            <Minus class="size-3.5" />
           </button>
         </TooltipTrigger>
         <TooltipContent>最小化</TooltipContent>
@@ -211,11 +224,10 @@ async function quitApp() {
       <Tooltip>
         <TooltipTrigger as-child>
           <button
-            class="flex h-full items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground"
-            :style="{ width: 'var(--size-control)' }"
+            class="flex h-full w-[var(--size-control)] items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground"
             @click="toggleMaximize"
           >
-            <Square class="size-2.5" />
+            <Square class="size-3" />
           </button>
         </TooltipTrigger>
         <TooltipContent>最大化</TooltipContent>
@@ -223,8 +235,7 @@ async function quitApp() {
       <Tooltip>
         <TooltipTrigger as-child>
           <button
-            class="flex h-full items-center justify-center text-muted-foreground hover:bg-destructive hover:text-white"
-            :style="{ width: 'var(--size-control)' }"
+            class="flex h-full w-[var(--size-control)] items-center justify-center text-muted-foreground hover:bg-destructive hover:text-white"
             @click="close"
           >
             <X class="size-3.5" />

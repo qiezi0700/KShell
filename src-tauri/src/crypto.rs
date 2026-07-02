@@ -11,7 +11,7 @@ use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use rand::RngCore;
+use rand::Rng;
 
 /// 32 字节 AES-256 key
 pub struct CryptoKey(Box<[u8; 32]>);
@@ -37,7 +37,7 @@ impl CryptoKey {
         }
         // 首次生成
         let mut key = Box::new([0u8; 32]);
-        rand::thread_rng().fill_bytes(&mut *key);
+        rand::rng().fill_bytes(&mut *key);
         std::fs::write(&path, B64.encode(*key))
             .with_context(|| format!("写入 key 文件失败: {}", path.display()))?;
         Ok(Self(key))
@@ -52,7 +52,7 @@ impl CryptoKey {
         let cipher = Aes256Gcm::new(key);
 
         let mut nonce_bytes = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let ct = cipher

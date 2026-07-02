@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use russh::ChannelMsg;
 use serde::Serialize;
 use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
@@ -167,6 +168,47 @@ pub async fn ssh_open_shell(
     drop(guard);
     state.channels.insert(ch_id.clone(), handle);
     Ok(ch_id)
+}
+
+/// 在已有 SSH 会话上一次性执行命令(request_exec),收集 stdout+stderr 后关闭 channel。
+/// 供 M4 监控采集与 M5 Docker 数据获取复用。
+#[tauri::command]
+pub async fn ssh_exec(
+    state: State<'_, AppState>,
+    session_id: SessionId,
+    command: String,
+) -> Result<String, String> {
+    let session = state
+        .sessions
+        .get(&session_id)
+        .ok_or_else(|| format!("会话不存在: {session_id}"))?
+        .clone();
+    // 只在开 channel 时持锁,exec/wait 期间释放,避免阻塞同会话的终端写入/SFTP
+    let mut channel = {
+        let guard = session.lock().await;
+        guard
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(|e| format!("打开 exec channel 失败: {e}"))?
+    };
+    channel
+        .exec(true, command.as_bytes())
+        .await
+        .map_err(|e| format!("请求 exec 失败: {e}"))?;
+
+    // 收集全部输出直到 EOF/Close;监控脚本输出较小,直接拼接
+    let mut out = Vec::new();
+    loop {
+        match channel.wait().await {
+            Some(ChannelMsg::Data { data }) => out.extend_from_slice(&data[..]),
+            Some(ChannelMsg::ExtendedData { data, .. }) => out.extend_from_slice(&data[..]),
+            Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+            Some(_) => {}
+        }
+    }
+    let _ = channel.close().await;
+    Ok(String::from_utf8_lossy(&out).to_string())
 }
 
 #[tauri::command]

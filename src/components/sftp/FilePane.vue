@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import {
   ArrowUp,
   ArrowLeft,
+  ArrowRight,
   RefreshCw,
   FolderPlus,
   Home,
@@ -11,6 +12,9 @@ import {
   Folder as FolderIcon,
   FileText,
   Image as ImageIcon,
+  Eye,
+  Pencil,
+  Trash2,
 } from 'lucide-vue-next'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Input } from '@/components/ui/input'
@@ -23,6 +27,8 @@ const props = defineProps<{
   entries: RemoteEntry[]
   cwd: string
   loading: boolean
+  host?: string
+  user?: string
 }>()
 
 const emit = defineEmits<{
@@ -35,7 +41,7 @@ const emit = defineEmits<{
   preview: [entry: RemoteEntry]
   rename: [entry: RemoteEntry]
   delete: [entry: RemoteEntry]
-  menuopen: []
+  itemmousedown: [entry: RemoteEntry, event: MouseEvent]  // 条目按下,父组件用于启动 pane-to-pane 拖拽
 }>()
 
 const selected = ref<string | null>(null)
@@ -68,6 +74,11 @@ function breadcrumbs(): string[] {
 
 const crumbs = computed(() => breadcrumbs())
 
+// 当前选中的条目对象(工具栏操作按钮基于此启用)
+const selectedEntry = computed(() =>
+  props.entries.find(e => e.name === selected.value) ?? null,
+)
+
 function onItemClick(e: RemoteEntry) {
   selected.value = e.name
   emit('select', e)
@@ -92,6 +103,12 @@ function onItemDblclick(e: RemoteEntry) {
     // 文件:双击预览
     emit('preview', e)
   }
+}
+
+// 拖拽起步:把 side + entry 序列化进 dataTransfer,供 SftpView 的 onDrop 解析分派上传/下载
+// (Windows + Tauri 原生 OLE 拦截下 HTML5 DnD 不可用,改由 mousedown 上报父组件模拟拖拽)
+function onItemMouseDown(e: MouseEvent, entry: RemoteEntry) {
+  emit('itemmousedown', entry, e)
 }
 
 function goUp() {
@@ -149,95 +166,101 @@ function fmtDate(s: string) {
   }
 }
 
-// 右键菜单
-const menu = ref<{ x: number; y: number; entry: RemoteEntry | null } | null>(null)
-
-function onContextmenu(ev: MouseEvent, e: RemoteEntry | null) {
-  ev.preventDefault()
-  menu.value = { x: ev.clientX, y: ev.clientY, entry: e }
-  if (e) selected.value = e.name
-  emit('menuopen')
-}
-
-function closeMenu() {
-  menu.value = null
-}
-
 // 此电脑级(cwd 为空):条目是盘符伪目录,不允许改名/删除;空白处也不能新建目录
 const isThisPcLevel = computed(() => props.side === 'local' && props.cwd === '')
-
-const menuItems = computed(() => {
-  const e = menu.value?.entry
-  const items: { label: string; action: () => void; danger?: boolean }[] = []
-  if (e) {
-    if (!e.isDir) {
-      items.push({ label: '传输到对端', action: () => { emit('transfer', e!); closeMenu() } })
-      items.push({ label: '预览', action: () => { emit('preview', e!); closeMenu() } })
-    }
-    if (!isThisPcLevel.value) {
-      items.push({ label: '重命名', action: () => { emit('rename', e!); closeMenu() } })
-      items.push({ label: '删除', action: () => { emit('delete', e!); closeMenu() }, danger: true })
-    }
-  } else {
-    if (!isThisPcLevel.value) {
-      items.push({ label: '新建目录', action: () => { emit('mkdir'); closeMenu() } })
-    }
-    items.push({ label: '刷新', action: () => { emit('refresh'); closeMenu() } })
-  }
-  return items
-})
-
-// 暴露 menu 关闭方法给父组件(点击空白处)
-defineExpose({ closeMenu })
 </script>
 
 <template>
-  <div class="flex h-full flex-col" @click="closeMenu">
+  <div class="flex h-full flex-col">
     <!-- 工具栏 -->
-    <div class="flex items-center gap-1 border-b border-border px-2 py-1">
-      <Button variant="ghost" size="icon" :style="{ width: 'var(--size-row-md)', height: 'var(--size-row-md)' }" @click="goUp" title="上级">
-        <ArrowUp class="size-3.5" />
+    <div class="flex items-center gap-1 border-b border-border px-2 py-1.5">
+      <span
+        class="text-caption shrink-0 rounded-sm px-1.5 py-0.5"
+        :class="side === 'local' ? 'bg-panel-2 text-muted-foreground' : 'bg-primary/15 text-primary'"
+      >{{ side === 'local' ? '本地' : `${user}@${host}` }}</span>
+      <Button variant="ghost" size="icon-sm" @click="goUp" title="上级">
+        <ArrowUp />
       </Button>
-      <Button variant="ghost" size="icon" :style="{ width: 'var(--size-row-md)', height: 'var(--size-row-md)' }" @click="emit('home')" title="家目录">
-        <Home class="size-3.5" />
+      <Button variant="ghost" size="icon-sm" @click="emit('home')" title="家目录">
+        <Home />
       </Button>
-      <Button variant="ghost" size="icon" :style="{ width: 'var(--size-row-md)', height: 'var(--size-row-md)' }" @click="emit('refresh')" title="刷新">
-        <RefreshCw class="size-3.5" />
+      <Button variant="ghost" size="icon-sm" @click="emit('refresh')" title="刷新">
+        <RefreshCw />
       </Button>
       <Button
         variant="ghost"
-        size="icon"
-        :style="{ width: 'var(--size-row-md)', height: 'var(--size-row-md)' }"
+        size="icon-sm"
         :disabled="isThisPcLevel"
         @click="emit('mkdir')"
         title="新建目录"
       >
-        <FolderPlus class="size-3.5" />
+        <FolderPlus />
       </Button>
       <Input
         v-model="pathInput"
-        class="text-[length:var(--text-xs)]"
+        class="text-body flex-1"
         :style="{ height: 'var(--size-row-sm)' }"
         @keydown.enter="onPathEnter"
       />
+      <!-- 条目操作按钮:基于当前选中条目启用 -->
+      <div class="flex items-center gap-0.5 border-l border-border pl-1 ml-1">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          :disabled="!selectedEntry"
+          :title="side === 'local' ? '上传到远端' : '下载到本地'"
+          @click="selectedEntry && emit('transfer', selectedEntry)"
+        >
+          <ArrowRight v-if="side === 'local'" />
+          <ArrowLeft v-else />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          :disabled="!selectedEntry || selectedEntry.isDir"
+          title="预览"
+          @click="selectedEntry && !selectedEntry.isDir && emit('preview', selectedEntry)"
+        >
+          <Eye />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          :disabled="!selectedEntry || isThisPcLevel"
+          title="重命名"
+          @click="selectedEntry && emit('rename', selectedEntry)"
+        >
+          <Pencil />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          :disabled="!selectedEntry || isThisPcLevel"
+          title="删除"
+          @click="selectedEntry && emit('delete', selectedEntry)"
+        >
+          <Trash2 class="text-destructive" />
+        </Button>
+      </div>
     </div>
 
     <!-- 面包屑:chevron + button 成对出现,首项前不带 chevron -->
-    <div class="flex items-center gap-0.5 overflow-x-auto border-b border-border px-2 text-muted-foreground" :style="{ height: 'var(--size-row-sm)', fontSize: 'var(--text-xs)' }">
+    <div class="text-body flex items-center gap-0.5 overflow-x-auto border-b border-border px-2 text-muted-foreground" :style="{ height: 'var(--size-row-sm)' }">
       <template v-for="(c, i) in crumbs" :key="i">
-        <ChevronRight v-if="i > 0" class="size-3 shrink-0" />
-        <button
-          class="shrink-0 rounded px-1 hover:bg-muted hover:text-foreground"
+        <ChevronRight v-if="i > 0" class="size-3.5 shrink-0 opacity-60" />
+        <Button
+          variant="ghost"
+          size="xs"
+          class="shrink-0"
           @click="emit('navigate', c)"
-        >{{ c === '' ? '此电脑' : (c.split('/').filter(Boolean).pop() || '/') }}</button>
+        >{{ c === '' ? '此电脑' : (c.split('/').filter(Boolean).pop() || '/') }}</Button>
       </template>
     </div>
 
     <!-- 文件列表 -->
     <ScrollArea class="flex-1">
       <div
-        class="select-none text-[length:var(--text-sm)]"
-        @contextmenu="onContextmenu($event, null)"
+        class="text-body select-none"
         @click="clearSelect"
       >
         <div
@@ -252,41 +275,21 @@ defineExpose({ closeMenu })
           v-for="e in entries"
           :key="e.name"
           :class="cn(
-            'flex cursor-pointer items-center gap-2 px-2 hover:bg-muted/50',
-            selected === e.name && 'bg-primary/10',
+            'flex cursor-pointer items-center gap-2 px-2 hover:bg-panel-2',
+            selected === e.name && 'bg-primary/15 hover:bg-primary/15',
           )"
           :style="{ height: 'var(--size-row-list)' }"
-          draggable="true"
-          @click="onItemClick(e)"
+          draggable="false"
+          @click.stop="onItemClick(e)"
           @dblclick="onItemDblclick(e)"
-          @contextmenu="onContextmenu($event, e)"
+          @mousedown.stop="onItemMouseDown($event, e)"
         >
-          <component :is="iconFor(e)" class="shrink-0 text-muted-foreground" :style="{ width: 'var(--size-icon-md)', height: 'var(--size-icon-md)' }" />
-          <span class="flex-1 truncate">{{ e.name }}</span>
-          <span class="w-24 shrink-0 text-right text-muted-foreground whitespace-nowrap" :style="{ fontSize: 'var(--text-xs)' }">{{ fmtSize(e.size) }}</span>
-          <span class="w-32 shrink-0 text-right text-muted-foreground whitespace-nowrap" :style="{ fontSize: 'var(--text-xs)' }">{{ fmtDate(e.modified) }}</span>
+          <component :is="iconFor(e)" :class="cn('size-4 shrink-0', e.isDir ? 'text-warning' : 'text-muted-foreground')" />
+          <span :class="cn('flex-1 truncate', e.isDir && 'font-medium')">{{ e.name }}</span>
+          <span class="text-caption w-24 shrink-0 text-right font-normal tracking-normal normal-case font-mono tabular-nums text-muted-foreground whitespace-nowrap">{{ fmtSize(e.size) }}</span>
+          <span class="text-caption w-32 shrink-0 text-right font-normal tracking-normal normal-case font-mono tabular-nums text-muted-foreground whitespace-nowrap">{{ fmtDate(e.modified) }}</span>
         </div>
       </div>
     </ScrollArea>
-
-    <!-- 右键菜单 -->
-    <Teleport to="body">
-      <div
-        v-if="menu"
-        class="fixed z-50 min-w-[120px] rounded-md border border-border bg-popover py-1 text-[length:var(--text-sm)] shadow-md"
-        :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
-        @click.stop
-      >
-        <button
-          v-for="item in menuItems"
-          :key="item.label"
-          :class="cn(
-            'block w-full px-3 py-1 text-left hover:bg-muted',
-            item.danger && 'text-destructive hover:bg-destructive/10',
-          )"
-          @click="item.action"
-        >{{ item.label }}</button>
-      </div>
-    </Teleport>
   </div>
 </template>

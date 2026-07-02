@@ -55,31 +55,31 @@ const groups: ShortcutGroup[] = [
 
 <template>
   <Dialog v-model:open="open">
-    <DialogContent class="max-w-[480px]">
+    <DialogContent class="max-w-[500px]">
       <DialogHeader>
-        <DialogTitle class="text-[15px]">快捷键参考</DialogTitle>
-        <DialogDescription class="text-[length:var(--text-xs)]">KShell 所有键盘快捷键</DialogDescription>
+        <DialogTitle>快捷键参考</DialogTitle>
+        <DialogDescription>KShell 所有键盘快捷键</DialogDescription>
       </DialogHeader>
 
       <div class="max-h-[420px] space-y-4 overflow-y-auto py-1">
         <div v-for="g in groups" :key="g.title">
-          <div class="mb-2 text-[length:var(--text-xs)] font-medium text-muted-foreground">{{ g.title }}</div>
-          <div class="space-y-1.5">
+          <div class="text-caption mb-2 text-muted-foreground">{{ g.title }}</div>
+          <div class="space-y-0.5">
             <div
               v-for="item in g.items"
               :key="item.desc"
-              class="flex items-center justify-between rounded-sm px-1 py-1 text-[length:var(--text-sm)]"
+              class="text-body flex items-center justify-between rounded-sm px-2 py-1"
               :class="item.disabled ? 'opacity-50' : ''"
             >
               <span :class="item.disabled ? 'text-muted-foreground line-through' : 'text-foreground'">
                 {{ item.desc }}
-                <span v-if="item.disabled" class="ml-1 text-[length:var(--text-xs)] text-muted-foreground">(待实现)</span>
+                <span v-if="item.disabled" class="text-caption ml-1 font-normal tracking-normal normal-case text-muted-foreground">(待实现)</span>
               </span>
-              <div class="flex gap-1">
+              <div class="flex items-center gap-1">
                 <kbd
                   v-for="k in item.keys"
                   :key="k"
-                  class="inline-block rounded-[3px] border border-border bg-panel-2 px-1.5 py-px font-mono text-[length:var(--text-xs)] text-foreground"
+                  class="text-caption inline-flex h-[20px] min-w-[20px] items-center justify-center rounded-sm border border-border bg-panel-2 px-1.5 font-mono font-medium tracking-normal normal-case text-foreground"
                 >{{ k }}</kbd>
               </div>
             </div>

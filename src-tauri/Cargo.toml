@@ -38,7 +38,10 @@ tracing = "0.1"
 # 加密(机器绑定:随机 key 文件 + AES-256-GCM)
 aes-gcm = "0.10"
 base64 = "0.22"
-rand = "0.8"
+rand = "0.10"
+
+# SSH 密钥生成(与 russh 0.61 同版本的 ssh-key,需直接依赖以访问 RsaKeypair 等)
+ssh-key = { version = "0.7.0-rc.10", default-features = false, features = ["ed25519", "ecdsa", "p256", "p384", "p521", "rsa", "rand_core", "std"] }
 
 # 持久化
 rusqlite = { version = "0.32", features = ["bundled"] }

@@ -3,13 +3,14 @@ import { Plus, X, TerminalSquare, FolderOpen, Activity, Container } from 'lucide
 import { useMagicKeys, whenever } from '@vueuse/core'
 import { onMounted, watchEffect } from 'vue'
 import { Button } from '@/components/ui/button'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import TerminalSplit from '@/components/terminal/TerminalSplit.vue'
 import SftpView from '@/components/sftp/SftpView.vue'
 import { tabs, activeTabId, closeTab } from '@/stores/tabs'
 import { openNewConnection } from '@/stores/dialogs'
-import { sidebarVisible } from '@/stores/ui'
+import { copyTerminalSelection } from '@/stores/ui'
 
 const iconMap = {
   terminal: TerminalSquare,
@@ -26,10 +27,10 @@ const shortcuts = [
 ]
 
 // 全局快捷键(在 WorkArea 层级监听)
+// Ctrl+B 由 SidebarProvider 内置处理,此处不再重复监听
 const keys = useMagicKeys()
 whenever(keys['Ctrl+N'], () => openNewConnection())
 whenever(keys['Ctrl+T'], () => openNewConnection())
-whenever(keys['Ctrl+B'], () => (sidebarVisible.value = !sidebarVisible.value))
 whenever(keys['Ctrl+W'], () => {
   if (activeTabId.value) closeTab(activeTabId.value)
 })
@@ -57,16 +58,25 @@ watchEffect(() => {
   // 占位,用于让上面的 keys reactive
 })
 
-// 阻止 WebView 默认刷新行为:F5 / Ctrl+R / Ctrl+Shift+R / Cmd+R
-// 这些快捷键在桌面客户端里会打断当前 SSH 会话与前端状态。
+// 阻止 WebView 默认行为:
+// - F5 / Ctrl+R / Ctrl+Shift+R / Cmd+R:刷新会打断 SSH 会话
+// - Ctrl+Shift+C:WebView 默认打开 DevTools,改为终端复制选区
 onMounted(() => {
   const handler = (e: KeyboardEvent) => {
+    // 刷新拦截
     if (
       e.key === 'F5' ||
       ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R'))
     ) {
       e.preventDefault()
       e.stopPropagation()
+      return
+    }
+    // Ctrl+Shift+C:终端复制(阻止 DevTools)
+    if (e.ctrlKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+      e.preventDefault()
+      e.stopPropagation()
+      copyTerminalSelection()
     }
   }
   window.addEventListener('keydown', handler, { capture: true })
@@ -77,51 +87,61 @@ onMounted(() => {
 <template>
   <main class="flex min-w-0 flex-1 flex-col bg-background">
     <div class="flex shrink-0 border-b border-border bg-titlebar" :style="{ height: 'var(--size-tabbar)' }">
-      <div class="flex flex-1 overflow-x-auto">
-        <div
-          v-for="tab in tabs"
-          :key="tab.id"
-          :class="cn(
-            'group flex h-full min-w-[120px] max-w-[200px] cursor-pointer items-center gap-1.5 border-r border-border pl-3 pr-2',
-            activeTabId === tab.id
-              ? 'bg-background text-foreground shadow-[inset_0_2px_0_var(--color-primary)]'
-              : 'text-muted-foreground hover:text-foreground',
-          )"
-          :style="{ fontSize: 'var(--text-sm)' }"          @click="activeTabId = tab.id"
-        >
-          <component
-            :is="iconMap[tab.type]"
-            :class="cn('size-3.5 shrink-0', activeTabId === tab.id && 'text-primary')"
-          />
-          <span class="flex-1 truncate">{{ tab.title }}</span>
-          <button
-            class="flex size-4 items-center justify-center rounded-sm text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground group-hover:opacity-100"
-            @click.stop="closeTab(tab.id)"
+      <Tabs
+        :model-value="activeTabId ?? ''"
+        class="min-w-0 flex-1"
+        @update:model-value="(v: string | number) => { if (typeof v === 'string' && v !== '') activeTabId = v }"
+      >
+        <TabsList class="h-full w-full justify-start gap-0 overflow-x-auto border-b-0 bg-transparent px-0 pt-0">
+          <TabsTrigger
+            v-for="tab in tabs"
+            :key="tab.id"
+            :value="tab.id"
+            as-child
+            :class="cn(
+              'group relative flex h-full min-w-[120px] max-w-[200px] cursor-pointer items-center gap-2 rounded-none border-r border-border py-0 pl-3 pr-2',
+              'text-body text-muted-foreground hover:bg-muted/50 hover:text-foreground',
+              'data-[state=active]:mb-0 data-[state=active]:border-b-0 data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-[inset_0_2px_0_var(--color-primary)]',
+            )"
           >
-            <X class="size-3" />
-          </button>
-        </div>
-      </div>
+            <div class="flex h-full w-full items-center gap-2">
+              <component
+                :is="iconMap[tab.type]"
+                :class="cn('size-3.5 shrink-0', activeTabId === tab.id && 'text-primary')"
+              />
+              <span class="flex-1 truncate">{{ tab.title }}</span>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                class="opacity-0 hover:bg-muted hover:text-foreground group-hover:opacity-100"
+                @click.stop="closeTab(tab.id)"
+              >
+                <X class="size-3.5" />
+              </Button>
+            </div>
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
       <Tooltip>
         <TooltipTrigger as-child>
-          <button
-            class="flex items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground"
-            :style="{ width: 'var(--size-tabbar)' }"
+          <Button
+            variant="ghost"
+            class="h-full w-[var(--size-tabbar)] rounded-none px-0 text-muted-foreground hover:bg-muted hover:text-foreground"
             @click="openNewConnection()"
           >
             <Plus class="size-4" />
-          </button>
+          </Button>
         </TooltipTrigger>
         <TooltipContent>新建标签</TooltipContent>
       </Tooltip>
     </div>
 
     <div class="relative min-h-0 flex-1">
-      <div v-if="tabs.length === 0" class="flex h-full items-center justify-center">
+      <div v-if="tabs.length === 0" class="flex h-full items-center justify-center px-6">
         <div class="max-w-[480px] text-center">
-          <div class="mb-3 font-mono text-[56px] leading-none tracking-[-4px] text-primary">›_</div>
-          <h2 class="mb-2 text-[24px] font-medium text-foreground">KShell</h2>
-          <p class="mb-5 text-muted-foreground">选择左侧会话开始连接,或新建一个连接。</p>
+          <div class="mb-4 font-mono text-[64px] leading-none tracking-[-6px] text-primary">›_</div>
+          <h2 class="mb-2 text-[22px] font-medium tracking-tight text-foreground">KShell</h2>
+          <p class="text-ui mb-6 text-muted-foreground">选择左侧会话开始连接,或新建一个连接。</p>
 
           <div class="mb-8 flex justify-center gap-2">
             <Button variant="default" @click="openNewConnection()">
@@ -131,14 +151,16 @@ onMounted(() => {
             <Button variant="outline">导入配置</Button>
           </div>
 
-          <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-[length:var(--text-xs)] text-muted-foreground">
-            <div v-for="s in shortcuts" :key="s[2]">
-              <kbd
-                v-for="k in s.slice(0, -1)"
-                :key="k"
-                class="mr-1 inline-block rounded-[3px] border border-border bg-panel-2 px-1.5 py-px font-mono text-[length:var(--text-xs)] text-foreground"
-              >{{ k }}</kbd>
-              {{ s[s.length - 1] }}
+          <div class="text-body grid grid-cols-2 gap-x-6 gap-y-2.5 text-muted-foreground">
+            <div v-for="s in shortcuts" :key="s[2]" class="flex items-center gap-1.5">
+              <span class="flex items-center gap-0.5">
+                <kbd
+                  v-for="k in s.slice(0, -1)"
+                  :key="k"
+                  class="text-caption inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-sm border border-border bg-panel-2 px-1 font-mono font-medium tracking-normal normal-case text-foreground"
+                >{{ k }}</kbd>
+              </span>
+              <span>{{ s[s.length - 1] }}</span>
             </div>
           </div>
         </div>

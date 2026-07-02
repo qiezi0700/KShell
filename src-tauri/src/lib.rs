@@ -1,5 +1,6 @@
 mod commands;
 mod crypto;
+mod keys;
 mod ssh;
 mod sftp;
 mod state;
@@ -41,6 +42,7 @@ pub fn run() {
             commands::ssh_resize,
             commands::ssh_close_channel,
             commands::ssh_disconnect,
+            commands::ssh_exec,
             // 持久化
             commands::groups_list,
             commands::group_upsert,
@@ -87,6 +89,15 @@ pub fn run() {
             sftp::commands::local_home,
             sftp::commands::local_read_file,
             sftp::commands::local_write_file,
+            // SSH 密钥库
+            keys::ssh_keys_list,
+            keys::ssh_key_generate,
+            keys::ssh_key_import,
+            keys::ssh_key_delete,
+            keys::ssh_key_rename,
+            keys::ssh_key_public_key,
+            keys::ssh_key_deploy,
+            keys::ssh_key_passphrase,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

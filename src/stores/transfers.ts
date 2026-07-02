@@ -276,3 +276,13 @@ export async function cancelTransfer(id: string): Promise<void> {
     // 忽略后端不存在等错误
   }
 }
+
+/** 从队列中移除单条已结束的任务(进行中需先取消) */
+export function removeTransfer(id: string) {
+  const item = items.value.find(t => t.id === id)
+  if (!item) return
+  if (item.status === 'transferring' || item.status === 'pending') return
+  cleanup(id)
+  doneCallbacks.delete(id)
+  items.value = items.value.filter(t => t.id !== id)
+}

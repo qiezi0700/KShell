@@ -18,7 +18,12 @@ export const buttonVariants = cva(
         default: 'h-8 px-3 py-1',
         sm: 'h-7 rounded px-2 text-xs',
         lg: 'h-9 rounded-md px-4',
+        // 常规工具条图标按钮(顶栏、Dialog 内):28×28
         icon: 'size-7',
+        // 密集列表/子面板图标按钮(SFTP 行、TransferPanel):24×24
+        'icon-sm': 'size-6',
+        // 密集文本按钮:24 高、小内边距、text-body 字号
+        xs: 'h-6 rounded px-2 text-body gap-1',
       },
     },
     defaultVariants: {

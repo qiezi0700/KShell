@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
-import type { ComponentPublicInstance } from 'vue'
 import {
   Loader2,
   Save,
@@ -12,6 +11,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { Textarea } from '@/components/ui/textarea'
 import FilePane from './FilePane.vue'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { UnlistenFn } from '@tauri-apps/api/event'
@@ -73,6 +74,8 @@ const remoteLoading = ref(false)
 // 预览/编辑
 const preview = ref<{ name: string; path: string; side: 'local' | 'remote'; content: string; dirty: boolean } | null>(null)
 const saving = ref(false)
+const previewMode = ref<'view' | 'edit'>('view')
+const previewHtml = ref('')
 
 // 文件剪贴板(Ctrl+C/X/V)
 const clip = ref<{ from: 'local' | 'remote'; path: string; entry: RemoteEntry; mode: 'copy' | 'cut' } | null>(null)
@@ -81,14 +84,11 @@ const activeSide = ref<'local' | 'remote'>('local')
 // 各栏选中条目
 const selectedLocal = ref<RemoteEntry | null>(null)
 const selectedRemote = ref<RemoteEntry | null>(null)
-// FilePane 实例引用(用于互关右键菜单)
-const localPaneRef = ref<ComponentPublicInstance<{ closeMenu: () => void }> | null>(null)
-const remotePaneRef = ref<ComponentPublicInstance<{ closeMenu: () => void }> | null>(null)
 
-// 拖拽传输指示
+// 拖拽传输指示(OS 文件拖入高亮 + pane-to-pane 拖拽高亮共用)
 const dragOver = ref<'local' | 'remote' | null>(null)
 
-// Tauri v2 原生 drag-drop 事件的反注册函数
+// Tauri v2 原生 drag-drop 事件的反注册函数(处理从资源管理器拖入的 OS 文件)
 let unlistenDragDrop: UnlistenFn | null = null
 
 onMounted(async () => {
@@ -114,6 +114,8 @@ onMounted(async () => {
   }
   await Promise.all([refreshLocal(), refreshRemote()])
   window.addEventListener('keydown', onKeydown)
+  window.addEventListener('mousemove', onWindowMouseMove)
+  window.addEventListener('mouseup', onWindowMouseUp)
 
   // 监听系统级文件拖入(拖 Windows 资源管理器里的文件到窗口)。
   // WebView 的 DOM drop 事件在 Tauri v2 里拿不到真实磁盘路径,必须走这个 API。
@@ -136,6 +138,8 @@ onMounted(async () => {
 
 onBeforeUnmount(async () => {
   window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('mousemove', onWindowMouseMove)
+  window.removeEventListener('mouseup', onWindowMouseUp)
   unlistenDragDrop?.()
   if (hDragging.value) onHUp()
   if (sftpId.value) {
@@ -354,33 +358,77 @@ async function downloadFromRemote(e: RemoteEntry, opts?: { onDone?: (success: bo
   }
 }
 
-// 拖拽:local → remote(上传),remote → local(下载)
-function onDragStart(e: DragEvent, side: 'local' | 'remote', entry: RemoteEntry) {
-  e.dataTransfer?.setData('text/plain', JSON.stringify({ side, entry }))
+// ============================================================
+// pane-to-pane 拖拽(鼠标事件模拟,绕过 Tauri 原生 OLE 拦截)
+// ============================================================
+
+// 当前鼠标按下态:记录源栏 + 条目 + 起点,尚未确定是否进入拖拽
+const press = ref<{ side: 'local' | 'remote'; entry: RemoteEntry; x: number; y: number } | null>(null)
+// 已进入拖拽态:超过移动阈值后置位,显示拖影
+const dragging = ref<{ side: 'local' | 'remote'; entry: RemoteEntry } | null>(null)
+// 拖影跟随光标的坐标
+const ghost = ref<{ x: number; y: number; name: string } | null>(null)
+// 进入拖拽态的最小移动距离(像素),避免误判点击
+const DRAG_THRESHOLD = 4
+
+// FilePane 条目 mousedown 时触发:记录按下态,等待 mousemove 判定
+function onItemMouseDown(side: 'local' | 'remote', entry: RemoteEntry, e: MouseEvent) {
+  // 左键且非右键菜单区域才启动
+  if (e.button !== 0) return
+  press.value = { side, entry, x: e.clientX, y: e.clientY }
 }
 
-function onDragOver(e: DragEvent, side: 'local' | 'remote') {
-  e.preventDefault()
-  dragOver.value = side
-}
-
-function onDragLeave() {
-  dragOver.value = null
-}
-
-async function onDrop(e: DragEvent, side: 'local' | 'remote') {
-  e.preventDefault()
-  dragOver.value = null
-  const raw = e.dataTransfer?.getData('text/plain')
-  if (!raw) return
-  const { side: fromSide, entry } = JSON.parse(raw) as { side: string; entry: RemoteEntry }
-  // 目录也允许:uploadFromLocal / downloadFromRemote 内部会按 isDir 分派
-  if (fromSide === 'local' && side === 'remote') {
-    await uploadFromLocal(entry)
-  } else if (fromSide === 'remote' && side === 'local') {
-    await downloadFromRemote(entry)
+function onWindowMouseMove(e: MouseEvent) {
+  if (!press.value) return
+  // 未进入拖拽态:判定是否越过阈值
+  if (!dragging.value) {
+    const dx = e.clientX - press.value.x
+    const dy = e.clientY - press.value.y
+    if (dx * dx + dy * dy < DRAG_THRESHOLD * DRAG_THRESHOLD) return
+    // 进入拖拽态,锁定 user-select 防止文字选中
+    dragging.value = { side: press.value.side, entry: press.value.entry }
+    document.body.style.userSelect = 'none'
   }
+  // 更新拖影 + 命中栏高亮
+  ghost.value = { x: e.clientX, y: e.clientY, name: dragging.value.entry.name }
+  dragOver.value = hitTestSideCss(e.clientX, e.clientY)
 }
+
+function onWindowMouseUp(_e: MouseEvent) {
+  // 先结算拖拽
+  if (dragging.value) {
+    const target = dragOver.value
+    const from = dragging.value.side
+    const entry = dragging.value.entry
+    // 跨栏才传输;同栏忽略
+    if (target && target !== from) {
+      if (from === 'local' && target === 'remote') void uploadFromLocal(entry)
+      else if (from === 'remote' && target === 'local') void downloadFromRemote(entry)
+    }
+  }
+  press.value = null
+  dragging.value = null
+  ghost.value = null
+  dragOver.value = null
+  document.body.style.userSelect = ''
+}
+
+/**
+ * CSS 像素命中测试(pane-to-pane 用;OS 文件拖入用 hitTestSide 处理物理像素)。
+ * 左半属本地栏、右半属远端栏,以 localWidthPct 划分。
+ */
+function hitTestSideCss(x: number, y: number): 'local' | 'remote' | null {
+  const el = splitEl.value
+  if (!el) return null
+  const r = el.getBoundingClientRect()
+  if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null
+  const boundary = r.left + (r.width * localWidthPct.value) / 100
+  return x < boundary ? 'local' : 'remote'
+}
+
+// ============================================================
+// OS 文件拖入(Tauri 原生 onDragDropEvent,提供真实磁盘路径)
+// ============================================================
 
 /**
  * 命中测试:Tauri 传来的 position 是物理像素(相对窗口左上角),
@@ -494,6 +542,8 @@ async function previewFile(side: 'local' | 'remote', e: RemoteEntry) {
     }
     const content = new TextDecoder().decode(buf)
     preview.value = { name: e.name, path: joinPath(side === 'remote' ? remoteCwd.value : localCwd.value, e.name), side, content, dirty: false }
+    previewMode.value = 'view'
+    await updateHighlight()
   } catch (err: any) {
     toast.error(String(err), '预览失败')
   }
@@ -522,6 +572,17 @@ async function savePreview() {
 
 function onPreviewInput() {
   if (preview.value) preview.value.dirty = true
+}
+
+async function updateHighlight() {
+  if (!preview.value) return
+  const { highlightCode } = await import('@/lib/highlight')
+  previewHtml.value = highlightCode(preview.value.content, preview.value.name)
+}
+
+function switchPreviewMode(mode: 'view' | 'edit') {
+  previewMode.value = mode
+  if (mode === 'view') void updateHighlight()
 }
 
 // ============================================================
@@ -702,17 +763,9 @@ function joinPath(dir: string, name: string): string {
         class="flex shrink-0 flex-col overflow-hidden"
         :style="{ width: localWidthPct + '%' }"
         :class="dragOver === 'local' && 'ring-1 ring-primary ring-inset'"
-        @dragover="onDragOver($event, 'local')"
-        @dragleave="onDragLeave"
-        @drop="onDrop($event, 'local')"
         @mousedown="activeSide = 'local'"
       >
-        <div class="flex items-center justify-between border-b border-border bg-muted/30 px-3 py-1 text-[length:var(--text-xs)] font-medium">
-          <span>本地</span>
-          <span class="text-muted-foreground">{{ localCwd }}</span>
-        </div>
         <FilePane
-          ref="localPaneRef"
           side="local"
           :entries="localEntries"
           :cwd="localCwd"
@@ -726,37 +779,31 @@ function joinPath(dir: string, name: string): string {
           @rename="localRename"
           @delete="localDelete"
           @select="selectedLocal = $event"
-          @menuopen="remotePaneRef?.closeMenu()"
+          @itemmousedown="(entry, ev) => onItemMouseDown('local', entry, ev)"
         />
       </div>
 
       <!-- 左右分隔条(可拖拽调宽) -->
       <div
-        class="group relative w-[3px] shrink-0 cursor-col-resize bg-border hover:bg-primary/50"
+        class="group relative w-px shrink-0 cursor-col-resize bg-border hover:bg-primary/60 transition-colors"
         @mousedown="onHDividerDown"
       >
-        <div class="absolute left-1/2 top-1/2 h-8 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-muted-foreground/30 group-hover:bg-primary" />
+        <div class="absolute left-1/2 top-1/2 h-10 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-panel-3 opacity-0 transition-opacity group-hover:opacity-100 group-hover:bg-primary" />
       </div>
 
       <!-- 远端栏 -->
       <div
         class="flex min-w-0 flex-1 flex-col overflow-hidden"
         :class="dragOver === 'remote' && 'ring-1 ring-primary ring-inset'"
-        @dragover="onDragOver($event, 'remote')"
-        @dragleave="onDragLeave"
-        @drop="onDrop($event, 'remote')"
         @mousedown="activeSide = 'remote'"
       >
-        <div class="flex items-center justify-between border-b border-border bg-muted/30 px-3 py-1 text-[length:var(--text-xs)] font-medium">
-          <span>远端 {{ user }}@{{ host }}</span>
-          <span class="text-muted-foreground">{{ remoteCwd }}</span>
-        </div>
         <FilePane
-          ref="remotePaneRef"
           side="remote"
           :entries="remoteEntries"
           :cwd="remoteCwd"
           :loading="remoteLoading"
+          :host="host"
+          :user="user"
           @navigate="remoteNavigate"
           @refresh="refreshRemote"
           @mkdir="remoteMkdirAction"
@@ -766,33 +813,60 @@ function joinPath(dir: string, name: string): string {
           @rename="remoteRename"
           @delete="remoteDelete"
           @select="selectedRemote = $event"
-          @menuopen="localPaneRef?.closeMenu()"
+          @itemmousedown="(entry, ev) => onItemMouseDown('remote', entry, ev)"
         />
       </div>
     </div>
 
+    <!-- pane-to-pane 拖影(跟随光标) -->
+    <Teleport to="body">
+      <div
+        v-if="ghost"
+        class="text-body pointer-events-none fixed z-50 rounded-md border border-border bg-popover px-2 py-1 shadow-md"
+        :style="{ left: ghost.x + 12 + 'px', top: ghost.y + 12 + 'px' }"
+      >{{ ghost.name }}</div>
+    </Teleport>
+
     <!-- 预览/编辑对话框 -->
     <Dialog :open="!!preview" @update:open="(v) => { if (!v) preview = null }">
-      <DialogContent v-if="preview" class="flex max-h-[85vh] flex-col gap-2 p-4 sm:max-w-[700px]">
+      <DialogContent v-if="preview" class="flex max-h-[85vh] flex-col gap-3 p-4 sm:max-w-[700px]">
         <DialogHeader>
           <DialogTitle class="flex items-center gap-2">
-            <span>{{ preview.name }}</span>
-            <span v-if="preview.dirty" class="text-[length:var(--text-xs)] text-muted-foreground">未保存</span>
+            <span class="truncate">{{ preview.name }}</span>
+            <span v-if="preview.dirty" class="text-caption font-normal tracking-normal normal-case text-warning">● 未保存</span>
           </DialogTitle>
         </DialogHeader>
-        <textarea
+        <ScrollArea v-if="previewMode === 'view'" class="h-[60vh] w-full rounded-md border border-border bg-panel-2 p-3">
+          <pre class="m-0 whitespace-pre-wrap"><code class="hljs text-body font-mono leading-5" v-html="previewHtml" /></pre>
+        </ScrollArea>
+        <Textarea
+          v-else
           v-model="preview.content"
-          @input="onPreviewInput"
           spellcheck="false"
-          class="h-[60vh] w-full resize-none rounded-md bg-muted/50 p-3 font-mono text-[length:var(--text-sm)] leading-5 outline-none focus:ring-1 focus:ring-primary"
+          class="text-body h-[60vh] w-full [field-sizing:fixed] resize-none rounded-md border-border bg-panel-2 p-3 font-mono leading-5 focus-visible:border-primary focus-visible:ring-primary"
+          @input="onPreviewInput"
         />
-        <div class="flex justify-end gap-2">
-          <Button variant="ghost" size="sm" @click="preview = null">关闭</Button>
-          <Button size="sm" :disabled="!preview.dirty || saving" @click="savePreview">
-            <Loader2 v-if="saving" class="size-3.5 animate-spin" />
-            <Save v-else class="size-3.5" />
-            保存
-          </Button>
+        <div class="flex items-center justify-between">
+          <div class="flex gap-1">
+            <Button
+              size="sm"
+              :variant="previewMode === 'view' ? 'secondary' : 'ghost'"
+              @click="switchPreviewMode('view')"
+            >查看</Button>
+            <Button
+              size="sm"
+              :variant="previewMode === 'edit' ? 'secondary' : 'ghost'"
+              @click="switchPreviewMode('edit')"
+            >编辑</Button>
+          </div>
+          <div class="flex gap-2">
+            <Button variant="ghost" size="sm" @click="preview = null">关闭</Button>
+            <Button v-if="previewMode === 'edit'" size="sm" :disabled="!preview.dirty || saving" @click="savePreview">
+              <Loader2 v-if="saving" class="animate-spin" />
+              <Save v-else />
+              保存
+            </Button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

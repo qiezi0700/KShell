@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
 use crate::crypto::CryptoKey;
-pub use model::{Group, Session};
+pub use model::{Group, Session, SshKey};
 
 /// 存储门面,持有 SQLite 连接。
 pub struct Store {
@@ -91,10 +91,27 @@ impl Store {
                 .context("添加 passphrase_encrypted 列失败")?;
         }
 
+        // v4:SSH 密钥库表
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS ssh_keys (
+                id            TEXT PRIMARY KEY,
+                name          TEXT NOT NULL,
+                algorithm     TEXT NOT NULL,
+                fingerprint   TEXT NOT NULL,
+                key_path      TEXT NOT NULL,
+                comment       TEXT,
+                passphrase_encrypted TEXT,
+                created_at    TEXT NOT NULL
+            );
+            "#,
+        )
+        .context("创建 ssh_keys 表失败")?;
+
         // 记录当前 schema 版本
         conn.execute(
             "INSERT OR IGNORE INTO schema_version(version) VALUES(?1)",
-            params![3i64],
+            params![4i64],
         )
         .ok();
         Ok(())
@@ -261,6 +278,69 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         conn.execute("DELETE FROM sessions WHERE id=?1", params![id])?;
         Ok(())
+    }
+
+    // ---- SshKey ----
+
+    pub fn list_ssh_keys(&self) -> Result<Vec<SshKey>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, name, algorithm, fingerprint, key_path, comment, created_at
+             FROM ssh_keys ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([], SshKey::from_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn insert_ssh_key(&self, key: SshKey) -> Result<SshKey> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.execute(
+            "INSERT INTO ssh_keys(id, name, algorithm, fingerprint, key_path, comment, created_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                key.id,
+                key.name,
+                key.algorithm,
+                key.fingerprint,
+                key.key_path,
+                key.comment,
+                key.created_at,
+            ],
+        )?;
+        Ok(key)
+    }
+
+    pub fn update_ssh_key_name(&self, id: &str, name: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let affected = conn.execute(
+            "UPDATE ssh_keys SET name=?2 WHERE id=?1",
+            params![id, name],
+        )?;
+        if affected == 0 {
+            anyhow::bail!("密钥不存在: {id}");
+        }
+        Ok(())
+    }
+
+    pub fn delete_ssh_key(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.execute("DELETE FROM ssh_keys WHERE id=?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn get_ssh_key(&self, id: &str) -> Result<SshKey> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let key = conn.query_row(
+            "SELECT id, name, algorithm, fingerprint, key_path, comment, created_at
+             FROM ssh_keys WHERE id=?1",
+            params![id],
+            SshKey::from_row,
+        )?;
+        Ok(key)
     }
 }
 

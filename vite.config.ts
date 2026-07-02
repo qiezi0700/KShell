@@ -13,6 +13,18 @@ export default defineConfig(async () => ({
     },
   },
   clearScreen: false,
+  build: {
+    // 把大依赖拆成独立 chunk,避免主 bundle 过大
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // xterm 体量大且只在终端 tab 用,独立成块
+          xterm: ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-web-links'],
+          // echarts 由 MonitorDialog 动态 import 自动 code-split + tree-shake,不在此强制合并
+        },
+      },
+    },
+  },
   server: {
     port: 1420,
     strictPort: true,

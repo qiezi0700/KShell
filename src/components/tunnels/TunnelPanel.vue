@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { Plus, Trash2, AlertCircle, Globe, Laptop } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -162,17 +163,17 @@ function formatKind(t: TunnelInfo): string {
 </script>
 
 <template>
-  <div class="flex h-full flex-col gap-2 p-3 text-[12px]">
+  <div class="text-body flex h-full flex-col gap-3 p-3">
     <div v-if="!activeSessionId" class="text-muted-foreground">
       请先连接或打开一个 SSH 会话以管理端口隧道。
     </div>
 
     <template v-else>
       <!-- 新增表单 -->
-      <div class="space-y-2 rounded-md border border-border bg-muted/30 p-2">
+      <Card class="gap-2 rounded-md border-border bg-panel p-3 shadow-none">
         <div class="flex items-center gap-2">
           <Select v-model="kind">
-            <SelectTrigger class="h-7 text-[11px]">
+            <SelectTrigger class="text-body h-7">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -180,36 +181,36 @@ function formatKind(t: TunnelInfo): string {
               <SelectItem value="remote">远程转发</SelectItem>
             </SelectContent>
           </Select>
-          <span class="text-muted-foreground">{{ isLocal ? '本地端口 → 远端目标' : '远端端口 → 本地目标' }}</span>
+          <span class="text-caption tracking-normal normal-case text-muted-foreground">{{ isLocal ? '本地 → 远端' : '远端 → 本地' }}</span>
         </div>
 
         <div class="grid grid-cols-2 gap-2">
           <div class="space-y-1">
-            <Label class="text-[10px]">{{ isLocal ? '本地地址' : '绑定地址' }}</Label>
-            <Input v-model="localAddr" class="h-7 text-[11px]" :placeholder="isLocal ? '127.0.0.1' : '0.0.0.0'" />
+            <Label class="text-caption text-muted-foreground">{{ isLocal ? '本地地址' : '绑定地址' }}</Label>
+            <Input v-model="localAddr" class="text-body h-7 font-mono" :placeholder="isLocal ? '127.0.0.1' : '0.0.0.0'" />
           </div>
           <div class="space-y-1">
-            <Label class="text-[10px]">{{ isLocal ? '本地端口' : '绑定端口' }}</Label>
-            <Input v-model="localPort" class="h-7 text-[11px]" placeholder="例如 18080" />
+            <Label class="text-caption text-muted-foreground">{{ isLocal ? '本地端口' : '绑定端口' }}</Label>
+            <Input v-model="localPort" class="text-body h-7 font-mono" placeholder="18080" />
           </div>
         </div>
 
         <div class="grid grid-cols-2 gap-2">
           <div class="space-y-1">
-            <Label class="text-[10px]">{{ isLocal ? '远端目标地址' : '本地目标地址' }}</Label>
-            <Input v-model="remoteHost" class="h-7 text-[11px]" placeholder="127.0.0.1" />
+            <Label class="text-caption text-muted-foreground">{{ isLocal ? '远端目标地址' : '本地目标地址' }}</Label>
+            <Input v-model="remoteHost" class="text-body h-7 font-mono" placeholder="127.0.0.1" />
           </div>
           <div class="space-y-1">
-            <Label class="text-[10px]">{{ isLocal ? '远端目标端口' : '本地目标端口' }}</Label>
-            <Input v-model="remotePort" class="h-7 text-[11px]" placeholder="例如 80" />
+            <Label class="text-caption text-muted-foreground">{{ isLocal ? '远端目标端口' : '本地目标端口' }}</Label>
+            <Input v-model="remotePort" class="text-body h-7 font-mono" placeholder="80" />
           </div>
         </div>
 
-        <Button size="sm" class="h-7 w-full text-[11px]" :disabled="adding" @click="addTunnel">
-          <Plus class="size-3.5" />
+        <Button size="sm" class="w-full" :disabled="adding" @click="addTunnel">
+          <Plus />
           添加隧道
         </Button>
-      </div>
+      </Card>
 
       <!-- 列表 -->
       <ScrollArea class="flex-1">
@@ -218,32 +219,34 @@ function formatKind(t: TunnelInfo): string {
           暂无隧道规则
         </div>
         <div v-else class="space-y-1">
-          <div
+          <Card
             v-for="t in items"
             :key="t.id"
-            class="flex items-center gap-2 rounded-md border border-border p-2"
+            class="flex-row items-center gap-2 rounded-md border-border bg-panel p-2 shadow-none"
           >
             <component
               :is="t.kind.kind === 'local' ? Laptop : Globe"
               class="size-3.5 shrink-0 text-muted-foreground"
             />
             <div class="min-w-0 flex-1">
-              <div class="truncate font-medium">{{ formatKind(t) }}</div>
-              <div class="text-[10px]" :class="stateClass(t)">{{ stateText(t) }}</div>
+              <div class="truncate font-mono font-medium text-foreground">{{ formatKind(t) }}</div>
+              <div class="text-caption tracking-normal normal-case" :class="stateClass(t)">{{ stateText(t) }}</div>
             </div>
-            <button
-              class="flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-destructive/20 hover:text-destructive"
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              class="shrink-0 hover:bg-destructive/20 hover:text-destructive"
               title="停止"
               @click="removeTunnel(t.id)"
             >
-              <Trash2 class="size-3" />
-            </button>
-          </div>
+              <Trash2 class="size-3.5" />
+            </Button>
+          </Card>
         </div>
       </ScrollArea>
 
-      <div class="flex items-start gap-1 text-[10px] text-muted-foreground">
-        <AlertCircle class="size-3 shrink-0 mt-0.5" />
+      <div class="text-caption flex items-start gap-1.5 tracking-normal normal-case text-muted-foreground">
+        <AlertCircle class="size-3.5 shrink-0 mt-0.5" />
         <span>端口 0 表示让系统自动分配;会话断开时隧道自动关闭。</span>
       </div>
     </template>

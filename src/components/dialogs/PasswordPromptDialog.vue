@@ -54,16 +54,18 @@ function onOpenChange(open: boolean) {
             class="pr-8"
             autofocus
           />
-          <button
+          <Button
             type="button"
-            class="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-            @click="show = !show"
+            variant="ghost"
+            size="icon-sm"
+            class="absolute right-1 top-1/2 -translate-y-1/2 hover:bg-muted hover:text-foreground"
             :title="show ? '隐藏' : '显示'"
             tabindex="-1"
+            @click="show = !show"
           >
             <Eye v-if="!show" class="size-3.5" />
             <EyeOff v-else class="size-3.5" />
-          </button>
+          </Button>
         </div>
         <DialogFooter class="pt-2">
           <Button type="button" variant="ghost" @click="resolvePasswordPrompt(null)">

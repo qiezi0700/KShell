@@ -4,11 +4,30 @@ import { Plus, FolderPlus, Download, ChevronRight, Folder, Server, Trash2, Penci
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
-import { ScrollArea } from '@/components/ui/scroll-area'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu'
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+} from '@/components/ui/sidebar'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { openNewConnection } from '@/stores/dialogs'
 import TunnelPanel from '@/components/tunnels/TunnelPanel.vue'
+import MonitorSummary from '@/components/monitor/MonitorSummary.vue'
 import {
   groupTree,
   quickConnect,
@@ -146,31 +165,46 @@ async function delSession(s: StoredSession) {
 </script>
 
 <template>
-  <aside class="flex w-[220px] min-w-[180px] shrink-0 flex-col border-r border-border bg-sidebar">
-    <Tabs v-model="activeTab" class="flex-1 min-h-0">
-      <TabsList>
-        <TabsTrigger value="sessions">会话</TabsTrigger>
-        <TabsTrigger value="keys">密钥</TabsTrigger>
-        <TabsTrigger value="tunnels">隧道</TabsTrigger>
-      </TabsList>
+  <Sidebar
+    collapsible="offcanvas"
+    class="border-r border-sidebar-border"
+  >
+    <SidebarHeader class="border-b border-sidebar-border px-0 py-0">
+      <Tabs v-model="activeTab" class="min-h-0">
+        <TabsList class="flex w-full justify-start gap-0 border-b-0 px-1 pt-0">
+          <TabsTrigger
+            v-for="t in [
+              { value: 'sessions', label: '会话' },
+              { value: 'keys', label: '密钥' },
+              { value: 'tunnels', label: '隧道' },
+            ]"
+            :key="t.value"
+            :value="t.value"
+            class="rounded-none px-2.5 py-1.5 text-body text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground data-[state=active]:mb-0 data-[state=active]:border-b-0 data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-[inset_0_2px_0_var(--color-primary)]"
+          >{{ t.label }}</TabsTrigger>
+        </TabsList>
+      </Tabs>
+    </SidebarHeader>
 
-      <TabsContent value="sessions" class="flex flex-col">
-        <div class="flex items-center gap-0.5 border-b border-border px-1.5 py-1.5">
+    <SidebarContent class="px-0">
+      <!-- 会话 -->
+      <div v-show="activeTab === 'sessions'" class="flex min-h-0 flex-1 flex-col">
+        <div class="flex items-center gap-1 border-b border-sidebar-border px-2 py-1.5">
           <Tooltip>
             <TooltipTrigger as-child>
-              <Button variant="ghost" size="icon" @click="openNewConnection()"><Plus /></Button>
+              <Button variant="ghost" size="icon-sm" @click="openNewConnection()"><Plus /></Button>
             </TooltipTrigger>
             <TooltipContent>新建连接</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger as-child>
-              <Button variant="ghost" size="icon" @click="newGroup"><FolderPlus /></Button>
+              <Button variant="ghost" size="icon-sm" @click="newGroup"><FolderPlus /></Button>
             </TooltipTrigger>
             <TooltipContent>新建分组</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger as-child>
-              <Button variant="ghost" size="icon" disabled><Download /></Button>
+              <Button variant="ghost" size="icon-sm" disabled><Download /></Button>
             </TooltipTrigger>
             <TooltipContent>导入(待实现)</TooltipContent>
           </Tooltip>
@@ -179,91 +213,110 @@ async function delSession(s: StoredSession) {
           </div>
         </div>
 
-        <ScrollArea class="flex-1">
-          <div class="py-1">
-            <div
-              v-if="filtered.length === 0"
-              class="px-3 py-6 text-center text-[length:var(--text-xs)] text-muted-foreground"
-            >
-              {{ query ? '没有匹配的会话' : '暂无会话,点上方 + 新建一个' }}
-            </div>
-            <template v-for="node in filtered" :key="node.group.id || '__orphan__'">
-              <div
-                class="group flex cursor-pointer items-center gap-1.5 px-2 font-medium text-muted-foreground hover:bg-muted"
-                :style="{ height: 'var(--size-row-md)', fontSize: 'var(--text-sm)' }"
-                @click="toggle(node.group.id)"
-              >
-                <ChevronRight
-                  class="size-3 shrink-0 transition-transform"
-                  :class="expanded[nodeKey(node.group.id)] && 'rotate-90'"
-                />
-                <Folder class="size-3.5 shrink-0 text-warning" />
-                <span class="flex-1 truncate">{{ node.group.name }}</span>
-                <span class="text-[length:var(--text-xs)] text-muted-foreground/70">{{ node.sessions.length }}</span>
-                <template v-if="node.group.id && !isDefaultGroup(node.group.name)">
+        <div class="flex-1 overflow-y-auto py-1">
+          <div
+            v-if="filtered.length === 0"
+            class="text-body px-3 py-6 text-center text-muted-foreground"
+          >
+            {{ query ? '没有匹配的会话' : '暂无会话,点上方 + 新建一个' }}
+          </div>
+
+          <SidebarGroup v-for="node in filtered" :key="node.group.id || '__orphan__'" class="relative p-1">
+            <ContextMenu>
+              <ContextMenuTrigger as-child>
+                <SidebarGroupLabel
+                  as-child
+                >
                   <button
-                    class="hidden size-4 items-center justify-center rounded-sm hover:bg-background/60 group-hover:flex"
-                    @click.stop="renameGroup(node.group.id, node.group.name)"
-                    title="重命名"
-                  ><Pencil class="size-3" /></button>
-                  <button
-                    class="hidden size-4 items-center justify-center rounded-sm hover:bg-destructive/20 hover:text-destructive group-hover:flex"
-                    @click.stop="delGroup(node.group.id, node.group.name)"
-                    title="删除分组"
-                  ><Trash2 class="size-3" /></button>
-                </template>
-              </div>
-              <template v-if="expanded[nodeKey(node.group.id)]">
-                <div
+                    class="text-body flex w-full cursor-pointer items-center gap-2 rounded-md px-2 text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground"
+                    :style="{ height: 'var(--size-row-md)' }"
+                    @click="toggle(node.group.id)"
+                  >
+                    <ChevronRight
+                      class="size-3.5 shrink-0 transition-transform"
+                      :class="expanded[nodeKey(node.group.id)] && 'rotate-90'"
+                    />
+                    <Folder class="size-3.5 shrink-0 text-warning" />
+                    <span class="flex-1 truncate text-left font-medium">{{ node.group.name }}</span>
+                    <span class="text-caption font-normal tabular-nums text-muted-foreground/70">{{ node.sessions.length }}</span>
+                  </button>
+                </SidebarGroupLabel>
+              </ContextMenuTrigger>
+              <ContextMenuContent v-if="node.group.id && !isDefaultGroup(node.group.name)">
+                <ContextMenuItem @select="renameGroup(node.group.id, node.group.name)">
+                  <Pencil class="size-3.5" /> 重命名分组
+                </ContextMenuItem>
+                <ContextMenuSeparator />
+                <ContextMenuItem variant="destructive" @select="delGroup(node.group.id, node.group.name)">
+                  <Trash2 class="size-3.5" /> 删除分组
+                </ContextMenuItem>
+              </ContextMenuContent>
+            </ContextMenu>
+
+            <SidebarGroupContent v-show="expanded[nodeKey(node.group.id)]">
+              <SidebarMenu class="gap-0.5">
+                <SidebarMenuItem
                   v-for="child in node.sessions"
                   :key="child.id"
-                  :title="`${child.username}@${child.host}:${child.port}(双击连接)`"
-                  :class="cn(
-                    'group flex cursor-pointer items-center gap-1.5 pl-7 pr-2',
-                    selectedId === child.id
-                      ? 'bg-primary/20 text-foreground'
-                      : 'text-foreground hover:bg-muted',
-                  )"
-                  :style="{ height: 'var(--size-row-md)', fontSize: 'var(--text-sm)' }"
-                  @click="selectedId = child.id"
-                  @dblclick="onSessionDblclick(child)"
                 >
-                  <Server
-                    :class="cn(
-                      'size-3 shrink-0',
-                      activeStoredSessionIds.has(child.id) ? 'text-success' : 'text-muted-foreground',
-                    )"
-                  />
-                  <span
-                    :class="cn(
-                      'flex-1 truncate',
-                      activeStoredSessionIds.has(child.id) && 'text-foreground',
-                    )"
-                  >{{ child.name }}</span>
-                  <span class="font-mono text-[length:var(--text-xs)] text-muted-foreground">{{ child.host }}</span>
-                  <button
-                    class="hidden size-4 items-center justify-center rounded-sm hover:bg-muted-foreground/20 hover:text-foreground group-hover:flex"
-                    @click.stop="editSession(child)"
-                    title="编辑"
-                  ><Pencil class="size-3" /></button>
-                  <button
-                    class="hidden size-4 items-center justify-center rounded-sm hover:bg-destructive/20 hover:text-destructive group-hover:flex"
-                    @click.stop="delSession(child)"
-                    title="删除会话"
-                  ><Trash2 class="size-3" /></button>
-                </div>
-              </template>
-            </template>
-          </div>
-        </ScrollArea>
-      </TabsContent>
+                  <ContextMenu>
+                    <ContextMenuTrigger as-child>
+                      <SidebarMenuButton
+                        as-child
+                        :is-active="selectedId === child.id"
+                        :tooltip="`${child.username}@${child.host}:${child.port}(双击连接)`"
+                        size="sm"
+                        class="pl-7"
+                      >
+                        <button
+                          class="text-body"
+                          @click="selectedId = child.id"
+                          @dblclick="onSessionDblclick(child)"
+                        >
+                          <Server
+                            :class="cn(
+                              'size-3.5',
+                              activeStoredSessionIds.has(child.id) ? 'text-success' : 'text-muted-foreground',
+                            )"
+                          />
+                          <span class="flex-1 truncate">{{ child.name }}</span>
+                          <span class="text-caption font-normal tracking-normal normal-case font-mono text-muted-foreground">{{ child.host }}</span>
+                        </button>
+                      </SidebarMenuButton>
+                    </ContextMenuTrigger>
+                    <ContextMenuContent>
+                      <ContextMenuItem @select="editSession(child)">
+                        <Pencil class="size-3.5" /> 编辑会话
+                      </ContextMenuItem>
+                      <ContextMenuItem @select="onSessionDblclick(child)">
+                        <Server class="size-3.5" /> 连接
+                      </ContextMenuItem>
+                      <ContextMenuSeparator />
+                      <ContextMenuItem variant="destructive" @select="delSession(child)">
+                        <Trash2 class="size-3.5" /> 删除会话
+                      </ContextMenuItem>
+                    </ContextMenuContent>
+                  </ContextMenu>
+                </SidebarMenuItem>
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        </div>
+      </div>
 
-      <TabsContent value="keys" class="p-3 text-[length:var(--text-sm)] text-muted-foreground">
+      <!-- 密钥 -->
+      <div v-show="activeTab === 'keys'" class="text-body p-3 text-muted-foreground">
         密钥管理(待实现)
-      </TabsContent>
-      <TabsContent value="tunnels" class="flex min-h-0 flex-1 flex-col overflow-hidden">
+      </div>
+
+      <!-- 隧道 -->
+      <div v-show="activeTab === 'tunnels'" class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <TunnelPanel />
-      </TabsContent>
-    </Tabs>
-  </aside>
+      </div>
+    </SidebarContent>
+
+    <SidebarFooter class="p-0">
+      <MonitorSummary />
+    </SidebarFooter>
+  </Sidebar>
 </template>

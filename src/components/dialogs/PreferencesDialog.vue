@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { Sun, Moon, Monitor, Minus, Plus } from 'lucide-vue-next'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
+import { Slider } from '@/components/ui/slider'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { themeMode, themeColorId, themeColors, fontSize, type ThemeMode } from '@/stores/preferences'
 
 const open = ref(false)
@@ -32,36 +37,39 @@ function resetFont() {
 
 <template>
   <Dialog v-model:open="open">
-    <DialogContent class="max-w-[420px]">
+    <DialogContent class="max-w-[440px]">
       <DialogHeader>
-        <DialogTitle class="text-[15px]">偏好设置</DialogTitle>
-        <DialogDescription class="text-[length:var(--text-xs)]">个性化 KShell 外观</DialogDescription>
+        <DialogTitle>偏好设置</DialogTitle>
+        <DialogDescription>个性化 KShell 外观</DialogDescription>
       </DialogHeader>
 
       <!-- 主题模式 -->
       <div class="space-y-2">
-        <div class="text-[length:var(--text-sm)] font-medium text-foreground">主题模式</div>
-        <div class="grid grid-cols-3 gap-2">
-          <button
+        <div class="text-caption text-muted-foreground">主题模式</div>
+        <ToggleGroup
+          type="single"
+          :model-value="themeMode"
+          variant="outline"
+          class="grid w-full grid-cols-3 gap-2"
+          @update:model-value="(v) => v && (themeMode = v as ThemeMode)"
+        >
+          <ToggleGroupItem
             v-for="m in modes"
             :key="m.id"
-            class="flex flex-col items-center gap-1.5 rounded-md border px-3 py-3 text-[length:var(--text-sm)] transition-colors"
-            :class="themeMode === m.id
-              ? 'border-primary bg-primary/10 text-foreground'
-              : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'"
-            @click="themeMode = m.id"
+            :value="m.id"
+            class="text-body flex-col gap-1.5 py-3 data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-foreground"
           >
             <component :is="m.icon" class="size-4" />
             {{ m.label }}
-          </button>
-        </div>
+          </ToggleGroupItem>
+        </ToggleGroup>
       </div>
 
       <!-- 主题色 -->
       <div class="space-y-2">
         <div class="flex items-center justify-between">
-          <span class="text-[length:var(--text-sm)] font-medium text-foreground">主题色</span>
-          <span class="text-[length:var(--text-xs)] text-muted-foreground">{{ currentColor.label }}</span>
+          <span class="text-caption text-muted-foreground">主题色</span>
+          <span class="text-body text-muted-foreground">{{ currentColor.label }}</span>
         </div>
         <div class="flex flex-wrap gap-2">
           <button
@@ -94,52 +102,52 @@ function resetFont() {
       <!-- 字体大小 -->
       <div class="space-y-2">
         <div class="flex items-center justify-between">
-          <span class="text-[length:var(--text-sm)] font-medium text-foreground">字体大小</span>
-          <button
-            class="text-[length:var(--text-xs)] text-muted-foreground hover:text-foreground"
-            @click="resetFont"
-          >
+          <span class="text-caption text-muted-foreground">字体大小</span>
+          <Button variant="ghost" size="xs" class="text-muted-foreground hover:text-foreground" @click="resetFont">
             重置
-          </button>
+          </Button>
         </div>
         <div class="flex items-center gap-2">
-          <button
-            class="flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+          <Button
+            variant="outline"
+            size="icon"
+            class="text-muted-foreground hover:bg-panel-2 hover:text-foreground"
             :disabled="fontSize <= MIN_FONT"
             @click="decFont"
           >
             <Minus class="size-3.5" />
-          </button>
-          <input
-            type="range"
+          </Button>
+          <Slider
+            :model-value="[fontSize]"
             :min="MIN_FONT"
             :max="MAX_FONT"
             :step="1"
-            :value="fontSize"
-            class="flex-1 accent-primary"
-            @input="fontSize = Number(($event.target as HTMLInputElement).value)"
+            class="flex-1"
+            @update:model-value="(v) => { if (v?.[0] != null) fontSize = v[0] }"
           />
-          <button
-            class="flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+          <Button
+            variant="outline"
+            size="icon"
+            class="text-muted-foreground hover:bg-panel-2 hover:text-foreground"
             :disabled="fontSize >= MAX_FONT"
             @click="incFont"
           >
             <Plus class="size-3.5" />
-          </button>
-          <span class="w-12 text-right font-mono text-[length:var(--text-sm)] text-foreground">{{ fontSize }}px</span>
+          </Button>
+          <span class="text-body w-12 text-right font-mono tabular-nums text-foreground">{{ fontSize }}px</span>
         </div>
       </div>
 
-      <!-- 预览 -->
-      <div class="rounded-md border border-border bg-panel p-3">
-        <div class="mb-2 text-[length:var(--text-xs)] text-muted-foreground">预览</div>
-        <div class="flex items-center gap-2">
-          <span class="rounded-md bg-primary px-2.5 py-1 text-[length:var(--text-xs)] text-primary-foreground">主色按钮</span>
-          <span class="rounded-md border border-border bg-background px-2.5 py-1 text-[length:var(--text-xs)] text-foreground">普通按钮</span>
-          <span class="rounded-md bg-success/15 px-2.5 py-1 text-[length:var(--text-xs)] text-success">成功</span>
-          <span class="rounded-md bg-destructive/15 px-2.5 py-1 text-[length:var(--text-xs)] text-destructive">危险</span>
+      <!-- 预览:三态徽章对齐,统一用 bg-{color}/15 text-{color} 结构 -->
+      <Card class="gap-0 rounded-md border-border bg-panel p-3 shadow-none">
+        <div class="text-caption mb-2 text-muted-foreground">预览</div>
+        <div class="flex flex-wrap items-center gap-2">
+          <Badge class="text-body rounded-md px-2.5 py-1">主色按钮</Badge>
+          <Badge variant="secondary" class="text-body rounded-md bg-panel-2 px-2.5 py-1 text-foreground">普通按钮</Badge>
+          <Badge class="text-body rounded-md bg-success/15 px-2.5 py-1 text-success">成功</Badge>
+          <Badge variant="destructive" class="text-body rounded-md bg-destructive/15 px-2.5 py-1 text-destructive">危险</Badge>
         </div>
-      </div>
+      </Card>
     </DialogContent>
   </Dialog>
 </template>

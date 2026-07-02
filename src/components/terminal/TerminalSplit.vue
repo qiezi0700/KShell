@@ -91,15 +91,17 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- SFTP 切换按钮(始终在终端右下角) -->
-    <button
-      class="absolute bottom-2 right-3 z-10 flex items-center gap-1 rounded-md border border-border bg-popover px-2 py-1 text-[length:var(--text-xs)] text-muted-foreground shadow-sm hover:bg-muted hover:text-foreground"
-      @click="toggleSftp"
+    <Button
+      variant="outline"
+      size="xs"
+      class="absolute bottom-2 right-3 z-10 bg-popover hover:bg-muted"
       :title="sftpVisible ? '隐藏文件管理' : '显示文件管理'"
+      @click="toggleSftp"
     >
       <PanelBottomClose v-if="sftpVisible" class="size-3.5" />
       <PanelBottomOpen v-else class="size-3.5" />
       <span>SFTP</span>
-    </button>
+    </Button>
 
     <!-- 下半:SFTP -->
     <div

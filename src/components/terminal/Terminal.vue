@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, shallowRef, nextTick, watch } from 'vue'
 import { activeTabId } from '@/stores/tabs'
-import { clearTerminalTrigger, clearScrollbackTrigger } from '@/stores/ui'
+import { clearTerminalTrigger, clearScrollbackTrigger, copySelectionTrigger } from '@/stores/ui'
+import { Badge } from '@/components/ui/badge'
+import { StatusDot } from '@/components/ui/status-dot'
 import { fontSize } from '@/stores/preferences'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -173,6 +175,18 @@ watch(clearScrollbackTrigger, () => {
   term.value?.write('\x1b[3J')
 })
 
+// 复制终端选区(Ctrl+Shift+C 或菜单):仅活跃 tab 响应
+watch(copySelectionTrigger, async () => {
+  if (activeTabId.value !== props.tabId) return
+  const t = term.value
+  if (!t) return
+  const sel = t.getSelection()
+  if (!sel) return
+  try {
+    await navigator.clipboard.writeText(sel)
+  } catch {}
+})
+
 // 偏好设置字号变化:更新 xterm + refit + 通知后端 PTY resize
 watch(fontSize, () => {
   if (activeTabId.value !== props.tabId) return
@@ -188,18 +202,23 @@ watch(fontSize, () => {
 
 <template>
   <div class="relative h-full w-full">
+    <!-- 容器底色与 xterm 主题的 background 一致,避免终端 padding 区露出主背景色 -->
     <div ref="container" class="absolute inset-0 p-2 bg-[#1e1f22]" />
-    <div
+    <Badge
       v-if="status === 'connecting'"
-      class="pointer-events-none absolute right-3 top-3 rounded-sm bg-muted/80 px-2 py-1 text-[length:var(--text-xs)] text-muted-foreground"
+      variant="secondary"
+      class="text-caption pointer-events-auto absolute right-3 top-3 shadow-sm"
     >
+      <StatusDot variant="warning" pulse />
       连接中…
-    </div>
-    <div
+    </Badge>
+    <Badge
       v-else-if="status === 'error'"
-      class="pointer-events-none absolute right-3 top-3 rounded-sm bg-destructive/80 px-2 py-1 text-[length:var(--text-xs)] text-white"
+      variant="destructive"
+      class="text-caption pointer-events-auto absolute right-3 top-3 shadow-sm"
     >
+      <StatusDot variant="destructive" />
       连接失败
-    </div>
+    </Badge>
   </div>
 </template>

@@ -10,6 +10,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -21,10 +22,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { cn } from '@/lib/utils'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { newConnectionPrefill, showNewConnection } from '@/stores/dialogs'
 import { addTab, nextTabId } from '@/stores/tabs'
 import { sshConnect, type SshConfig } from '@/api/ssh'
+import { keys as sshKeys, refreshKeys, openKeyManager } from '@/stores/keys'
+import { sshKeyPassphrase } from '@/api/keys'
 import {
   DEFAULT_GROUP_NAME,
   ensureDefaultGroup,
@@ -57,6 +60,8 @@ const busy = ref(false)
 const err = ref<string | null>(null)
 const showPassword = ref(false)
 const showPassphrase = ref(false)
+// 从密钥库选择的密钥 id;空串表示手动指定路径
+const selectedKeyId = ref('')
 
 // 编辑模式:预填了已保存会话时,标题/按钮变化
 const isEditMode = computed(() => Boolean(form.savedSessionId))
@@ -74,7 +79,9 @@ watch(showNewConnection, async (open) => {
   if (!open) return
   showPassword.value = false
   showPassphrase.value = false
+  selectedKeyId.value = ''
   err.value = null
+  refreshKeys().catch(() => {})
   const p = newConnectionPrefill.value
   if (p) {
     form.savedSessionId = p.id
@@ -107,6 +114,7 @@ function reset() {
   form.keyPath = ''
   form.passphrase = ''
   form.groupId = DEFAULT_GROUP
+  selectedKeyId.value = ''
 }
 
 async function pickKeyFile() {
@@ -122,9 +130,30 @@ async function pickKeyFile() {
     })
     if (typeof selected === 'string' && selected) {
       form.keyPath = selected
+      selectedKeyId.value = ''
     }
   } catch {
     // 文件选择取消或失败,静默忽略
+  }
+}
+
+// 从密钥库下拉选择密钥时,自动填充路径和 passphrase
+async function onKeyLibrarySelect(keyId: string) {
+  if (!keyId) {
+    form.keyPath = ''
+    form.passphrase = ''
+    return
+  }
+  const key = sshKeys.value.find((k) => k.id === keyId)
+  if (!key) return
+  form.keyPath = key.keyPath
+  selectedKeyId.value = keyId
+  // 尝试获取已存储的 passphrase
+  try {
+    const pass = await sshKeyPassphrase(keyId)
+    form.passphrase = pass ?? ''
+  } catch {
+    form.passphrase = ''
   }
 }
 
@@ -248,32 +277,27 @@ async function submit() {
 
         <div class="grid gap-1.5">
           <Label>认证方式</Label>
-          <div class="flex gap-2">
-            <button
-              type="button"
-              :class="cn(
-                'flex flex-1 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[length:var(--text-sm)] transition-colors',
-                form.authKind === 'password'
-                  ? 'border-primary bg-primary/10 text-foreground'
-                  : 'border-border text-muted-foreground hover:text-foreground',
-              )"
-              @click="form.authKind = 'password'"
+          <ToggleGroup
+            type="single"
+            :model-value="form.authKind"
+            variant="outline"
+            size="sm"
+            class="w-full"
+            @update:model-value="(v) => v && (form.authKind = v as 'password' | 'private_key')"
+          >
+            <ToggleGroupItem
+              value="password"
+              class="flex-1 gap-1.5 border-border text-muted-foreground hover:bg-transparent hover:text-foreground data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-foreground"
             >
               <Lock class="size-3.5" /> 密码
-            </button>
-            <button
-              type="button"
-              :class="cn(
-                'flex flex-1 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[length:var(--text-sm)] transition-colors',
-                form.authKind === 'private_key'
-                  ? 'border-primary bg-primary/10 text-foreground'
-                  : 'border-border text-muted-foreground hover:text-foreground',
-              )"
-              @click="form.authKind = 'private_key'"
+            </ToggleGroupItem>
+            <ToggleGroupItem
+              value="private_key"
+              class="flex-1 gap-1.5 border-border text-muted-foreground hover:bg-transparent hover:text-foreground data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-foreground"
             >
               <KeyRound class="size-3.5" /> 私钥
-            </button>
-          </div>
+            </ToggleGroupItem>
+          </ToggleGroup>
         </div>
 
         <div v-if="form.authKind === 'password'" class="grid gap-1.5">
@@ -285,20 +309,48 @@ async function submit() {
               :type="showPassword ? 'text' : 'password'"
               class="pr-8"
             />
-            <button
+            <Button
               type="button"
-              class="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-              @click="showPassword = !showPassword"
+              variant="ghost"
+              size="icon-sm"
+              class="absolute right-1 top-1/2 -translate-y-1/2 hover:bg-muted hover:text-foreground"
               :title="showPassword ? '隐藏密码' : '显示密码'"
               tabindex="-1"
+              @click="showPassword = !showPassword"
             >
               <Eye v-if="!showPassword" class="size-3.5" />
               <EyeOff v-else class="size-3.5" />
-            </button>
+            </Button>
           </div>
         </div>
 
         <template v-else>
+          <!-- 密钥库快速选择(可选) -->
+          <div v-if="sshKeys.length > 0" class="grid gap-1.5">
+            <Label>从密钥库选择</Label>
+            <div class="flex gap-1.5">
+              <Select
+                :model-value="selectedKeyId"
+                @update:model-value="(v) => onKeyLibrarySelect(String(v ?? ''))"
+              >
+                <SelectTrigger class="flex-1">
+                  <SelectValue placeholder="选择已管理的密钥…" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">手动指定路径</SelectItem>
+                  <SelectSeparator />
+                  <SelectItem
+                    v-for="key in sshKeys"
+                    :key="key.id"
+                    :value="key.id"
+                  >{{ key.name }} · {{ key.algorithm }}</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button type="button" variant="outline" size="icon" @click="openKeyManager()" title="管理密钥库…">
+                <KeyRound />
+              </Button>
+            </div>
+          </div>
           <div class="grid gap-1.5">
             <Label for="keyPath">私钥文件</Label>
             <div class="flex gap-1.5">
@@ -322,16 +374,18 @@ async function submit() {
                 :type="showPassphrase ? 'text' : 'password'"
                 class="pr-8"
               />
-              <button
+              <Button
                 type="button"
-                class="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-                @click="showPassphrase = !showPassphrase"
+                variant="ghost"
+                size="icon-sm"
+                class="absolute right-1 top-1/2 -translate-y-1/2 hover:bg-muted hover:text-foreground"
                 :title="showPassphrase ? '隐藏' : '显示'"
                 tabindex="-1"
+                @click="showPassphrase = !showPassphrase"
               >
                 <Eye v-if="!showPassphrase" class="size-3.5" />
                 <EyeOff v-else class="size-3.5" />
-              </button>
+              </Button>
             </div>
           </div>
         </template>
@@ -355,12 +409,9 @@ async function submit() {
           </Select>
         </div>
 
-        <div
-          v-if="err"
-          class="rounded-sm border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-[length:var(--text-xs)] text-destructive"
-        >
-          {{ err }}
-        </div>
+        <Alert v-if="err" variant="destructive" class="text-[length:var(--text-xs)]">
+          <AlertDescription>{{ err }}</AlertDescription>
+        </Alert>
 
         <DialogFooter class="pt-2">
           <Button type="button" variant="ghost" :disabled="busy" @click="showNewConnection = false">

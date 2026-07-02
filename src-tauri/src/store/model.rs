@@ -118,3 +118,37 @@ impl Session {
 pub fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
 }
+
+/// SSH 密钥库中的密钥元数据(不含私钥内容,私钥文件单独存储)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshKey {
+    /// 空串代表"待插入",upsert 时后端补 uuid
+    #[serde(default)]
+    pub id: String,
+    pub name: String,
+    /// 算法标识:ed25519 / rsa-{bits} / ecdsa-{curve}
+    pub algorithm: String,
+    /// SHA256 指纹
+    pub fingerprint: String,
+    /// 私钥文件绝对路径(app_data_dir/keys/{id}.pem)
+    pub key_path: String,
+    #[serde(default)]
+    pub comment: Option<String>,
+    #[serde(default)]
+    pub created_at: String,
+}
+
+impl SshKey {
+    pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            algorithm: row.get(2)?,
+            fingerprint: row.get(3)?,
+            key_path: row.get(4)?,
+            comment: row.get(5)?,
+            created_at: row.get(6)?,
+        })
+    }
+}
