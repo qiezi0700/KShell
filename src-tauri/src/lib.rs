@@ -20,10 +20,11 @@ pub fn run() {
             let db_path = dir.join("kshell.db");
             let store = store::Store::open(db_path).expect("初始化 SQLite 存储失败");
 
-            // known_hosts 信任库,同目录下 known_hosts.json
+            // known_hosts 信任库,同目录下 known_hosts.json;附带只读参考系统 ~/.ssh/known_hosts
             let kh_path = dir.join("known_hosts.json");
-            let known_hosts =
-                ssh::known_hosts::KnownHosts::load(kh_path).expect("初始化 known_hosts 失败");
+            let system_kh = app.path().home_dir().ok().map(|h| h.join(".ssh").join("known_hosts"));
+            let known_hosts = ssh::known_hosts::KnownHosts::load(kh_path, system_kh)
+                .expect("初始化 known_hosts 失败");
 
             // 凭据加密 KEK:优先 OS keychain,首次启动自动从 key.bin 迁移
             let key_path = dir.join("key.bin");
