@@ -55,6 +55,8 @@ pub fn run() {
             // 主机公钥校验
             commands::ssh_confirm_host,
             commands::ssh_remove_known_host,
+            // keyboard-interactive 交互响应
+            commands::ssh_ki_respond,
             // 端口隧道
             ssh::tunnel::tunnel_list,
             ssh::tunnel::tunnel_add,

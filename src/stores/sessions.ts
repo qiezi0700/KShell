@@ -262,14 +262,14 @@ export async function exportSessions() {
  * 凭据缺失(密码认证但无密码)返回 false,调用方应改走对话框。
  */
 export async function quickConnect(s: StoredSession): Promise<boolean> {
-  // agent 无凭据,不查库直接连
+  // agent / keyboard-interactive 无凭据,不查库直接连
   let cfg: SshConfig
-  if (s.authKind === 'agent') {
+  if (s.authKind === 'agent' || s.authKind === 'keyboard_interactive') {
     cfg = {
       host: s.host,
       port: s.port,
       user: s.username,
-      auth: { kind: 'agent' },
+      auth: { kind: s.authKind },
     }
   } else {
     const creds = await getSessionCredentials(s.id)

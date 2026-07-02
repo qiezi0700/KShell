@@ -34,6 +34,8 @@ pub enum AuthMethod {
     },
     /// 走本机 SSH agent,由 agent 保管所有私钥;无字段
     Agent,
+    /// keyboard-interactive:由服务器下发 prompt,无持久凭据
+    KeyboardInteractive,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -247,6 +249,9 @@ pub async fn connect(app: AppHandle, cfg: SshConfig) -> Result<SshSession> {
                 .success()
         }
         AuthMethod::Agent => authenticate_via_agent(&mut handle, &cfg.user).await?,
+        AuthMethod::KeyboardInteractive => {
+            authenticate_keyboard_interactive(app.clone(), &mut handle, &cfg.user).await?
+        }
     };
 
     if !authed {
@@ -316,4 +321,76 @@ async fn authenticate_via_agent(handle: &mut Handle<ClientHandler>, user: &str) 
         }
     }
     Ok(false)
+}
+
+/// keyboard-interactive 认证。服务器可能连续下发多轮 prompt,每轮都通过
+/// `ssh://ki-prompt/{id}` 事件抛给前端,并等待 `ssh_ki_respond` 回传答案。
+async fn authenticate_keyboard_interactive(
+    app: AppHandle,
+    handle: &mut Handle<ClientHandler>,
+    user: &str,
+) -> Result<bool> {
+    use russh::client::KeyboardInteractiveAuthResponse;
+
+    let mut response = handle
+        .authenticate_keyboard_interactive_start(user, None::<String>)
+        .await
+        .context("发起 keyboard-interactive 认证失败")?;
+
+    loop {
+        match response {
+            KeyboardInteractiveAuthResponse::Success => return Ok(true),
+            KeyboardInteractiveAuthResponse::Failure { .. } => return Ok(false),
+            KeyboardInteractiveAuthResponse::InfoRequest {
+                name,
+                instructions,
+                prompts,
+            } => {
+                if prompts.is_empty() {
+                    // 服务器可能发空请求继续流程,直接回空响应
+                    response = handle
+                        .authenticate_keyboard_interactive_respond(Vec::new())
+                        .await
+                        .context("keyboard-interactive 空响应失败")?;
+                    continue;
+                }
+
+                let prompt_id = Uuid::new_v4().to_string();
+                let (tx, rx) = tokio::sync::oneshot::channel::<Vec<String>>();
+                app.state::<AppState>()
+                    .pending_ki_prompts
+                    .insert(prompt_id.clone(), tx);
+
+                let payload = serde_json::json!({
+                    "promptId": prompt_id,
+                    "name": name,
+                    "instructions": instructions,
+                    "prompts": prompts.iter().map(|p| serde_json::json!({
+                        "prompt": p.prompt,
+                        "echo": p.echo,
+                    })).collect::<Vec<_>>(),
+                });
+                let _ = app.emit("ssh://ki-prompt", payload);
+
+                let answers = match rx.await {
+                    Ok(v) => v,
+                    Err(_) => {
+                        app.state::<AppState>().pending_ki_prompts.remove(&prompt_id);
+                        return Err(anyhow!("keyboard-interactive 交互已取消"));
+                    }
+                };
+                app.state::<AppState>().pending_ki_prompts.remove(&prompt_id);
+
+                if answers.len() != prompts.len() {
+                    return Err(anyhow!(
+                        "keyboard-interactive 答案数量与 prompt 不匹配"
+                    ));
+                }
+                response = handle
+                    .authenticate_keyboard_interactive_respond(answers)
+                    .await
+                    .context("keyboard-interactive 响应失败")?;
+            }
+        }
+    }
 }

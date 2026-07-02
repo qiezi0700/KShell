@@ -11,6 +11,8 @@ pub enum AuthKind {
     PrivateKey,
     /// 走本机 SSH agent(OpenSSH agent / Pageant),不落任何凭据
     Agent,
+    /// keyboard-interactive:连接时由服务器动态下发 prompt,不落凭据
+    KeyboardInteractive,
 }
 
 impl AuthKind {
@@ -19,6 +21,7 @@ impl AuthKind {
             AuthKind::Password => "password",
             AuthKind::PrivateKey => "private_key",
             AuthKind::Agent => "agent",
+            AuthKind::KeyboardInteractive => "keyboard_interactive",
         }
     }
     pub fn parse(s: &str) -> anyhow::Result<Self> {
@@ -26,6 +29,7 @@ impl AuthKind {
             "password" => Ok(AuthKind::Password),
             "private_key" => Ok(AuthKind::PrivateKey),
             "agent" => Ok(AuthKind::Agent),
+            "keyboard_interactive" => Ok(AuthKind::KeyboardInteractive),
             other => anyhow::bail!("未知认证方式: {other}"),
         }
     }

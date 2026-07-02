@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { Loader2, KeyRound, Lock, Eye, EyeOff, FolderOpen, Cpu } from 'lucide-vue-next'
+import { Loader2, KeyRound, Lock, Eye, EyeOff, FolderOpen, Cpu, MessageSquareText } from 'lucide-vue-next'
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
 import {
   Dialog,
@@ -49,7 +49,7 @@ const form = reactive({
   host: '',
   port: 22,
   user: 'root',
-  authKind: 'password' as 'password' | 'private_key' | 'agent',
+  authKind: 'password' as 'password' | 'private_key' | 'agent' | 'keyboard_interactive',
   password: '',
   keyPath: '',
   passphrase: '',
@@ -179,7 +179,9 @@ async function submit() {
                 path: form.keyPath,
                 passphrase: form.passphrase || null,
               }
-            : { kind: 'agent' },
+            : form.authKind === 'agent'
+              ? { kind: 'agent' }
+              : { kind: 'keyboard_interactive' },
     }
     const sessionId = await sshConnect(cfg)
 
@@ -285,7 +287,7 @@ async function submit() {
             variant="outline"
             size="sm"
             class="w-full"
-            @update:model-value="(v) => v && (form.authKind = v as 'password' | 'private_key' | 'agent')"
+            @update:model-value="(v) => v && (form.authKind = v as 'password' | 'private_key' | 'agent' | 'keyboard_interactive')"
           >
             <ToggleGroupItem
               value="password"
@@ -305,9 +307,18 @@ async function submit() {
             >
               <Cpu class="size-3.5" /> Agent
             </ToggleGroupItem>
+            <ToggleGroupItem
+              value="keyboard_interactive"
+              class="flex-1 gap-1.5 border-border text-muted-foreground hover:bg-transparent hover:text-foreground data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-foreground"
+            >
+              <MessageSquareText class="size-3.5" /> 交互
+            </ToggleGroupItem>
           </ToggleGroup>
           <p v-if="form.authKind === 'agent'" class="text-[11px] text-muted-foreground">
             使用本机 SSH agent(OpenSSH agent / Pageant)持有的密钥;不保存任何凭据。
+          </p>
+          <p v-else-if="form.authKind === 'keyboard_interactive'" class="text-[11px] text-muted-foreground">
+            连接时由服务器下发提示(如 OTP、密码),不保存任何凭据。
           </p>
         </div>
 

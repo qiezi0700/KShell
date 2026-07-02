@@ -12,7 +12,7 @@
 
 | 功能 | 说明 |
 |------|------|
-| SSH 终端 | 密码 / 私钥认证,多标签,PTY resize,上下分栏 |
+| SSH 终端 | 密码 / 私钥 / SSH agent 认证,多标签,PTY resize,上下分栏 |
 | 主机校验 | known_hosts 指纹校验,首次连接确认,mismatch 拒绝 |
 | 会话管理 | 分组树形管理,SQLite 持久化,凭据 AES-256-GCM 加密 |
 | SFTP | 双栏文件管理,拖拽 / 复制 / 剪切,目录递归传输,进度队列 |
@@ -27,7 +27,7 @@
 |--------|------|------|
 | M1 | SSH 终端(密码/私钥认证)+ 多标签 + PTY resize | ✅ 代码完成 |
 | M1.5 | known_hosts 指纹校验 + 首次连接确认 + mismatch 拒绝 | ✅ 代码完成 |
-| M2 | 会话持久化(SQLite)+ 凭据加密(机器绑定 AES-256-GCM) | ✅ 代码完成 |
+| M2 | 会话持久化(SQLite)+ 凭据加密(AES-256-GCM,KEK 存 OS keychain) | ✅ 代码完成 |
 | M3 | SFTP 双栏文件管理 + 传输队列 + 拖拽/复制/剪切 | ✅ 代码完成 |
 | M4 | 服务器监控面板(CPU/内存/网络/磁盘/负载,ECharts) | ✅ 代码完成 |
 | M5 | Docker 面板(容器/镜像/网络) | ⏳ 规划中(插件化) |
@@ -53,7 +53,7 @@
 - ssh-key 0.7(密钥对生成与序列化)
 - tokio + DashMap(会话/通道状态)
 - rusqlite 0.32(会话/分组/密钥库持久化,bundled)
-- aes-gcm 0.10(凭据 & passphrase 加密,机器绑定随机 key 文件 + AES-256-GCM)
+- aes-gcm 0.10 + keyring 3(凭据 & passphrase AES-256-GCM 加密,KEK 存 OS keychain)
 - tauri-plugin-dialog / tauri-plugin-shell
 
 **目标平台**:Windows / macOS / Linux
@@ -243,9 +243,8 @@ cargo check                # 后端编译检查
 
 ## 已知限制
 
-- 未实现 SSH agent、keyboard-interactive、代理跳板
-- 凭据加密采用机器绑定 AES-256-GCM(`key.bin` 随机密钥),无主密码;key 文件丢失将导致凭据无法解密
-- known_hosts 为应用自管 JSON,不与系统 ~/.ssh/known_hosts 互通
+- 未实现代理跳板
+- known_hosts 写入仍只存应用 JSON,暂未提供“同步回系统 ~/.ssh/known_hosts”开关
 - M5 Docker 面板规划以插件化形式实现,后端复用 `ssh_exec` 调用 docker CLI
 
 ## License

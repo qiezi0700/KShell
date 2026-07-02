@@ -8,6 +8,7 @@ import NewConnectionDialog from './components/dialogs/NewConnectionDialog.vue'
 import ConfirmDialog from './components/dialogs/ConfirmDialog.vue'
 import PromptDialog from './components/dialogs/PromptDialog.vue'
 import PasswordPromptDialog from './components/dialogs/PasswordPromptDialog.vue'
+import MultiPromptDialog from './components/dialogs/MultiPromptDialog.vue'
 import MonitorDialog from './components/dialogs/MonitorDialog.vue'
 import KeyManagerDialog from './components/dialogs/KeyManagerDialog.vue'
 import CommandPalette from './components/dialogs/CommandPalette.vue'
@@ -16,6 +17,7 @@ import ToastContainer from './components/dialogs/ToastContainer.vue'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { initHostKeyGuard, destroyHostKeyGuard } from '@/stores/host-key'
+import { initKiGuard, destroyKiGuard } from '@/stores/ki-prompt'
 import { initTheme, destroyTheme } from '@/stores/preferences'
 import { sidebarVisible, statusBarVisible } from '@/stores/ui'
 import { activeMonitorSessionId, startMonitor, stopMonitor } from '@/stores/monitor'
@@ -23,6 +25,7 @@ import { activeMonitorSessionId, startMonitor, stopMonitor } from '@/stores/moni
 onMounted(() => {
   initTheme()
   initHostKeyGuard().catch(() => {})
+  initKiGuard().catch(() => {})
 })
 
 // 监控轮询跟随活跃终端 tab:切到终端则启动,切走则停止
@@ -34,6 +37,7 @@ watch(activeMonitorSessionId, (sid, prev) => {
 onBeforeUnmount(() => {
   destroyTheme()
   destroyHostKeyGuard()
+  destroyKiGuard()
 })
 </script>
 
@@ -58,6 +62,7 @@ onBeforeUnmount(() => {
     <ConfirmDialog />
     <PromptDialog />
     <PasswordPromptDialog />
+    <MultiPromptDialog />
     <MonitorDialog />
     <KeyManagerDialog />
     <CommandPalette />

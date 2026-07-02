@@ -30,6 +30,8 @@ pub struct AppState {
     pub store: std::sync::OnceLock<Store>,
     pub known_hosts: Arc<RwLock<KnownHosts>>,
     pub pending_host_confirms: DashMap<String, tokio::sync::oneshot::Sender<bool>>,
+    /// keyboard-interactive 等待用户填写 prompts 的 oneshot 发送端
+    pub pending_ki_prompts: DashMap<String, tokio::sync::oneshot::Sender<Vec<String>>>,
     pub crypto: CryptoKey,
     pub sftp_sessions: DashMap<String, SftpHandle>,
     pub transfer_cancels: DashMap<String, Arc<AtomicBool>>,
@@ -44,6 +46,7 @@ impl AppState {
             store: std::sync::OnceLock::new(),
             known_hosts: Arc::new(RwLock::new(known_hosts)),
             pending_host_confirms: DashMap::new(),
+            pending_ki_prompts: DashMap::new(),
             crypto,
             sftp_sessions: DashMap::new(),
             transfer_cancels: DashMap::new(),

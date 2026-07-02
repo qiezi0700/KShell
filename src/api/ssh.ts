@@ -5,6 +5,7 @@ export type AuthMethod =
   | { kind: 'password'; password: string }
   | { kind: 'private_key'; path: string; passphrase?: string | null }
   | { kind: 'agent' }
+  | { kind: 'keyboard_interactive' }
 
 export interface SshConfig {
   host: string
@@ -65,9 +66,31 @@ export async function onChannelExit(
   })
 }
 
-// ============================================================
-// 主机公钥校验(M1.5)
-// ============================================================
+export interface KiPrompt {
+  prompt: string
+  echo: boolean
+}
+
+export interface KiPromptPayload {
+  promptId: string
+  name: string
+  instructions: string
+  prompts: KiPrompt[]
+}
+
+/** 前端填写完 keyboard-interactive prompts 后回传后端 */
+export async function sshKiRespond(promptId: string, responses: string[]): Promise<void> {
+  await invoke('ssh_ki_respond', { promptId, responses })
+}
+
+/** 监听 keyboard-interactive 认证的服务器提示 */
+export async function onKiPrompt(
+  handler: (payload: KiPromptPayload) => void,
+): Promise<UnlistenFn> {
+  return await listen<KiPromptPayload>('ssh://ki-prompt', e => {
+    handler(e.payload)
+  })
+}
 
 export interface HostKeyConfirmPayload {
   confirmId: string
