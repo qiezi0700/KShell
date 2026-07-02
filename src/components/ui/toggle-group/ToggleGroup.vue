@@ -27,7 +27,7 @@ provide("toggleGroup", {
   spacing: props.spacing,
 })
 
-const delegatedProps = reactiveOmit(props, "class", "size", "variant")
+const delegatedProps = reactiveOmit(props, "class", "size", "variant", "spacing")
 const forwarded = useForwardPropsEmits(delegatedProps, emits)
 </script>
 
