@@ -48,6 +48,8 @@ import type { AuthKind, StoredSession } from '@/api/sessions'
 // 特殊值:表示"不保存,仅本次连接"
 const NO_SAVE = '__no_save__'
 const DEFAULT_GROUP = '__default__'
+// reka-ui Select 不允许 SelectItem 用空串;用哨兵值代替"手动指定路径"
+const KEY_MANUAL = '__manual__'
 
 const form = reactive({
   savedSessionId: '',
@@ -91,6 +93,18 @@ const defaultGroupOption = computed(() =>
 onMounted(() => {
   refreshAll().catch(() => {})
 })
+
+// 切换认证方式时清空私钥相关状态,避免"上一次选的密钥"影响当前模式
+// flush: sync 让 prefill 里紧随其后的 keyPath 赋值能覆盖 watch 里的清空
+watch(() => form.authKind, () => {
+  selectedKeyId.value = ''
+  form.keyPath = ''
+  form.passphrase = ''
+}, { flush: 'sync' })
+watch(() => form.jumpAuthKind, () => {
+  form.jumpKeyPath = ''
+  form.jumpPassphrase = ''
+}, { flush: 'sync' })
 
 watch(showNewConnection, async (open) => {
   if (!open) return
@@ -405,14 +419,14 @@ async function submit() {
             <Label>从密钥库选择</Label>
             <div class="flex gap-1.5">
               <Select
-                :model-value="selectedKeyId"
-                @update:model-value="(v) => onKeyLibrarySelect(String(v ?? ''))"
+                :model-value="selectedKeyId || undefined"
+                @update:model-value="(v) => onKeyLibrarySelect(v === KEY_MANUAL ? '' : String(v ?? ''))"
               >
                 <SelectTrigger class="flex-1">
                   <SelectValue placeholder="选择已管理的密钥…" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">手动指定路径</SelectItem>
+                  <SelectItem :value="KEY_MANUAL">手动指定路径</SelectItem>
                   <SelectSeparator />
                   <SelectItem
                     v-for="key in sshKeys"
@@ -421,7 +435,7 @@ async function submit() {
                   >{{ key.name }} · {{ key.algorithm }}</SelectItem>
                 </SelectContent>
               </Select>
-              <Button type="button" variant="outline" size="icon" @click="openKeyManager()" title="管理密钥库…">
+              <Button type="button" variant="outline" size="icon" class="size-9 shrink-0" @click="openKeyManager()" title="管理密钥库…">
                 <KeyRound />
               </Button>
             </div>
@@ -435,7 +449,7 @@ async function submit() {
                 placeholder="点右侧按钮选择,或手动粘贴路径"
                 class="flex-1"
               />
-              <Button type="button" variant="outline" size="icon" @click="pickKeyFile" title="浏览…">
+              <Button type="button" variant="outline" size="icon" class="size-9 shrink-0" @click="pickKeyFile" title="浏览…">
                 <FolderOpen />
               </Button>
             </div>
@@ -556,7 +570,7 @@ async function submit() {
                     placeholder="点右侧按钮选择,或手动粘贴路径"
                     class="flex-1"
                   />
-                  <Button type="button" variant="outline" size="icon" @click="pickKeyFile('jump')" title="浏览…">
+                  <Button type="button" variant="outline" size="icon" class="size-9 shrink-0" @click="pickKeyFile('jump')" title="浏览…">
                     <FolderOpen />
                   </Button>
                 </div>
