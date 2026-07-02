@@ -2,11 +2,15 @@
 //!
 //! 应用自管的可写库存 `app_data_dir/known_hosts.json`;启动时额外读取系统
 //! `~/.ssh/known_hosts` 作为**只读参考层**(用户在系统里已信任过的主机 KShell 也认)。
+//! 用户偏好后,`trust_with_sync` 可在接受新主机时把同一条记录追加到系统
+//! `~/.ssh/known_hosts`,让系统 SSH 客户端(OpenSSH、Git 等)也能识别。
 //!
 //! - check 顺序:先查 app 库,未命中再查系统层;任一命中即算 Trusted
-//! - trust/remove 只写 app JSON,**不修改用户系统文件**,避免污染
+//! - trust 默认只写 app JSON;`sync_to_system=true` 时额外追加到系统文件
 //! - 系统层支持明文 hostspec、`[host]:port`、逗号列表、`|1|salt|hash` HMAC-SHA1
 //!   哈希主机名;`@cert-authority` / `@revoked` 标记条目暂不处理并输出 debug 日志
+//! - 追加到系统文件前会检查同 host:port 是否已存在;key 相同则跳过,
+//!   key 不同则报错(避免覆盖潜在的 MITM 记录)
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -58,6 +62,7 @@ enum HostMatcher {
 
 pub struct KnownHosts {
     path: PathBuf,
+    system_path: Option<PathBuf>,
     entries: BTreeMap<String, HostEntry>,
     system: Vec<SystemEntry>,
 }
@@ -84,6 +89,7 @@ impl KnownHosts {
 
         Ok(Self {
             path,
+            system_path,
             entries,
             system,
         })
@@ -130,8 +136,15 @@ impl KnownHosts {
         HostCheckResult::New
     }
 
-    /// 信任该主机公钥并持久化。
-    pub fn trust(&mut self, host: &str, port: u16, pubkey: &PublicKey) -> Result<()> {
+    /// 信任该主机公钥并持久化;`sync_to_system=true` 时额外追加到系统
+    /// `~/.ssh/known_hosts`。
+    pub fn trust_with_sync(
+        &mut self,
+        host: &str,
+        port: u16,
+        pubkey: &PublicKey,
+        sync_to_system: bool,
+    ) -> Result<()> {
         let k = Self::key_of(host, port);
         let fingerprint = pubkey.fingerprint(HashAlg::Sha256).to_string();
         self.entries.insert(
@@ -142,7 +155,18 @@ impl KnownHosts {
                 trusted_at: chrono::Utc::now().to_rfc3339(),
             },
         );
-        self.save()
+        self.save()?;
+
+        if sync_to_system {
+            if let Some(system_path) = self.system_path.as_ref() {
+                if let Err(e) = append_system_known_hosts(system_path, host, port, pubkey) {
+                    tracing::warn!(error = %e, "同步写入系统 known_hosts 失败");
+                }
+            } else {
+                tracing::warn!("未获取到系统 known_hosts 路径,无法同步");
+            }
+        }
+        Ok(())
     }
 
     /// 移除某主机的信任记录(用户发现 mismatch 后手动清除旧指纹用)。
@@ -164,6 +188,54 @@ impl KnownHosts {
             .with_context(|| format!("写入 known_hosts 失败: {}", self.path.display()))?;
         Ok(())
     }
+}
+
+/// 把公钥以 OpenSSH 格式追加到系统 known_hosts。
+/// 写入前检查同 host:port 是否已有记录:相同则跳过,不同则报错,避免覆盖。
+fn append_system_known_hosts(path: &Path, host: &str, port: u16, pubkey: &PublicKey) -> Result<()> {
+    let pk_str = pubkey.to_string();
+    let line = format!("[{host}]:{port} {pk_str}\n");
+
+    // 确保 ~/.ssh 目录存在
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("创建系统 known_hosts 目录失败: {}", parent.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+
+    // 已存在同 host:port 记录时,相同 key 跳过,不同 key 报错
+    if path.exists() {
+        let entries = load_system_entries(path)?;
+        for entry in entries {
+            if entry.matcher.matches(host, port) {
+                if entry.key == pk_str {
+                    return Ok(());
+                }
+                anyhow::bail!("系统 known_hosts 中已存在该主机的其他公钥,未写入");
+            }
+        }
+    }
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("打开系统 known_hosts 失败: {}", path.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    use std::io::Write;
+    file.write_all(line.as_bytes())
+        .with_context(|| format!("写入系统 known_hosts 失败: {}", path.display()))?;
+    Ok(())
 }
 
 impl HostMatcher {
@@ -223,10 +295,7 @@ fn parse_line(line: &str) -> Result<Option<SystemEntry>> {
     let keytype = parts.next().context("缺少 keytype")?;
     let key_rest = parts.next().context("缺少 key 数据")?;
     // key 部分可能带 comment,取到第一个空白为止即可
-    let key_b64 = key_rest
-        .split_whitespace()
-        .next()
-        .context("key 数据为空")?;
+    let key_b64 = key_rest.split_whitespace().next().context("key 数据为空")?;
 
     let matcher = if let Some(rest) = hostspec.strip_prefix("|1|") {
         // |1|salt_b64|hash_b64

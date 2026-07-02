@@ -9,6 +9,7 @@ import {
   type HostKeyMismatchPayload,
 } from '@/api/ssh'
 import { openConfirm } from '@/stores/prompt'
+import { syncKnownHostsToSystem } from '@/stores/preferences'
 
 let unlistenConfirm: UnlistenFn | null = null
 let unlistenMismatch: UnlistenFn | null = null
@@ -36,7 +37,7 @@ async function handleConfirm(p: HostKeyConfirmPayload): Promise<void> {
     confirmText: '信任并连接',
     cancelText: '拒绝',
   })
-  await sshConfirmHost(p.confirmId, accept).catch(() => {})
+  await sshConfirmHost(p.confirmId, accept, syncKnownHostsToSystem.value).catch(() => {})
 }
 
 /** 公钥不匹配:连接已被后端拒绝,提示用户;用户可选择移除旧记录后重连 */

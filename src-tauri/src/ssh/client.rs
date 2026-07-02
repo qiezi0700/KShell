@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 use crate::ssh::known_hosts::HostCheckResult;
-use crate::state::AppState;
+use crate::state::{AppState, HostConfirmResult};
 
 /// 公钥校验未通过时的错误标识,前端据此抑制冗余错误提示(host-key 弹框已自解释)
 pub const HOST_KEY_REJECTED: &str = "主机公钥校验未通过,连接已拒绝";
@@ -74,7 +74,7 @@ pub struct ClientHandler {
     port: u16,
     confirm_id: String,
     /// 前端确认后通过 ssh_confirm_host 命令把结果发到这个 oneshot
-    confirm_rx: Option<tokio::sync::oneshot::Receiver<bool>>,
+    confirm_rx: Option<tokio::sync::oneshot::Receiver<HostConfirmResult>>,
     /// 公钥被拒绝(mismatch 或用户拒绝)时置 true,供 connect 函数返回中文错误
     rejected: Arc<AtomicBool>,
 }
@@ -86,7 +86,7 @@ impl ClientHandler {
         port: u16,
     ) -> (
         Self,
-        tokio::sync::oneshot::Sender<bool>,
+        tokio::sync::oneshot::Sender<HostConfirmResult>,
         String,
         Arc<AtomicBool>,
     ) {
@@ -163,23 +163,34 @@ impl client::Handler for ClientHandler {
                         }),
                     );
 
-                    let accepted = match rx {
-                        Some(rx) => rx.await.unwrap_or(false),
-                        None => false,
+                    let result = match rx {
+                        Some(rx) => rx.await.unwrap_or(HostConfirmResult {
+                            accepted: false,
+                            sync_to_system: false,
+                        }),
+                        None => HostConfirmResult {
+                            accepted: false,
+                            sync_to_system: false,
+                        },
                     };
 
-                    if !accepted {
+                    if !result.accepted {
                         rejected.store(true, Ordering::Relaxed);
                     }
 
-                    if accepted {
+                    if result.accepted {
                         let state = app.state::<AppState>();
                         let mut kh = state.known_hosts.write().await;
-                        if let Err(e) = kh.trust(&host, port, server_public_key) {
+                        if let Err(e) = kh.trust_with_sync(
+                            &host,
+                            port,
+                            server_public_key,
+                            result.sync_to_system,
+                        ) {
                             let _ = app.emit("ssh://host-key/error", e.to_string());
                         }
                     }
-                    Ok(accepted)
+                    Ok(result.accepted)
                 }
             }
         }
@@ -253,10 +264,7 @@ async fn connect_no_jump(
     config: Arc<client::Config>,
     cfg: SshConfig,
 ) -> Result<SshSession> {
-    connect_direct(
-        app, config, &cfg.host, cfg.port, &cfg.user, &cfg.auth,
-    )
-    .await
+    connect_direct(app, config, &cfg.host, cfg.port, &cfg.user, &cfg.auth).await
 }
 
 /// 直接 TCP 连接目标主机。
@@ -366,8 +374,8 @@ async fn authenticate(
 
 /// 依次尝试 SSH_AUTH_SOCK / OpenSSH 命名管道 / Pageant,拿到一个可用的 agent 客户端。
 /// 全部失败时返回中文错误,引导用户启动 agent。
-async fn connect_local_agent() -> Result<AgentClient<Box<dyn russh::keys::agent::client::AgentStream + Send + Unpin>>>
-{
+async fn connect_local_agent(
+) -> Result<AgentClient<Box<dyn russh::keys::agent::client::AgentStream + Send + Unpin>>> {
     #[cfg(unix)]
     {
         AgentClient::connect_env()
@@ -478,16 +486,18 @@ async fn authenticate_keyboard_interactive(
                 let answers = match rx.await {
                     Ok(v) => v,
                     Err(_) => {
-                        app.state::<AppState>().pending_ki_prompts.remove(&prompt_id);
+                        app.state::<AppState>()
+                            .pending_ki_prompts
+                            .remove(&prompt_id);
                         return Err(anyhow!("keyboard-interactive 交互已取消"));
                     }
                 };
-                app.state::<AppState>().pending_ki_prompts.remove(&prompt_id);
+                app.state::<AppState>()
+                    .pending_ki_prompts
+                    .remove(&prompt_id);
 
                 if answers.len() != prompts.len() {
-                    return Err(anyhow!(
-                        "keyboard-interactive 答案数量与 prompt 不匹配"
-                    ));
+                    return Err(anyhow!("keyboard-interactive 答案数量与 prompt 不匹配"));
                 }
                 response = handle
                     .authenticate_keyboard_interactive_respond(answers)

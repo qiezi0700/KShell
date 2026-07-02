@@ -243,7 +243,6 @@ cargo check                # 后端编译检查
 
 ## 已知限制
 
-- known_hosts 写入仍只存应用 JSON,暂未提供“同步回系统 ~/.ssh/known_hosts”开关
 - M5 Docker 面板规划以插件化形式实现,后端复用 `ssh_exec` 调用 docker CLI
 
 ## License

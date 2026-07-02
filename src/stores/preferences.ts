@@ -25,6 +25,7 @@ interface StoredPrefs {
   themeMode: ThemeMode
   themeColorId: string
   fontSize: number
+  syncKnownHostsToSystem: boolean
 }
 
 function loadPrefs(): StoredPrefs {
@@ -36,10 +37,11 @@ function loadPrefs(): StoredPrefs {
         themeMode: p.themeMode ?? 'dark',
         themeColorId: p.themeColorId ?? 'blue',
         fontSize: p.fontSize ?? 13,
+        syncKnownHostsToSystem: p.syncKnownHostsToSystem ?? false,
       }
     }
   } catch {}
-  return { themeMode: 'dark', themeColorId: 'blue', fontSize: 13 }
+  return { themeMode: 'dark', themeColorId: 'blue', fontSize: 13, syncKnownHostsToSystem: false }
 }
 
 function savePrefs(prefs: StoredPrefs) {
@@ -54,6 +56,8 @@ export const themeMode = ref<ThemeMode>(stored.themeMode)
 export const themeColorId = ref<string>(stored.themeColorId)
 // 界面字体大小(10-18),默认 13px
 export const fontSize = ref<number>(stored.fontSize)
+// 是否把 KShell 信任的主机公钥同步写入系统 ~/.ssh/known_hosts
+export const syncKnownHostsToSystem = ref<boolean>(stored.syncKnownHostsToSystem)
 
 let mediaQuery: MediaQueryList | null = null
 let mediaHandler: ((e: MediaQueryListEvent) => void) | null = null
@@ -94,7 +98,12 @@ export function destroyTheme() {
 }
 
 // 持久化 + 即时应用
-watch([themeMode, themeColorId, fontSize], () => {
+watch([themeMode, themeColorId, fontSize, syncKnownHostsToSystem], () => {
   applyTheme()
-  savePrefs({ themeMode: themeMode.value, themeColorId: themeColorId.value, fontSize: fontSize.value })
+  savePrefs({
+    themeMode: themeMode.value,
+    themeColorId: themeColorId.value,
+    fontSize: fontSize.value,
+    syncKnownHostsToSystem: syncKnownHostsToSystem.value,
+  })
 })

@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::ssh::{self, ChannelCommand, SshConfig};
-use crate::state::{AppState, ChannelId, SessionId};
+use crate::state::{AppState, ChannelId, HostConfirmResult, SessionId};
 use crate::store::{Group, Session};
 
 fn err<E: std::fmt::Display>(e: E) -> String {
@@ -116,15 +116,20 @@ pub async fn ssh_connect(
 // ============================================================
 
 /// 前端收到 ssh://host-key/confirm 事件后,用户确认是否信任该主机。
-/// accept=true 则 check_server_key 继续握手并写入 known_hosts。
+/// accept=true 则 check_server_key 继续握手并写入 known_hosts;
+/// sync_to_system=true 时同时追加到系统 ~/.ssh/known_hosts。
 #[tauri::command]
 pub async fn ssh_confirm_host(
     state: State<'_, AppState>,
     confirm_id: String,
     accept: bool,
+    sync_to_system: bool,
 ) -> Result<(), String> {
     if let Some((_, tx)) = state.pending_host_confirms.remove(&confirm_id) {
-        let _ = tx.send(accept);
+        let _ = tx.send(HostConfirmResult {
+            accepted: accept,
+            sync_to_system,
+        });
     }
     Ok(())
 }

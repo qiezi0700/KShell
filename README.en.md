@@ -12,7 +12,7 @@ A cross-platform SSH desktop client, inspired by FinalShell, with original UI de
 
 | Feature | Description |
 |---------|-------------|
-| SSH Terminal | Password / private key auth, multi-tab, PTY resize, split panes |
+| SSH Terminal | Password / private key / SSH agent auth, multi-tab, PTY resize, split panes |
 | Host Verification | known_hosts fingerprint check, first-connect confirmation, mismatch rejection |
 | Session Management | Group tree, SQLite persistence, credential AES-256-GCM encryption |
 | SFTP | Dual-pane file manager, drag/copy/cut, recursive directory transfer, progress queue |
@@ -53,7 +53,7 @@ A cross-platform SSH desktop client, inspired by FinalShell, with original UI de
 - ssh-key 0.7 (keypair generation and serialization)
 - tokio + DashMap (session/channel state)
 - rusqlite 0.32 (session/group/key persistence, bundled)
-- aes-gcm 0.10 (credential & passphrase encryption, machine-bound random key file + AES-256-GCM)
+- aes-gcm 0.10 + keyring 3 (credential & passphrase AES-256-GCM encryption, KEK stored in OS keychain)
 - tauri-plugin-dialog / tauri-plugin-shell
 
 **Target platforms**: Windows / macOS / Linux
@@ -217,7 +217,7 @@ cargo check                # Backend compile check
 - **Key management**: `KeyManagerDialog` manages key list with rename / delete / context menu
 - **View public key**: Shows OpenSSH-format public key and SHA256 fingerprint, one-click copy
 - **Deploy public key**: Appends public key to remote `~/.ssh/authorized_keys` via an existing SSH session (with dedup)
-- **Passphrase encryption**: Machine-bound AES-256-GCM encryption, stored in `.pass` file
+- **Passphrase encryption**: AES-256-GCM with OS keychain KEK, stored in `.pass` file
 - **New connection integration**: Private key auth can select from key manager dropdown, auto-fills path and passphrase
 
 ## Port Tunneling (M6)
@@ -243,9 +243,6 @@ cargo check                # Backend compile check
 
 ## Known Limitations
 
-- No SSH agent, keyboard-interactive, or jump host support
-- Credential encryption uses machine-bound AES-256-GCM (`key.bin` random key), no master password; losing the key file makes credentials undecryptable
-- known_hosts is app-managed JSON, not interoperable with system ~/.ssh/known_hosts
 - M5 Docker dashboard is planned as a plugin, reusing `ssh_exec` to call docker CLI on the backend
 
 ## License

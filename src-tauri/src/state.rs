@@ -7,12 +7,18 @@ use tokio::sync::{Mutex, RwLock};
 use crate::crypto::CryptoKey;
 use crate::sftp::SftpHandle;
 use crate::ssh::known_hosts::KnownHosts;
-use crate::ssh::{ChannelHandle, SshSession, tunnel::TunnelEntry};
+use crate::ssh::{tunnel::TunnelEntry, ChannelHandle, SshSession};
 use crate::store::Store;
 
 pub type SessionId = String;
 pub type ChannelId = String;
 pub type TunnelId = String;
+
+/// 用户在前端确认主机公钥时的完整结果,包含是否接受以及是否同步到系统 known_hosts。
+pub struct HostConfirmResult {
+    pub accepted: bool,
+    pub sync_to_system: bool,
+}
 
 /// 全局运行时状态。
 ///
@@ -29,7 +35,7 @@ pub struct AppState {
     pub channels: DashMap<ChannelId, ChannelHandle>,
     pub store: std::sync::OnceLock<Store>,
     pub known_hosts: Arc<RwLock<KnownHosts>>,
-    pub pending_host_confirms: DashMap<String, tokio::sync::oneshot::Sender<bool>>,
+    pub pending_host_confirms: DashMap<String, tokio::sync::oneshot::Sender<HostConfirmResult>>,
     /// keyboard-interactive 等待用户填写 prompts 的 oneshot 发送端
     pub pending_ki_prompts: DashMap<String, tokio::sync::oneshot::Sender<Vec<String>>>,
     pub crypto: CryptoKey,

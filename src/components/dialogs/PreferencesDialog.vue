@@ -7,7 +7,8 @@ import { Card } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Slider } from '@/components/ui/slider'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { themeMode, themeColorId, themeColors, fontSize, type ThemeMode } from '@/stores/preferences'
+import { Switch } from '@/components/ui/switch'
+import { themeMode, themeColorId, themeColors, fontSize, syncKnownHostsToSystem, type ThemeMode } from '@/stores/preferences'
 
 const open = ref(false)
 
@@ -136,6 +137,17 @@ function resetFont() {
           </Button>
           <span class="text-body w-12 text-right font-mono tabular-nums text-foreground">{{ fontSize }}px</span>
         </div>
+      </div>
+
+      <!-- 安全:known_hosts 同步 -->
+      <div class="flex items-center justify-between">
+        <div class="space-y-0.5">
+          <div class="text-caption text-foreground">同步到系统 known_hosts</div>
+          <div class="text-caption text-muted-foreground">
+            信任新主机时同时写入 ~/.ssh/known_hosts,供系统 SSH 客户端复用
+          </div>
+        </div>
+        <Switch v-model:checked="syncKnownHostsToSystem" />
       </div>
 
       <!-- 预览:三态徽章对齐,统一用 bg-{color}/15 text-{color} 结构 -->

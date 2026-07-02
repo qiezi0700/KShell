@@ -116,9 +116,9 @@ export interface HostKeyMismatchPayload {
   actualFingerprint: string
 }
 
-/** 用户确认/拒绝信任首次连接的主机公钥 */
-export async function sshConfirmHost(confirmId: string, accept: boolean): Promise<void> {
-  await invoke('ssh_confirm_host', { confirmId, accept })
+/** 用户确认/拒绝信任首次连接的主机公钥;syncToSystem 同时写入系统 ~/.ssh/known_hosts */
+export async function sshConfirmHost(confirmId: string, accept: boolean, syncToSystem = false): Promise<void> {
+  await invoke('ssh_confirm_host', { confirmId, accept, syncToSystem })
 }
 
 /** 移除某主机的已信任公钥记录(mismatch 后用户确认换钥时用) */
