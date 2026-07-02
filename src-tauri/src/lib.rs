@@ -25,9 +25,9 @@ pub fn run() {
             let known_hosts =
                 ssh::known_hosts::KnownHosts::load(kh_path).expect("初始化 known_hosts 失败");
 
-            // 凭据加密 key,同目录下 key.bin(机器绑定,换电脑无法解密)
+            // 凭据加密 KEK:优先 OS keychain,首次启动自动从 key.bin 迁移
             let key_path = dir.join("key.bin");
-            let crypto = crypto::CryptoKey::load_or_create(key_path).expect("初始化加密 key 失败");
+            let crypto = crypto::CryptoKey::load_or_create(key_path).expect("初始化加密 KEK 失败");
 
             let state = AppState::new(known_hosts, crypto);
             let _ = state.store.set(store);
