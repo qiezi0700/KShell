@@ -59,7 +59,7 @@ async function openPreferences() {
 async function openGithub() {
   if (isTauri) {
     const { open } = await import('@tauri-apps/plugin-shell')
-    await open('https://github.com/anomalyco/opencode')
+    await open('https://github.com/qiezi0700/KShell')
   }
 }
 
