@@ -27,6 +27,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { ChevronDown, Network } from 'lucide-vue-next'
 import { newConnectionPrefill, showNewConnection } from '@/stores/dialogs'
 import { addTab, nextTabId } from '@/stores/tabs'
