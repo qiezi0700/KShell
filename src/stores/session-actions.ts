@@ -1,10 +1,12 @@
 import { markRaw, shallowRef } from 'vue'
 import type { Component } from 'vue'
-import { TerminalSquare, FolderOpen } from 'lucide-vue-next'
+import { TerminalSquare, FolderOpen, Container } from 'lucide-vue-next'
 import type { StoredSession } from '@/api/sessions'
 import { connectSession, quickConnect } from '@/stores/sessions'
 import { addTab, nextTabId } from '@/stores/tabs'
 import { sftpOpen } from '@/api/sftp'
+import { sshDisconnect } from '@/api/ssh'
+import { dockerAvailable } from '@/api/docker'
 import { toast } from '@/stores/toast'
 
 export interface SessionAction {
@@ -65,5 +67,41 @@ registerSessionAction({
     } catch (e) {
       silentHostKeyError(e)
     }
+  },
+})
+
+registerSessionAction({
+  id: 'open-docker',
+  label: '打开 Docker',
+  icon: Container,
+  run: async (s) => {
+    let sessionId: string
+    try {
+      sessionId = await connectSession(s)
+    } catch (e) {
+      silentHostKeyError(e)
+      return
+    }
+    // 打开 tab 前先检测远端 docker 是否可用,不可用则断开并提示,避免空 tab
+    try {
+      const ok = await dockerAvailable(sessionId)
+      if (!ok) {
+        await sshDisconnect(sessionId).catch(() => {})
+        toast.warning('远端未安装 docker 或当前用户无权限,请确认已加入 docker 组')
+        return
+      }
+    } catch (e) {
+      await sshDisconnect(sessionId).catch(() => {})
+      toast.error(typeof e === 'string' ? e : (e as Error)?.message ?? String(e), 'Docker 检测失败')
+      return
+    }
+    addTab({
+      id: nextTabId('docker'),
+      type: 'docker',
+      title: `Docker ${s.name || s.host}`,
+      sessionId,
+      host: s.host,
+      user: s.username,
+    })
   },
 })

@@ -26,7 +26,14 @@ export interface SftpTab extends BaseTab {
   user: string
 }
 
-export type Tab = TerminalTab | SftpTab
+export interface DockerTab extends BaseTab {
+  type: 'docker'
+  sessionId: string
+  host: string
+  user: string
+}
+
+export type Tab = TerminalTab | SftpTab | DockerTab
 
 export const tabs = ref<Tab[]>([])
 export const activeTabId = ref<string | null>(null)

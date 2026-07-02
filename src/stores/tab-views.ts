@@ -1,9 +1,10 @@
 import { computed, markRaw, shallowRef } from 'vue'
 import type { Component } from 'vue'
-import { TerminalSquare, FolderOpen } from 'lucide-vue-next'
+import { TerminalSquare, FolderOpen, Container } from 'lucide-vue-next'
 import type { TabType } from '@/stores/tabs'
 import TerminalTabView from '@/components/terminal/TerminalTabView.vue'
 import SftpTabView from '@/components/sftp/SftpTabView.vue'
+import DockerTabView from '@/components/docker/DockerTabView.vue'
 
 export interface TabViewDef {
   type: TabType
@@ -30,3 +31,4 @@ export function getTabView(type: TabType): TabViewDef | undefined {
 // 启动时集中注册内置 tab 视图;新增 tab 类型只需在此 register
 registerTabView({ type: 'terminal', icon: TerminalSquare, component: TerminalTabView })
 registerTabView({ type: 'sftp', icon: FolderOpen, component: SftpTabView })
+registerTabView({ type: 'docker', icon: Container, component: DockerTabView })
