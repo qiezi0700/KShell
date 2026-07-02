@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 
 // 认证方式与后端 AuthKind 对齐(snake_case tag)
-export type AuthKind = 'password' | 'private_key'
+export type AuthKind = 'password' | 'private_key' | 'agent'
 
 export interface Group {
   id: string

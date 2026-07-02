@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 export type AuthMethod =
   | { kind: 'password'; password: string }
   | { kind: 'private_key'; path: string; passphrase?: string | null }
+  | { kind: 'agent' }
 
 export interface SshConfig {
   host: string

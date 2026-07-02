@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use russh::client::{self, Handle, Msg};
+use russh::keys::agent::client::AgentClient;
+use russh::keys::agent::AgentIdentity;
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -30,6 +32,8 @@ pub enum AuthMethod {
         path: String,
         passphrase: Option<String>,
     },
+    /// 走本机 SSH agent,由 agent 保管所有私钥;无字段
+    Agent,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -242,6 +246,7 @@ pub async fn connect(app: AppHandle, cfg: SshConfig) -> Result<SshSession> {
                 .context("公钥认证失败")?
                 .success()
         }
+        AuthMethod::Agent => authenticate_via_agent(&mut handle, &cfg.user).await?,
     };
 
     if !authed {
@@ -249,4 +254,66 @@ pub async fn connect(app: AppHandle, cfg: SshConfig) -> Result<SshSession> {
     }
 
     Ok(SshSession { handle })
+}
+
+/// 依次尝试 SSH_AUTH_SOCK / OpenSSH 命名管道 / Pageant,拿到一个可用的 agent 客户端。
+/// 全部失败时返回中文错误,引导用户启动 agent。
+async fn connect_local_agent() -> Result<AgentClient<Box<dyn russh::keys::agent::client::AgentStream + Send + Unpin>>>
+{
+    #[cfg(unix)]
+    {
+        AgentClient::connect_env()
+            .await
+            .map(|c| c.dynamic())
+            .map_err(|e| anyhow!("SSH agent 未运行或 SSH_AUTH_SOCK 未设置: {e}"))
+    }
+    #[cfg(windows)]
+    {
+        // Windows OpenSSH 默认命名管道;russh 在 Windows 上不提供 connect_env
+        const OPENSSH_PIPE: &str = r"\\.\pipe\openssh-ssh-agent";
+
+        if let Ok(c) = AgentClient::connect_named_pipe(OPENSSH_PIPE).await {
+            return Ok(c.dynamic());
+        }
+        if let Ok(c) = AgentClient::connect_pageant().await {
+            return Ok(c.dynamic());
+        }
+        Err(anyhow!(
+            "未检测到可用的 SSH agent(OpenSSH agent / Pageant 均未运行)"
+        ))
+    }
+}
+
+/// 从 agent 拉取所有身份并逐个尝试公钥认证。返回是否有任一密钥认证成功。
+async fn authenticate_via_agent(handle: &mut Handle<ClientHandler>, user: &str) -> Result<bool> {
+    let mut agent = connect_local_agent().await?;
+    let identities = agent
+        .request_identities()
+        .await
+        .context("向 SSH agent 请求密钥列表失败")?;
+
+    if identities.is_empty() {
+        return Err(anyhow!("SSH agent 中没有可用密钥,请先 ssh-add"));
+    }
+
+    for id in identities {
+        // 仅处理普通公钥,证书类身份暂不支持
+        let AgentIdentity::PublicKey { key, .. } = id else {
+            continue;
+        };
+        // RSA 必须显式指定 Sha256,否则走遗留 ssh-rsa(SHA1),多数现代服务器已拒绝
+        let hash_alg = if key.algorithm().as_str() == "ssh-rsa" {
+            Some(HashAlg::Sha256)
+        } else {
+            None
+        };
+        let res = handle
+            .authenticate_publickey_with(user, key, hash_alg, &mut agent)
+            .await
+            .context("agent 公钥认证过程失败")?;
+        if res.success() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

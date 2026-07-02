@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 pub enum AuthKind {
     Password,
     PrivateKey,
+    /// 走本机 SSH agent(OpenSSH agent / Pageant),不落任何凭据
+    Agent,
 }
 
 impl AuthKind {
@@ -16,12 +18,14 @@ impl AuthKind {
         match self {
             AuthKind::Password => "password",
             AuthKind::PrivateKey => "private_key",
+            AuthKind::Agent => "agent",
         }
     }
     pub fn parse(s: &str) -> anyhow::Result<Self> {
         match s {
             "password" => Ok(AuthKind::Password),
             "private_key" => Ok(AuthKind::PrivateKey),
+            "agent" => Ok(AuthKind::Agent),
             other => anyhow::bail!("未知认证方式: {other}"),
         }
     }

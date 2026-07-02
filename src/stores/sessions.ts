@@ -262,25 +262,36 @@ export async function exportSessions() {
  * 凭据缺失(密码认证但无密码)返回 false,调用方应改走对话框。
  */
 export async function quickConnect(s: StoredSession): Promise<boolean> {
-  const creds = await getSessionCredentials(s.id)
-  const cfg: SshConfig =
-    s.authKind === 'password'
-      ? {
-          host: s.host,
-          port: s.port,
-          user: s.username,
-          auth: { kind: 'password', password: creds.password ?? '' },
-        }
-      : {
-          host: s.host,
-          port: s.port,
-          user: s.username,
-          auth: {
-            kind: 'private_key',
-            path: s.keyPath ?? '',
-            passphrase: creds.passphrase || null,
-          },
-        }
+  // agent 无凭据,不查库直接连
+  let cfg: SshConfig
+  if (s.authKind === 'agent') {
+    cfg = {
+      host: s.host,
+      port: s.port,
+      user: s.username,
+      auth: { kind: 'agent' },
+    }
+  } else {
+    const creds = await getSessionCredentials(s.id)
+    cfg =
+      s.authKind === 'password'
+        ? {
+            host: s.host,
+            port: s.port,
+            user: s.username,
+            auth: { kind: 'password', password: creds.password ?? '' },
+          }
+        : {
+            host: s.host,
+            port: s.port,
+            user: s.username,
+            auth: {
+              kind: 'private_key',
+              path: s.keyPath ?? '',
+              passphrase: creds.passphrase || null,
+            },
+          }
+  }
   const sessionId = await sshConnect(cfg)
   addTab({
     id: nextTabId('term'),
