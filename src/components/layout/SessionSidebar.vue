@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Plus, FolderPlus, Download, ChevronRight, Folder, Server, Trash2, Pencil, KeyRound } from 'lucide-vue-next'
+import { Plus, FolderPlus, Download, Upload, ChevronRight, Folder, Server, Trash2, Pencil, KeyRound } from 'lucide-vue-next'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
@@ -25,6 +25,7 @@ import {
 } from '@/components/ui/sidebar'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
+import { toast } from '@/stores/toast'
 import { openNewConnection } from '@/stores/dialogs'
 import { openKeyManager } from '@/stores/keys'
 import TunnelPanel from '@/components/tunnels/TunnelPanel.vue'
@@ -36,9 +37,10 @@ import {
   removeGroup,
   removeSession,
   saveGroup,
+  importSessions,
+  exportSessions,
 } from '@/stores/sessions'
 import { openConfirm, openPrompt } from '@/stores/prompt'
-import { toast } from '@/stores/toast'
 import { activeStoredSessionIds } from '@/stores/tabs'
 import type { StoredSession } from '@/api/sessions'
 import { DEFAULT_GROUP_NAME } from '@/stores/sessions'
@@ -110,7 +112,7 @@ async function newGroup() {
     placeholder: '例如 生产环境',
     confirmText: '创建',
   })
-  if (!name || !name.trim()) return
+  if (!name || name.trim() === '') return
   try {
     await saveGroup(name.trim())
   } catch (e) {
@@ -205,9 +207,15 @@ async function delSession(s: StoredSession) {
           </Tooltip>
           <Tooltip>
             <TooltipTrigger as-child>
-              <Button variant="ghost" size="icon-sm" disabled><Download /></Button>
+              <Button variant="ghost" size="icon-sm" @click="importSessions"><Download /></Button>
             </TooltipTrigger>
-            <TooltipContent>导入(待实现)</TooltipContent>
+            <TooltipContent>导入会话</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <Button variant="ghost" size="icon-sm" @click="exportSessions"><Upload /></Button>
+            </TooltipTrigger>
+            <TooltipContent>导出会话</TooltipContent>
           </Tooltip>
           <div class="flex-1 pl-1">
             <Input v-model="query" placeholder="搜索会话…" />

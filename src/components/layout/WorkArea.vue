@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Plus, X, TerminalSquare, FolderOpen, Activity, Container } from 'lucide-vue-next'
 import { useMagicKeys, whenever } from '@vueuse/core'
-import { onMounted, watchEffect } from 'vue'
+import { onMounted } from 'vue'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
@@ -11,6 +11,7 @@ import SftpView from '@/components/sftp/SftpView.vue'
 import { tabs, activeTabId, closeTab } from '@/stores/tabs'
 import { openNewConnection } from '@/stores/dialogs'
 import { copyTerminalSelection } from '@/stores/ui'
+import { openCommandPalette } from '@/stores/command-palette'
 
 const iconMap = {
   terminal: TerminalSquare,
@@ -34,9 +35,9 @@ whenever(keys['Ctrl+T'], () => openNewConnection())
 whenever(keys['Ctrl+W'], () => {
   if (activeTabId.value) closeTab(activeTabId.value)
 })
-// Ctrl+K 命令面板:先放占位,避免 keydown 透传到 xterm
+// Ctrl+K 命令面板
 whenever(keys['Ctrl+K'], () => {
-  // TODO: 命令面板
+  openCommandPalette()
 })
 
 // Tab 切换:Ctrl+PgUp/PgDown
@@ -51,11 +52,6 @@ whenever(keys['Ctrl+PageUp'], () => {
   const idx = tabs.value.findIndex((t) => t.id === activeTabId.value)
   const prev = tabs.value[(idx - 1 + tabs.value.length) % tabs.value.length]
   if (prev) activeTabId.value = prev.id
-})
-
-// 把空状态提示里的"命令面板"改成未实现警告
-watchEffect(() => {
-  // 占位,用于让上面的 keys reactive
 })
 
 // 阻止 WebView 默认行为:

@@ -19,6 +19,7 @@ import { tabs, activeTabId } from '@/stores/tabs'
 import { sidebarVisible, statusBarVisible, clearTerminal, clearScrollback } from '@/stores/ui'
 import { monitorDialogOpen } from '@/stores/monitor'
 import { openKeyManager } from '@/stores/keys'
+import { openCommandPalette } from '@/stores/command-palette'
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
@@ -163,7 +164,7 @@ async function quitApp() {
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start">
-          <DropdownMenuItem disabled>
+          <DropdownMenuItem @select="openCommandPalette()">
             命令面板…
             <DropdownMenuShortcut>Ctrl+K</DropdownMenuShortcut>
           </DropdownMenuItem>

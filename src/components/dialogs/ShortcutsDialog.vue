@@ -25,7 +25,7 @@ const groups: ShortcutGroup[] = [
       { keys: ['Ctrl', 'T'], desc: '新建标签' },
       { keys: ['Ctrl', 'W'], desc: '关闭标签' },
       { keys: ['Ctrl', 'B'], desc: '切换侧边栏' },
-      { keys: ['Ctrl', 'K'], desc: '命令面板', disabled: true },
+      { keys: ['Ctrl', 'K'], desc: '命令面板' },
     ],
   },
   {

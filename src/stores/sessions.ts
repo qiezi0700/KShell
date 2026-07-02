@@ -13,6 +13,9 @@ import {
 } from '@/api/sessions'
 import { sshConnect, type SshConfig } from '@/api/ssh'
 import { addTab, nextTabId } from '@/stores/tabs'
+import { open as openFileDialog, save as saveFileDialog } from '@tauri-apps/plugin-dialog'
+import { localReadFile, localWriteFile } from '@/api/sftp'
+import { toast } from '@/stores/toast'
 
 /** 默认分组名。首次保存时若不存在会自动创建。 */
 export const DEFAULT_GROUP_NAME = '默认分组'
@@ -134,9 +137,124 @@ export async function saveGroup(name: string, id?: string): Promise<Group> {
 
 export async function removeGroup(id: string) {
   await apiDeleteGroup(id)
-  groups.value = groups.value.filter((g) => g.id !== id)
+  groups.value = groups.value.filter((g) => g.id !== g.id)
   // 后端 ON DELETE SET NULL,前端同步调整
   sessions.value = sessions.value.map((s) => (s.groupId === id ? { ...s, groupId: null } : s))
+}
+
+// ============================================================
+// 导入 / 导出
+// ============================================================
+
+/** 导入文件格式:分组 + 会话,密码/passphrase 以明文传入后端加密入库 */
+export interface ImportData {
+  groups: { name: string; sessions: Omit<SaveSessionInput, 'groupId'>[] }[]
+}
+
+/** 导出当前所有分组和会话为 ImportData 格式(不含凭据) */
+export function exportData(): ImportData {
+  return {
+    groups: groupTree.value
+      .filter((node) => node.group.id !== '')
+      .map((node) => ({
+        name: node.group.name,
+        sessions: node.sessions.map((s) => ({
+          name: s.name,
+          host: s.host,
+          port: s.port,
+          username: s.username,
+          authKind: s.authKind,
+          keyPath: s.keyPath,
+        })),
+      })),
+  }
+}
+
+/** 批量导入会话。已存在的分组按名称匹配复用,会话按 (host, port, username) 去重。 */
+export async function importData(data: ImportData): Promise<{ groups: number; sessions: number }> {
+  let groupCount = 0
+  let sessionCount = 0
+  for (const g of data.groups) {
+    // 按名称找已有分组,没有则新建
+    let groupId = groups.value.find((x) => x.name === g.name)?.id
+    if (!groupId) {
+      const created = await upsertGroup({ name: g.name })
+      groups.value = [...groups.value, created]
+      groupId = created.id
+      groupCount++
+    }
+    for (const s of g.sessions) {
+      // 同组内按 host+port+user 去重
+      const dup = sessions.value.find(
+        (x) =>
+          (x.groupId ?? null) === groupId &&
+          x.host === s.host &&
+          x.port === (s.port || 22) &&
+          x.username === s.username,
+      )
+      if (dup) continue
+      await saveSession({
+        ...s,
+        groupId,
+        port: s.port || 22,
+        password: s.password ?? null,
+        passphrase: s.passphrase ?? null,
+      })
+      sessionCount++
+    }
+  }
+  await refreshAll()
+  return { groups: groupCount, sessions: sessionCount }
+}
+
+/** 弹出文件选择框读取 JSON 并导入会话配置。失败时通过 toast 反馈。 */
+export async function importSessions() {
+  try {
+    const selected = await openFileDialog({
+      multiple: false,
+      directory: false,
+      title: '导入会话配置',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    })
+    if (typeof selected !== 'string' || !selected) return
+    const bytes = await localReadFile(selected)
+    const json = new TextDecoder().decode(new Uint8Array(bytes))
+    const data = JSON.parse(json) as ImportData
+    if (!data.groups || !Array.isArray(data.groups)) {
+      toast.error('文件格式不正确,缺少 groups 字段', '导入失败')
+      return
+    }
+    const result = await importData(data)
+    toast.success(
+      `已导入 ${result.sessions} 个会话${result.groups > 0 ? `(新建 ${result.groups} 个分组)` : ''}`,
+      '导入成功',
+    )
+  } catch (e: any) {
+    toast.error(String(e?.message ?? e), '导入失败')
+  }
+}
+
+/** 弹出保存框将当前会话配置导出为 JSON。 */
+export async function exportSessions() {
+  if (sessions.value.length === 0) {
+    toast.info('没有可导出的会话')
+    return
+  }
+  try {
+    const path = await saveFileDialog({
+      title: '导出会话配置',
+      defaultPath: 'kshell-sessions.json',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    })
+    if (typeof path !== 'string' || !path) return
+    const data = exportData()
+    const json = JSON.stringify(data, null, 2)
+    const bytes = Array.from(new TextEncoder().encode(json))
+    await localWriteFile(path, bytes)
+    toast.success(`已导出到 ${path}`, '导出成功')
+  } catch (e: any) {
+    toast.error(String(e?.message ?? e), '导出失败')
+  }
 }
 
 /**
