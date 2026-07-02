@@ -12,6 +12,7 @@ import { tabs, activeTabId, closeTab } from '@/stores/tabs'
 import { openNewConnection } from '@/stores/dialogs'
 import { copyTerminalSelection } from '@/stores/ui'
 import { openCommandPalette } from '@/stores/command-palette'
+import { importSessions } from '@/stores/sessions'
 
 const iconMap = {
   terminal: TerminalSquare,
@@ -144,7 +145,7 @@ onMounted(() => {
               <Plus />
               新建 SSH 连接
             </Button>
-            <Button variant="outline">导入配置</Button>
+            <Button variant="outline" @click="importSessions()">导入配置</Button>
           </div>
 
           <div class="text-body grid grid-cols-2 gap-x-6 gap-y-2.5 text-muted-foreground">
