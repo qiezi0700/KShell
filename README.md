@@ -1,5 +1,7 @@
 # KShell
 
+[English](./README.en.md) | 简体中文
+
 自研的跨平台 Shell 桌面客户端,产品原型参考 FinalShell,UI 自主设计。
 
 > 状态:M1 / M1.5 / M2 / M3 / M4 / M6 + SSH 密钥库 已代码完成,等待真机联调。
