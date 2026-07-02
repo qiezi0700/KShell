@@ -68,7 +68,12 @@ impl Store {
                 key_path     TEXT,
                 sort         INTEGER NOT NULL DEFAULT 0,
                 created_at   TEXT NOT NULL,
-                updated_at   TEXT NOT NULL
+                updated_at   TEXT NOT NULL,
+                jump_host    TEXT,
+                jump_port    INTEGER NOT NULL DEFAULT 22,
+                jump_username TEXT,
+                jump_auth_kind TEXT,
+                jump_key_path TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_sessions_group ON sessions(group_id);
@@ -108,10 +113,27 @@ impl Store {
         )
         .context("创建 ssh_keys 表失败")?;
 
+        // v5:ProxyJump 配置列
+        let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
+        let cols: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<_, _>>()?;
+        drop(stmt);
+        for col in ["jump_host", "jump_port", "jump_username", "jump_auth_kind", "jump_key_path"] {
+            if !cols.contains(&col.to_string()) {
+                let sql = match col {
+                    "jump_port" => "ALTER TABLE sessions ADD COLUMN jump_port INTEGER NOT NULL DEFAULT 22",
+                    _ => &format!("ALTER TABLE sessions ADD COLUMN {col} TEXT"),
+                };
+                conn.execute_batch(sql)
+                    .with_context(|| format!("添加 sessions.{col} 列失败"))?;
+            }
+        }
+
         // 记录当前 schema 版本
         conn.execute(
             "INSERT OR IGNORE INTO schema_version(version) VALUES(?1)",
-            params![4i64],
+            params![5i64],
         )
         .ok();
         Ok(())
@@ -178,7 +200,8 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let mut stmt = conn.prepare(
             "SELECT id, group_id, name, host, port, username, auth_kind, key_path,
-                    sort, created_at, updated_at
+                    sort, created_at, updated_at,
+                    jump_host, jump_port, jump_username, jump_auth_kind, jump_key_path
              FROM sessions ORDER BY sort, name",
         )?;
         let rows = stmt.query_map([], Session::from_row)?;
@@ -206,8 +229,9 @@ impl Store {
             conn.execute(
                 "INSERT INTO sessions(id, group_id, name, host, port, username, auth_kind,
                                       key_path, sort, created_at, updated_at,
-                                      password_encrypted, passphrase_encrypted)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                                      password_encrypted, passphrase_encrypted,
+                                      jump_host, jump_port, jump_username, jump_auth_kind, jump_key_path)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                 params![
                     s.id,
                     s.group_id,
@@ -222,6 +246,11 @@ impl Store {
                     s.updated_at,
                     password_encrypted,
                     passphrase_encrypted,
+                    s.jump_host,
+                    s.jump_port,
+                    s.jump_username,
+                    s.jump_auth_kind.as_ref().map(|a| a.as_str()),
+                    s.jump_key_path,
                 ],
             )?;
         } else {
@@ -229,7 +258,9 @@ impl Store {
             let affected = conn.execute(
                 "UPDATE sessions SET group_id=?2, name=?3, host=?4, port=?5, username=?6,
                                      auth_kind=?7, key_path=?8, sort=?9, updated_at=?10,
-                                     password_encrypted=?11, passphrase_encrypted=?12
+                                     password_encrypted=?11, passphrase_encrypted=?12,
+                                     jump_host=?13, jump_port=?14, jump_username=?15,
+                                     jump_auth_kind=?16, jump_key_path=?17
                  WHERE id=?1",
                 params![
                     s.id,
@@ -244,6 +275,11 @@ impl Store {
                     s.updated_at,
                     password_encrypted,
                     passphrase_encrypted,
+                    s.jump_host,
+                    s.jump_port,
+                    s.jump_username,
+                    s.jump_auth_kind.as_ref().map(|a| a.as_str()),
+                    s.jump_key_path,
                 ],
             )?;
             if affected == 0 {

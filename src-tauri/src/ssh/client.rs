@@ -39,6 +39,17 @@ pub enum AuthMethod {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JumpConfig {
+    pub host: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+    pub user: String,
+    pub auth: AuthMethod,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SshConfig {
     pub host: String,
     #[serde(default = "default_port")]
@@ -47,6 +58,8 @@ pub struct SshConfig {
     pub auth: AuthMethod,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub jump: Option<JumpConfig>,
 }
 
 fn default_port() -> u16 {
@@ -208,57 +221,147 @@ pub async fn connect(app: AppHandle, cfg: SshConfig) -> Result<SshSession> {
         ..Default::default()
     });
 
-    let addr = (cfg.host.as_str(), cfg.port);
+    if let Some(jump) = cfg.jump.as_ref() {
+        // ProxyJump:先以非递归方式连跳板机,再在其上开 direct-tcpip 通道
+        let jump_cfg = SshConfig {
+            host: jump.host.clone(),
+            port: jump.port,
+            user: jump.user.clone(),
+            auth: jump.auth.clone(),
+            timeout_ms: jump.timeout_ms,
+            jump: None,
+        };
+        let jump_session = connect_no_jump(app.clone(), config.clone(), jump_cfg).await?;
+        let channel = jump_session
+            .handle
+            .channel_open_direct_tcpip(&cfg.host, cfg.port as u32, "127.0.0.1", 0)
+            .await
+            .context("在跳板机上建立到目标主机的隧道失败")?;
+        let stream = channel.into_stream();
+        connect_stream_target(
+            app, config, &cfg.host, cfg.port, &cfg.user, &cfg.auth, stream,
+        )
+        .await
+    } else {
+        connect_no_jump(app, config, cfg).await
+    }
+}
 
-    // 创建 oneshot 通道,tx 存入 AppState 供前端 ssh_confirm_host 取用
+/// 不含 ProxyJump 的直连逻辑,供 connect 复用以避免 async 递归。
+async fn connect_no_jump(
+    app: AppHandle,
+    config: Arc<client::Config>,
+    cfg: SshConfig,
+) -> Result<SshSession> {
+    connect_direct(
+        app, config, &cfg.host, cfg.port, &cfg.user, &cfg.auth,
+    )
+    .await
+}
+
+/// 直接 TCP 连接目标主机。
+async fn connect_direct(
+    app: AppHandle,
+    config: Arc<client::Config>,
+    host: &str,
+    port: u16,
+    user: &str,
+    auth: &AuthMethod,
+) -> Result<SshSession> {
     let (handler, confirm_tx, confirm_id, rejected) =
-        ClientHandler::new(app.clone(), cfg.host.clone(), cfg.port);
+        ClientHandler::new(app.clone(), host.to_string(), port);
     app.state::<AppState>()
         .pending_host_confirms
         .insert(confirm_id.clone(), confirm_tx);
 
-    let connect_result = client::connect(config, addr, handler).await;
+    let result = client::connect(config, (host, port), handler).await;
 
-    // 连接握手完成(或因公钥拒绝而提前返回)后清理 pending
     app.state::<AppState>()
         .pending_host_confirms
         .remove(&confirm_id);
 
-    // 公钥校验未通过:返回中文错误,前端据此抑制冗余提示
+    finish_connect(result, rejected, app, host, port, user, auth).await
+}
+
+/// 在已有 IO 流上(ProxyJump 隧道)连接目标主机。
+async fn connect_stream_target<S>(
+    app: AppHandle,
+    config: Arc<client::Config>,
+    host: &str,
+    port: u16,
+    user: &str,
+    auth: &AuthMethod,
+    stream: S,
+) -> Result<SshSession>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let (handler, confirm_tx, confirm_id, rejected) =
+        ClientHandler::new(app.clone(), host.to_string(), port);
+    app.state::<AppState>()
+        .pending_host_confirms
+        .insert(confirm_id.clone(), confirm_tx);
+
+    let result = client::connect_stream(config, stream, handler).await;
+
+    app.state::<AppState>()
+        .pending_host_confirms
+        .remove(&confirm_id);
+
+    finish_connect(result, rejected, app, host, port, user, auth).await
+}
+
+/// 连接结果到手后的共同处理:检查 known_hosts 拒绝、认证。
+async fn finish_connect(
+    connect_result: Result<Handle<ClientHandler>, russh::Error>,
+    rejected: Arc<AtomicBool>,
+    app: AppHandle,
+    host: &str,
+    port: u16,
+    user: &str,
+    auth: &AuthMethod,
+) -> Result<SshSession> {
     if rejected.load(Ordering::Relaxed) {
         return Err(anyhow!(HOST_KEY_REJECTED));
     }
 
-    let mut handle =
-        connect_result.with_context(|| format!("连接 {}:{} 失败", cfg.host, cfg.port))?;
+    let mut handle = connect_result.with_context(|| format!("连接 {}:{} 失败", host, port))?;
 
-    let authed = match &cfg.auth {
-        AuthMethod::Password { password } => handle
-            .authenticate_password(&cfg.user, password)
-            .await
-            .context("密码认证失败")?
-            .success(),
-        AuthMethod::PrivateKey { path, passphrase } => {
-            let key = russh::keys::load_secret_key(path, passphrase.as_deref())
-                .with_context(|| format!("加载私钥失败: {path}"))?;
-            let key = PrivateKeyWithHashAlg::new(Arc::new(key), None);
-            handle
-                .authenticate_publickey(&cfg.user, key)
-                .await
-                .context("公钥认证失败")?
-                .success()
-        }
-        AuthMethod::Agent => authenticate_via_agent(&mut handle, &cfg.user).await?,
-        AuthMethod::KeyboardInteractive => {
-            authenticate_keyboard_interactive(app.clone(), &mut handle, &cfg.user).await?
-        }
-    };
+    let authed = authenticate(app, &mut handle, user, auth).await?;
 
     if !authed {
         return Err(anyhow!("认证被拒绝"));
     }
 
     Ok(SshSession { handle })
+}
+async fn authenticate(
+    app: AppHandle,
+    handle: &mut Handle<ClientHandler>,
+    user: &str,
+    auth: &AuthMethod,
+) -> Result<bool> {
+    match auth {
+        AuthMethod::Password { password } => Ok(handle
+            .authenticate_password(user, password)
+            .await
+            .context("密码认证失败")?
+            .success()),
+        AuthMethod::PrivateKey { path, passphrase } => {
+            let key = russh::keys::load_secret_key(path, passphrase.as_deref())
+                .with_context(|| format!("加载私钥失败: {path}"))?;
+            let key = PrivateKeyWithHashAlg::new(Arc::new(key), None);
+            Ok(handle
+                .authenticate_publickey(user, key)
+                .await
+                .context("公钥认证失败")?
+                .success())
+        }
+        AuthMethod::Agent => authenticate_via_agent(handle, user).await,
+        AuthMethod::KeyboardInteractive => {
+            authenticate_keyboard_interactive(app, handle, user).await
+        }
+    }
 }
 
 /// 依次尝试 SSH_AUTH_SOCK / OpenSSH 命名管道 / Pageant,拿到一个可用的 agent 客户端。

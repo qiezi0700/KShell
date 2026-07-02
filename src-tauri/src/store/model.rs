@@ -87,6 +87,17 @@ pub struct Session {
     pub created_at: String,
     #[serde(default)]
     pub updated_at: String,
+    // ProxyJump 配置(凭据不存库,连接时按需输入)
+    #[serde(default)]
+    pub jump_host: Option<String>,
+    #[serde(default = "default_port")]
+    pub jump_port: i64,
+    #[serde(default)]
+    pub jump_username: Option<String>,
+    #[serde(default)]
+    pub jump_auth_kind: Option<AuthKind>,
+    #[serde(default)]
+    pub jump_key_path: Option<String>,
 }
 
 fn default_port() -> i64 {
@@ -106,6 +117,21 @@ impl Session {
                 )),
             )
         })?;
+        let jump_auth_str: Option<String> = row.get(14)?;
+        let jump_auth_kind = jump_auth_str
+            .as_deref()
+            .map(AuthKind::parse)
+            .transpose()
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    14,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        e.to_string(),
+                    )),
+                )
+            })?;
         Ok(Self {
             id: row.get(0)?,
             group_id: row.get(1)?,
@@ -118,6 +144,11 @@ impl Session {
             sort: row.get(8)?,
             created_at: row.get(9)?,
             updated_at: row.get(10)?,
+            jump_host: row.get(11)?,
+            jump_port: row.get(12)?,
+            jump_username: row.get(13)?,
+            jump_auth_kind,
+            jump_key_path: row.get(15)?,
         })
     }
 }

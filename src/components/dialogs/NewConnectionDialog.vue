@@ -22,7 +22,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible'
+import { ChevronDown, Network } from 'lucide-vue-next'
 import { newConnectionPrefill, showNewConnection } from '@/stores/dialogs'
 import { addTab, nextTabId } from '@/stores/tabs'
 import { sshConnect, type SshConfig } from '@/api/ssh'
@@ -37,7 +42,7 @@ import {
   saveSession,
   type SaveSessionInput,
 } from '@/stores/sessions'
-import type { StoredSession } from '@/api/sessions'
+import type { AuthKind, StoredSession } from '@/api/sessions'
 
 // 特殊值:表示"不保存,仅本次连接"
 const NO_SAVE = '__no_save__'
@@ -49,17 +54,28 @@ const form = reactive({
   host: '',
   port: 22,
   user: 'root',
-  authKind: 'password' as 'password' | 'private_key' | 'agent' | 'keyboard_interactive',
+  authKind: 'password' as AuthKind,
   password: '',
   keyPath: '',
   passphrase: '',
   groupId: DEFAULT_GROUP as string,
+  // 代理跳板(凭据不保存)
+  useJump: false,
+  jumpHost: '',
+  jumpPort: 22,
+  jumpUser: 'root',
+  jumpAuthKind: 'password' as AuthKind,
+  jumpPassword: '',
+  jumpKeyPath: '',
+  jumpPassphrase: '',
 })
 
 const busy = ref(false)
 const err = ref<string | null>(null)
 const showPassword = ref(false)
 const showPassphrase = ref(false)
+const showJumpPassword = ref(false)
+const showJumpPassphrase = ref(false)
 // 从密钥库选择的密钥 id;空串表示手动指定路径
 const selectedKeyId = ref('')
 
@@ -79,6 +95,8 @@ watch(showNewConnection, async (open) => {
   if (!open) return
   showPassword.value = false
   showPassphrase.value = false
+  showJumpPassword.value = false
+  showJumpPassphrase.value = false
   selectedKeyId.value = ''
   err.value = null
   refreshKeys().catch(() => {})
@@ -91,6 +109,12 @@ watch(showNewConnection, async (open) => {
     form.user = p.username
     form.authKind = p.authKind
     form.keyPath = p.keyPath ?? ''
+    form.useJump = Boolean(p.jumpHost)
+    form.jumpHost = p.jumpHost ?? ''
+    form.jumpPort = p.jumpPort || 22
+    form.jumpUser = p.jumpUsername ?? 'root'
+    form.jumpAuthKind = p.jumpAuthKind ?? 'password'
+    form.jumpKeyPath = p.jumpKeyPath ?? ''
     // 凭据不持久化,每次都需重新输入
     form.password = ''
     form.passphrase = ''
@@ -115,9 +139,17 @@ function reset() {
   form.passphrase = ''
   form.groupId = DEFAULT_GROUP
   selectedKeyId.value = ''
+  form.useJump = false
+  form.jumpHost = ''
+  form.jumpPort = 22
+  form.jumpUser = 'root'
+  form.jumpAuthKind = 'password'
+  form.jumpPassword = ''
+  form.jumpKeyPath = ''
+  form.jumpPassphrase = ''
 }
 
-async function pickKeyFile() {
+async function pickKeyFile(target: 'main' | 'jump' = 'main') {
   try {
     const selected = await openFileDialog({
       multiple: false,
@@ -129,8 +161,12 @@ async function pickKeyFile() {
       ],
     })
     if (typeof selected === 'string' && selected) {
-      form.keyPath = selected
-      selectedKeyId.value = ''
+      if (target === 'jump') {
+        form.jumpKeyPath = selected
+      } else {
+        form.keyPath = selected
+        selectedKeyId.value = ''
+      }
     }
   } catch {
     // 文件选择取消或失败,静默忽略
@@ -157,10 +193,23 @@ async function onKeyLibrarySelect(keyId: string) {
   }
 }
 
+function buildAuth(kind: AuthKind, password: string, keyPath: string, passphrase: string) {
+  if (kind === 'password') return { kind: 'password' as const, password }
+  if (kind === 'private_key') {
+    return { kind: 'private_key' as const, path: keyPath, passphrase: passphrase || null }
+  }
+  if (kind === 'agent') return { kind: 'agent' as const }
+  return { kind: 'keyboard_interactive' as const }
+}
+
 async function submit() {
   err.value = null
   if (!form.host || !form.user) {
     err.value = '主机与用户名不能为空'
+    return
+  }
+  if (form.useJump && (!form.jumpHost || !form.jumpUser)) {
+    err.value = '跳板机主机与用户名不能为空'
     return
   }
 
@@ -170,18 +219,15 @@ async function submit() {
       host: form.host,
       port: Number(form.port) || 22,
       user: form.user,
-      auth:
-        form.authKind === 'password'
-          ? { kind: 'password', password: form.password }
-          : form.authKind === 'private_key'
-            ? {
-                kind: 'private_key',
-                path: form.keyPath,
-                passphrase: form.passphrase || null,
-              }
-            : form.authKind === 'agent'
-              ? { kind: 'agent' }
-              : { kind: 'keyboard_interactive' },
+      auth: buildAuth(form.authKind, form.password, form.keyPath, form.passphrase),
+      jump: form.useJump
+        ? {
+            host: form.jumpHost,
+            port: Number(form.jumpPort) || 22,
+            user: form.jumpUser,
+            auth: buildAuth(form.jumpAuthKind, form.jumpPassword, form.jumpKeyPath, form.jumpPassphrase),
+          }
+        : undefined,
     }
     const sessionId = await sshConnect(cfg)
 
@@ -213,6 +259,11 @@ async function submit() {
           keyPath: form.authKind === 'private_key' ? form.keyPath : null,
           password: form.authKind === 'password' ? form.password || null : null,
           passphrase: form.authKind === 'private_key' ? form.passphrase || null : null,
+          jumpHost: form.useJump ? form.jumpHost : null,
+          jumpPort: form.useJump ? Number(form.jumpPort) || 22 : 22,
+          jumpUsername: form.useJump ? form.jumpUser : null,
+          jumpAuthKind: form.useJump ? form.jumpAuthKind : null,
+          jumpKeyPath: form.useJump && form.jumpAuthKind === 'private_key' ? form.jumpKeyPath : null,
         }
         const saved = await saveSession(input)
         // 新建连接后,把这个会话 id 绑定到 tab,侧栏才能显示"已打开"状态
@@ -287,7 +338,7 @@ async function submit() {
             variant="outline"
             size="sm"
             class="w-full"
-            @update:model-value="(v) => v && (form.authKind = v as 'password' | 'private_key' | 'agent' | 'keyboard_interactive')"
+            @update:model-value="(v: string) => v && (form.authKind = v as AuthKind)"
           >
             <ToggleGroupItem
               value="password"
@@ -411,6 +462,128 @@ async function submit() {
             </div>
           </div>
         </template>
+
+        <Collapsible v-model:open="form.useJump" class="grid gap-1.5">
+          <CollapsibleTrigger as-child>
+            <Button type="button" variant="ghost" size="sm" class="justify-start gap-1.5 px-1 text-xs text-muted-foreground hover:text-foreground">
+              <Network class="size-3.5" />
+              代理跳板
+              <ChevronDown class="size-3 transition-transform" :class="form.useJump ? 'rotate-180' : ''" />
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent class="grid gap-3 rounded-md border border-border p-3">
+            <div class="grid grid-cols-[1fr_80px] gap-2">
+              <div class="grid gap-1.5">
+                <Label for="jumpHost">跳板机主机</Label>
+                <Input id="jumpHost" v-model="form.jumpHost" placeholder="jump.example.com" />
+              </div>
+              <div class="grid gap-1.5">
+                <Label for="jumpPort">端口</Label>
+                <Input id="jumpPort" v-model.number="form.jumpPort" type="number" />
+              </div>
+            </div>
+
+            <div class="grid gap-1.5">
+              <Label for="jumpUser">跳板机用户名</Label>
+              <Input id="jumpUser" v-model="form.jumpUser" />
+            </div>
+
+            <div class="grid gap-1.5">
+              <Label>跳板机认证</Label>
+              <ToggleGroup
+                type="single"
+                :model-value="form.jumpAuthKind"
+                variant="outline"
+                size="sm"
+                class="w-full"
+                @update:model-value="(v: string) => v && (form.jumpAuthKind = v as AuthKind)"
+              >
+                <ToggleGroupItem
+                  value="password"
+                  class="flex-1 gap-1.5 border-border text-muted-foreground hover:bg-transparent hover:text-foreground data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-foreground"
+                >
+                  <Lock class="size-3.5" /> 密码
+                </ToggleGroupItem>
+                <ToggleGroupItem
+                  value="private_key"
+                  class="flex-1 gap-1.5 border-border text-muted-foreground hover:bg-transparent hover:text-foreground data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-foreground"
+                >
+                  <KeyRound class="size-3.5" /> 私钥
+                </ToggleGroupItem>
+                <ToggleGroupItem
+                  value="agent"
+                  class="flex-1 gap-1.5 border-border text-muted-foreground hover:bg-transparent hover:text-foreground data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-foreground"
+                >
+                  <Cpu class="size-3.5" /> Agent
+                </ToggleGroupItem>
+              </ToggleGroup>
+            </div>
+
+            <div v-if="form.jumpAuthKind === 'password'" class="grid gap-1.5">
+              <Label for="jumpPassword">跳板机密码</Label>
+              <div class="relative">
+                <Input
+                  id="jumpPassword"
+                  v-model="form.jumpPassword"
+                  :type="showJumpPassword ? 'text' : 'password'"
+                  class="pr-8"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  class="absolute right-1 top-1/2 -translate-y-1/2 hover:bg-muted hover:text-foreground"
+                  :title="showJumpPassword ? '隐藏密码' : '显示密码'"
+                  tabindex="-1"
+                  @click="showJumpPassword = !showJumpPassword"
+                >
+                  <Eye v-if="!showJumpPassword" class="size-3.5" />
+                  <EyeOff v-else class="size-3.5" />
+                </Button>
+              </div>
+            </div>
+
+            <template v-else-if="form.jumpAuthKind === 'private_key'">
+              <div class="grid gap-1.5">
+                <Label for="jumpKeyPath">跳板机私钥文件</Label>
+                <div class="flex gap-1.5">
+                  <Input
+                    id="jumpKeyPath"
+                    v-model="form.jumpKeyPath"
+                    placeholder="点右侧按钮选择,或手动粘贴路径"
+                    class="flex-1"
+                  />
+                  <Button type="button" variant="outline" size="icon" @click="pickKeyFile('jump')" title="浏览…">
+                    <FolderOpen />
+                  </Button>
+                </div>
+              </div>
+              <div class="grid gap-1.5">
+                <Label for="jumpPassphrase">Passphrase(可选)</Label>
+                <div class="relative">
+                  <Input
+                    id="jumpPassphrase"
+                    v-model="form.jumpPassphrase"
+                    :type="showJumpPassphrase ? 'text' : 'password'"
+                    class="pr-8"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    class="absolute right-1 top-1/2 -translate-y-1/2 hover:bg-muted hover:text-foreground"
+                    :title="showJumpPassphrase ? '隐藏' : '显示'"
+                    tabindex="-1"
+                    @click="showJumpPassphrase = !showJumpPassphrase"
+                  >
+                    <Eye v-if="!showJumpPassphrase" class="size-3.5" />
+                    <EyeOff v-else class="size-3.5" />
+                  </Button>
+                </div>
+              </div>
+            </template>
+          </CollapsibleContent>
+        </Collapsible>
 
         <div class="grid gap-1.5">
           <Label for="groupId">保存到</Label>

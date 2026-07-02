@@ -24,6 +24,12 @@ export interface StoredSession {
   sort: number
   createdAt: string
   updatedAt: string
+  // ProxyJump 配置(凭据不存库)
+  jumpHost: string | null
+  jumpPort: number
+  jumpUsername: string | null
+  jumpAuthKind: AuthKind | null
+  jumpKeyPath: string | null
 }
 
 // ---- 分组 ----
@@ -78,6 +84,11 @@ export function upsertSession(
     sort: session.sort ?? 0,
     createdAt: session.createdAt ?? '',
     updatedAt: session.updatedAt ?? '',
+    jumpHost: session.jumpHost ?? null,
+    jumpPort: session.jumpPort ?? 22,
+    jumpUsername: session.jumpUsername ?? null,
+    jumpAuthKind: session.jumpAuthKind ?? null,
+    jumpKeyPath: session.jumpKeyPath ?? null,
   }
   return invoke('session_upsert', {
     input: { ...payload, password, passphrase },

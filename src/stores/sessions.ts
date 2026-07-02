@@ -98,6 +98,12 @@ export interface SaveSessionInput {
   // 凭据不持久化,仅用于本次连接;保存时忽略这两个字段
   password?: string | null
   passphrase?: string | null
+  // ProxyJump 配置(凭据不保存)
+  jumpHost?: string | null
+  jumpPort?: number
+  jumpUsername?: string | null
+  jumpAuthKind?: AuthKind | null
+  jumpKeyPath?: string | null
 }
 
 /** 保存会话到 SQLite。密码/passphrase 明文传入,后端加密入库。 */
@@ -112,6 +118,11 @@ export async function saveSession(input: SaveSessionInput): Promise<StoredSessio
       username: input.username,
       authKind: input.authKind,
       keyPath: input.keyPath,
+      jumpHost: input.jumpHost,
+      jumpPort: input.jumpPort,
+      jumpUsername: input.jumpUsername,
+      jumpAuthKind: input.jumpAuthKind,
+      jumpKeyPath: input.jumpKeyPath,
     },
     input.password ?? '',
     input.passphrase ?? '',

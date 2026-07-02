@@ -7,12 +7,21 @@ export type AuthMethod =
   | { kind: 'agent' }
   | { kind: 'keyboard_interactive' }
 
+export interface JumpConfig {
+  host: string
+  port: number
+  user: string
+  auth: AuthMethod
+  timeout_ms?: number | null
+}
+
 export interface SshConfig {
   host: string
   port: number
   user: string
   auth: AuthMethod
   timeout_ms?: number | null
+  jump?: JumpConfig | null
 }
 
 export async function sshConnect(cfg: SshConfig): Promise<string> {
