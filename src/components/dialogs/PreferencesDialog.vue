@@ -51,6 +51,7 @@ function resetFont() {
           type="single"
           :model-value="themeMode"
           variant="outline"
+          size="lg"
           :spacing="1"
           class="grid w-full grid-cols-3 gap-2"
           @update:model-value="(v) => v && (themeMode = v as ThemeMode)"
@@ -59,7 +60,7 @@ function resetFont() {
             v-for="m in modes"
             :key="m.id"
             :value="m.id"
-            class="text-body flex-col gap-1.5 py-3 data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-foreground"
+            class="text-body flex-col gap-1.5 py-3 h-auto data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-foreground"
           >
             <component :is="m.icon" class="size-4" />
             {{ m.label }}
