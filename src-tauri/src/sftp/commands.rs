@@ -1202,7 +1202,12 @@ async fn walk_remote_dir(
                 format!("{}/{}", rel, name)
             };
             let full = format!("{}/{}", cur.trim_end_matches('/'), name);
-            if meta.is_dir() {
+            // symlink 不递归:有些 SFTP 服务器 follow symlink 后 is_dir 返回 true,
+            // 递归进去会误删 symlink 目标内容甚至死循环(指向上级目录)。
+            // symlink 当文件处理,remove_file 删的是 symlink 本身而非目标。
+            if meta.is_symlink() {
+                files.push((full, sub_rel, 0));
+            } else if meta.is_dir() {
                 dirs.push(sub_rel.clone());
                 stack.push(sub_rel);
             } else {

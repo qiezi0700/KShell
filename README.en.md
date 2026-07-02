@@ -246,7 +246,6 @@ cargo check                # Backend compile check
 - No SSH agent, keyboard-interactive, or jump host support
 - Credential encryption uses machine-bound AES-256-GCM (`key.bin` random key), no master password; losing the key file makes credentials undecryptable
 - known_hosts is app-managed JSON, not interoperable with system ~/.ssh/known_hosts
-- SFTP cancel transfer is a backend stub; some edge cases in remote recursive directory delete remain
 - M5 Docker dashboard is planned as a plugin, reusing `ssh_exec` to call docker CLI on the backend
 
 ## License
