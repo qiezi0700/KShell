@@ -1,25 +1,22 @@
 <script setup lang="ts">
-import { Plus, X, TerminalSquare, FolderOpen, Activity, Container } from 'lucide-vue-next'
+import { Plus, X } from 'lucide-vue-next'
 import { useMagicKeys, whenever } from '@vueuse/core'
 import { onMounted } from 'vue'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
-import TerminalSplit from '@/components/terminal/TerminalSplit.vue'
-import SftpView from '@/components/sftp/SftpView.vue'
-import { tabs, activeTabId, closeTab } from '@/stores/tabs'
+import { tabs, activeTabId, closeTab, type Tab } from '@/stores/tabs'
+import { getTabView } from '@/stores/tab-views'
 import { openNewConnection } from '@/stores/dialogs'
 import { copyTerminalSelection } from '@/stores/ui'
 import { openCommandPalette } from '@/stores/command-palette'
 import { importSessions } from '@/stores/sessions'
 
-const iconMap = {
-  terminal: TerminalSquare,
-  sftp: FolderOpen,
-  monitor: Activity,
-  docker: Container,
-} as const
+// 暴露给模板:按 tab 类型查注册表取视图定义
+function viewOf(tab: Tab) {
+  return getTabView(tab.type)
+}
 
 const shortcuts = [
   ['Ctrl', 'N', '新建连接'],
@@ -103,7 +100,7 @@ onMounted(() => {
           >
             <div class="flex h-full w-full items-center gap-2">
               <component
-                :is="iconMap[tab.type]"
+                :is="viewOf(tab)?.icon"
                 :class="cn('size-3.5 shrink-0', activeTabId === tab.id && 'text-primary')"
               />
               <span class="flex-1 truncate">{{ tab.title }}</span>
@@ -170,22 +167,14 @@ onMounted(() => {
           :key="tab.id"
           class="absolute inset-0"
         >
-          <TerminalSplit
-            v-if="tab.type === 'terminal'"
-            :tab-id="tab.id"
-            :session-id="tab.sessionId"
-            :channel-id="tab.channelId"
-            :host="tab.host"
-            :user="tab.user"
+          <component
+            v-if="viewOf(tab)"
+            :is="viewOf(tab)?.component"
+            :tab="tab"
           />
-          <SftpView
-            v-else-if="tab.type === 'sftp'"
-            :tab-id="tab.id"
-            :session-id="tab.sessionId"
-            :sftp-id="tab.sftpId"
-            :host="tab.host"
-            :user="tab.user"
-          />
+          <div v-else class="text-body flex h-full items-center justify-center text-muted-foreground">
+            该标签类型暂未实现
+          </div>
         </div>
       </template>
     </div>

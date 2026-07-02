@@ -4,22 +4,16 @@ import TitleBar from './components/layout/TitleBar.vue'
 import SessionSidebar from './components/layout/SessionSidebar.vue'
 import WorkArea from './components/layout/WorkArea.vue'
 import StatusBar from './components/layout/StatusBar.vue'
-import NewConnectionDialog from './components/dialogs/NewConnectionDialog.vue'
-import ConfirmDialog from './components/dialogs/ConfirmDialog.vue'
-import PromptDialog from './components/dialogs/PromptDialog.vue'
-import PasswordPromptDialog from './components/dialogs/PasswordPromptDialog.vue'
-import MultiPromptDialog from './components/dialogs/MultiPromptDialog.vue'
-import MonitorDialog from './components/dialogs/MonitorDialog.vue'
-import KeyManagerDialog from './components/dialogs/KeyManagerDialog.vue'
-import CommandPalette from './components/dialogs/CommandPalette.vue'
 import TransferPanel from './components/sftp/TransferPanel.vue'
 import ToastContainer from './components/dialogs/ToastContainer.vue'
+import { overlays } from '@/stores/overlays'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { initHostKeyGuard, destroyHostKeyGuard } from '@/stores/host-key'
 import { initKiGuard, destroyKiGuard } from '@/stores/ki-prompt'
 import { initTheme, destroyTheme } from '@/stores/preferences'
 import { sidebarVisible, statusBarVisible } from '@/stores/ui'
+import { sidebarWidth, sidebarResizing } from '@/stores/sidebar-panels'
 import { activeMonitorSessionId, startMonitor, stopMonitor } from '@/stores/monitor'
 
 onMounted(() => {
@@ -48,7 +42,8 @@ onBeforeUnmount(() => {
       <SidebarProvider
         :open="sidebarVisible"
         class="flex min-h-0 flex-1"
-        :style="{ '--sidebar-width': '220px' }"
+        :style="{ '--sidebar-width': sidebarWidth + 'px' }"
+        :data-resizing="sidebarResizing"
         @update:open="(v: boolean) => (sidebarVisible = v)"
       >
         <SessionSidebar />
@@ -58,14 +53,7 @@ onBeforeUnmount(() => {
         </SidebarInset>
       </SidebarProvider>
     </div>
-    <NewConnectionDialog />
-    <ConfirmDialog />
-    <PromptDialog />
-    <PasswordPromptDialog />
-    <MultiPromptDialog />
-    <MonitorDialog />
-    <KeyManagerDialog />
-    <CommandPalette />
+    <component v-for="(o, i) in overlays" :key="i" :is="o" />
     <!-- 右上角浮动区:传输队列 + 消息提示,垂直堆叠 -->
     <div class="pointer-events-none fixed right-3 top-[38px] z-40 flex w-[340px] flex-col gap-2">
       <TransferPanel />

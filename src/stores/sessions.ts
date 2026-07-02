@@ -60,6 +60,14 @@ export const groupTree = computed<GroupNode[]>(() => {
       sessions: orphans,
     })
   }
+  // 默认分组永远置顶,其余按 sort 字段,未分组(空 id)置底
+  nodes.sort((a, b) => {
+    if (a.group.name === DEFAULT_GROUP_NAME && b.group.name !== DEFAULT_GROUP_NAME) return -1
+    if (b.group.name === DEFAULT_GROUP_NAME && a.group.name !== DEFAULT_GROUP_NAME) return 1
+    if (!a.group.id) return 1
+    if (!b.group.id) return -1
+    return (a.group.sort ?? 0) - (b.group.sort ?? 0)
+  })
   return nodes
 })
 
@@ -268,11 +276,8 @@ export async function exportSessions() {
   }
 }
 
-/**
- * 双击已保存会话:从后端读取解密凭据,直接连接并新建 tab。
- * 凭据缺失(密码认证但无密码)返回 false,调用方应改走对话框。
- */
-export async function quickConnect(s: StoredSession): Promise<boolean> {
+/** 读取凭据并建立 SSH 会话,返回 sessionId。供终端/SFTP 等会话级动作复用。 */
+export async function connectSession(s: StoredSession): Promise<string> {
   // agent / keyboard-interactive 无凭据,不查库直接连
   let cfg: SshConfig
   if (s.authKind === 'agent' || s.authKind === 'keyboard_interactive') {
@@ -303,7 +308,15 @@ export async function quickConnect(s: StoredSession): Promise<boolean> {
             },
           }
   }
-  const sessionId = await sshConnect(cfg)
+  return await sshConnect(cfg)
+}
+
+/**
+ * 双击已保存会话:从后端读取解密凭据,直接连接并新建终端 tab。
+ * 凭据缺失(密码认证但无密码)返回 false,调用方应改走对话框。
+ */
+export async function quickConnect(s: StoredSession): Promise<boolean> {
+  const sessionId = await connectSession(s)
   addTab({
     id: nextTabId('term'),
     type: 'terminal',

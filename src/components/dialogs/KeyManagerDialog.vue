@@ -48,7 +48,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { keys, keyManagerDialogOpen, refreshKeys, deleteKey, renameKey } from '@/stores/keys'
+import { keys, keyManagerDialogOpen, keyManagerInitialMode, keyManagerInitialViewId, refreshKeys, deleteKey, renameKey, algoLabel, shortFp } from '@/stores/keys'
 import {
   sshKeyGenerate,
   sshKeyImport,
@@ -102,27 +102,6 @@ const deployingKeyId = ref<string | null>(null)
 // ============================================================
 // 操作
 // ============================================================
-
-const ALGORITHM_LABELS: Record<string, string> = {
-  'ed25519': 'ED25519',
-  'rsa-2048': 'RSA 2048',
-  'rsa-3072': 'RSA 3072',
-  'rsa-4096': 'RSA 4096',
-  'rsa': 'RSA',
-  'ecdsa-p256': 'ECDSA P256',
-  'ecdsa-p384': 'ECDSA P384',
-  'ecdsa-p521': 'ECDSA P521',
-}
-
-function algoLabel(algo: string): string {
-  return ALGORITHM_LABELS[algo] ?? algo.toUpperCase()
-}
-
-function shortFp(fp: string): string {
-  // SHA256:xxxx...xxxx → 取前 20 字符 + ...
-  if (fp.length > 24) return fp.slice(0, 20) + '…'
-  return fp
-}
 
 async function viewPublicKey(key: SshKey) {
   viewingKey.value = key
@@ -276,13 +255,20 @@ async function deployKey(key: SshKey) {
   }
 }
 
-// 对话框打开时刷新列表
+// 对话框打开时刷新列表、应用初始模式
 watch(keyManagerDialogOpen, (v) => {
   if (v) {
     err.value = null
-    showGenerate.value = false
-    showImport.value = false
+    showGenerate.value = keyManagerInitialMode.value === 'generate'
+    showImport.value = keyManagerInitialMode.value === 'import'
     viewingKey.value = null
+    keyManagerInitialMode.value = 'none'
+    // 自动查看指定密钥的公钥
+    if (keyManagerInitialViewId.value) {
+      const k = keys.value.find((it) => it.id === keyManagerInitialViewId.value)
+      if (k) viewPublicKey(k)
+      keyManagerInitialViewId.value = null
+    }
   }
 })
 </script>

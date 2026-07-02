@@ -223,3 +223,8 @@
   }
   ::-webkit-scrollbar-thumb:hover { background: var(--border); }
 }
+
+/* 拖拽侧栏宽度时禁用过渡,避免跟随鼠标有延迟感 */
+[data-resizing="true"] [data-slot="sidebar"] > div {
+  transition: none !important;
+}

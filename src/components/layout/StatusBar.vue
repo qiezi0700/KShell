@@ -1,15 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Activity } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { StatusDot } from '@/components/ui/status-dot'
-import { tabs, activeTabId } from '@/stores/tabs'
-import { monitorDialogOpen } from '@/stores/monitor'
+import { tabs, activeTabId, type Tab } from '@/stores/tabs'
+import { statusActions } from '@/stores/status-actions'
 
 // 活跃终端会话数
 const sessionCount = computed(() => tabs.value.filter((t) => t.type === 'terminal').length)
-const hasActive = computed(
-  () => activeTabId.value != null && tabs.value.find((t) => t.id === activeTabId.value)?.type === 'terminal',
+const activeTab = computed<Tab | null>(() =>
+  activeTabId.value ? tabs.value.find((t) => t.id === activeTabId.value) ?? null : null,
 )
 </script>
 
@@ -21,16 +20,18 @@ const hasActive = computed(
     </span>
     <span class="tabular-nums">{{ sessionCount }} 会话</span>
     <span class="flex-1" />
-    <Button
-      v-if="hasActive"
-      variant="ghost"
-      size="xs"
-      title="服务器监控"
-      @click="monitorDialogOpen = true"
-    >
-      <Activity class="size-3.5" />
-      监控
-    </Button>
+    <template v-for="a in statusActions" :key="a.id">
+      <Button
+        v-if="activeTab && a.visible(activeTab)"
+        variant="ghost"
+        size="xs"
+        :title="a.label(activeTab)"
+        @click="a.run(activeTab)"
+      >
+        <component :is="a.icon" class="size-3.5" />
+        {{ a.label(activeTab) }}
+      </Button>
+    </template>
     <span>UTF-8</span>
     <span>LF</span>
     <span class="tabular-nums">v0.1.0</span>

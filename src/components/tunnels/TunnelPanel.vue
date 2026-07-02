@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import { Plus, Trash2, AlertCircle, Globe, Laptop } from 'lucide-vue-next'
+import { Plus, Trash2, Globe, Laptop, RefreshCw } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+import { cn } from '@/lib/utils'
 import {
   Select,
   SelectContent,
@@ -12,7 +12,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { ScrollArea } from '@/components/ui/scroll-area'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu'
 import { toast } from '@/stores/toast'
 import { tabs, activeTabId } from '@/stores/tabs'
 import {
@@ -28,6 +34,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event'
 
 const items = ref<TunnelInfo[]>([])
 const loading = ref(false)
+const showForm = ref(false)
 const kind = ref<'local' | 'remote'>('local')
 const localAddr = ref('127.0.0.1')
 const localPort = ref('')
@@ -69,7 +76,6 @@ async function refresh() {
   loading.value = true
   try {
     items.value = await tunnelList(sid)
-    // 为每条隧道监听状态更新
     for (const t of items.value) {
       const fn = await onTunnelUpdate(t.id, updated => {
         const idx = items.value.findIndex(x => x.id === updated.id)
@@ -124,6 +130,7 @@ async function addTunnel() {
   try {
     await tunnelAdd(sid, tunnelKind)
     toast.success('隧道已启动', '成功')
+    showForm.value = false
     await refresh()
   } catch (e: any) {
     toast.error(String(e), '启动隧道失败')
@@ -141,114 +148,123 @@ async function removeTunnel(id: string) {
   }
 }
 
-function stateText(t: TunnelInfo): string {
-  if (t.state === 'active') return '运行中'
-  if (t.state === 'closed') return '已关闭'
-  if (typeof t.state === 'object' && 'error' in t.state) return `错误:${t.state.error}`
-  return '未知'
+function sourceStr(t: TunnelInfo): string {
+  return t.kind.kind === 'local'
+    ? `${t.kind.localAddr}:${t.kind.localPort}`
+    : `${t.kind.bindAddr}:${t.kind.bindPort}`
 }
 
-function stateClass(t: TunnelInfo): string {
-  if (t.state === 'active') return 'text-success'
-  if (t.state === 'closed') return 'text-muted-foreground'
-  return 'text-destructive'
-}
-
-function formatKind(t: TunnelInfo): string {
-  if (t.kind.kind === 'local') {
-    return `${t.kind.localAddr}:${t.kind.localPort} → ${t.kind.remoteHost}:${t.kind.remotePort}`
-  }
-  return `${t.kind.bindAddr}:${t.kind.bindPort} → ${t.kind.localHost}:${t.kind.localPort}`
+function destStr(t: TunnelInfo): string {
+  return t.kind.kind === 'local'
+    ? `${t.kind.remoteHost}:${t.kind.remotePort}`
+    : `${t.kind.localHost}:${t.kind.localPort}`
 }
 </script>
 
 <template>
-  <div class="text-body flex h-full flex-col gap-3 p-3">
-    <div v-if="!activeSessionId" class="text-muted-foreground">
-      请先连接或打开一个 SSH 会话以管理端口隧道。
-    </div>
+  <div class="flex min-h-0 flex-1 flex-col">
+    <!-- 工具栏 -->
+    <div class="border-b border-sidebar-border px-2 py-1.5">
+      <div class="flex items-center gap-1 pb-1.5">
+        <Tooltip>
+          <TooltipTrigger as-child>
+            <Button variant="ghost" size="icon-sm" @click="showForm = !showForm"><Plus /></Button>
+          </TooltipTrigger>
+          <TooltipContent>添加隧道</TooltipContent>
+        </Tooltip>
+        <span class="flex-1" />
+        <Tooltip>
+          <TooltipTrigger as-child>
+            <Button variant="ghost" size="icon-sm" @click="refresh()"><RefreshCw /></Button>
+          </TooltipTrigger>
+          <TooltipContent>刷新</TooltipContent>
+        </Tooltip>
+      </div>
 
-    <template v-else>
-      <!-- 新增表单 -->
-      <Card class="gap-2 rounded-md border-border bg-panel p-3 shadow-none">
-        <div class="flex items-center gap-2">
-          <Select v-model="kind">
-            <SelectTrigger class="text-body h-7">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="local">本地转发</SelectItem>
-              <SelectItem value="remote">远程转发</SelectItem>
-            </SelectContent>
-          </Select>
-          <span class="text-caption tracking-normal normal-case text-muted-foreground">{{ isLocal ? '本地 → 远端' : '远端 → 本地' }}</span>
+      <!-- 可折叠表单 -->
+      <div v-if="showForm" class="space-y-1.5 pt-1.5">
+        <Select v-model="kind">
+          <SelectTrigger class="text-body h-7">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="local">本地转发</SelectItem>
+            <SelectItem value="remote">远程转发</SelectItem>
+          </SelectContent>
+        </Select>
+
+        <div class="flex gap-1.5">
+          <Input v-model="localAddr" class="text-body h-7 flex-1 font-mono" :placeholder="isLocal ? '本地地址' : '绑定地址'" />
+          <Input v-model="localPort" class="text-body h-7 w-14 shrink-0 font-mono" placeholder="端口" />
         </div>
-
-        <div class="grid grid-cols-2 gap-2">
-          <div class="space-y-1">
-            <Label class="text-caption text-muted-foreground">{{ isLocal ? '本地地址' : '绑定地址' }}</Label>
-            <Input v-model="localAddr" class="text-body h-7 font-mono" :placeholder="isLocal ? '127.0.0.1' : '0.0.0.0'" />
-          </div>
-          <div class="space-y-1">
-            <Label class="text-caption text-muted-foreground">{{ isLocal ? '本地端口' : '绑定端口' }}</Label>
-            <Input v-model="localPort" class="text-body h-7 font-mono" placeholder="18080" />
-          </div>
-        </div>
-
-        <div class="grid grid-cols-2 gap-2">
-          <div class="space-y-1">
-            <Label class="text-caption text-muted-foreground">{{ isLocal ? '远端目标地址' : '本地目标地址' }}</Label>
-            <Input v-model="remoteHost" class="text-body h-7 font-mono" placeholder="127.0.0.1" />
-          </div>
-          <div class="space-y-1">
-            <Label class="text-caption text-muted-foreground">{{ isLocal ? '远端目标端口' : '本地目标端口' }}</Label>
-            <Input v-model="remotePort" class="text-body h-7 font-mono" placeholder="80" />
-          </div>
+        <div class="flex gap-1.5">
+          <Input v-model="remoteHost" class="text-body h-7 flex-1 font-mono" :placeholder="isLocal ? '远端地址' : '本地地址'" />
+          <Input v-model="remotePort" class="text-body h-7 w-14 shrink-0 font-mono" placeholder="端口" />
         </div>
 
         <Button size="sm" class="w-full" :disabled="adding" @click="addTunnel">
-          <Plus />
+          <Plus class="size-3.5" />
           添加隧道
         </Button>
-      </Card>
-
-      <!-- 列表 -->
-      <ScrollArea class="flex-1">
-        <div v-if="loading" class="py-4 text-center text-muted-foreground">加载中…</div>
-        <div v-else-if="items.length === 0" class="py-4 text-center text-muted-foreground">
-          暂无隧道规则
+        <div class="text-caption px-0.5 text-muted-foreground/70">
+          端口 0 表示自动分配;会话断开时隧道自动关闭。
         </div>
-        <div v-else class="space-y-1">
-          <Card
-            v-for="t in items"
-            :key="t.id"
-            class="flex-row items-center gap-2 rounded-md border-border bg-panel p-2 shadow-none"
+      </div>
+    </div>
+
+    <!-- 列表 -->
+    <div class="flex-1 overflow-y-auto p-1">
+      <div
+        v-if="!activeSessionId"
+        class="text-body px-3 py-6 text-center text-muted-foreground"
+      >
+        请先打开一个 SSH 会话
+      </div>
+      <div
+        v-else-if="loading"
+        class="text-body px-3 py-6 text-center text-muted-foreground"
+      >
+        加载中…
+      </div>
+      <div
+        v-else-if="items.length === 0"
+        class="text-body px-3 py-6 text-center text-muted-foreground"
+      >
+        暂无隧道,点上方 + 添加
+      </div>
+
+      <ContextMenu v-for="t in items" :key="t.id" class="block">
+        <ContextMenuTrigger as-child>
+          <button
+            class="group flex w-full items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors hover:bg-sidebar-accent/60"
           >
             <component
               :is="t.kind.kind === 'local' ? Laptop : Globe"
-              class="size-3.5 shrink-0 text-muted-foreground"
+              :class="cn(
+                'size-3.5 shrink-0',
+                t.state === 'active' ? 'text-success' : 'text-muted-foreground',
+              )"
             />
-            <div class="min-w-0 flex-1">
-              <div class="truncate font-mono font-medium text-foreground">{{ formatKind(t) }}</div>
-              <div class="text-caption tracking-normal normal-case" :class="stateClass(t)">{{ stateText(t) }}</div>
+            <div class="flex min-w-0 flex-1 flex-col gap-0.5">
+              <span class="text-body truncate font-mono font-medium">{{ sourceStr(t) }}</span>
+              <span class="text-caption truncate pl-[22px] font-mono text-muted-foreground/80">{{ destStr(t) }}</span>
+              <span
+                v-if="typeof t.state === 'object' && 'error' in t.state"
+                class="text-caption truncate pl-[22px] text-destructive"
+              >{{ t.state.error }}</span>
             </div>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              class="shrink-0 hover:bg-destructive/20 hover:text-destructive"
-              title="停止"
-              @click="removeTunnel(t.id)"
-            >
-              <Trash2 class="size-3.5" />
-            </Button>
-          </Card>
-        </div>
-      </ScrollArea>
-
-      <div class="text-caption flex items-start gap-1.5 tracking-normal normal-case text-muted-foreground">
-        <AlertCircle class="size-3.5 shrink-0 mt-0.5" />
-        <span>端口 0 表示让系统自动分配;会话断开时隧道自动关闭。</span>
-      </div>
-    </template>
+            <span
+              v-if="t.state === 'active'"
+              class="size-1.5 shrink-0 rounded-full bg-success"
+            />
+          </button>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem variant="destructive" @select="removeTunnel(t.id)">
+            <Trash2 class="size-3.5" /> 停止隧道
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+    </div>
   </div>
 </template>

@@ -354,7 +354,7 @@ async function submit() {
             size="sm"
             :spacing="1"
             class="w-full"
-            @update:model-value="(v: string) => v && (form.authKind = v as AuthKind)"
+            @update:model-value="(v) => { if (typeof v === 'string' && v) form.authKind = v as AuthKind }"
           >
             <ToggleGroupItem
               value="password"
@@ -513,7 +513,7 @@ async function submit() {
                 size="sm"
                 :spacing="1"
                 class="w-full"
-                @update:model-value="(v: string) => v && (form.jumpAuthKind = v as AuthKind)"
+                @update:model-value="(v) => { if (typeof v === 'string' && v) form.jumpAuthKind = v as AuthKind }"
               >
                 <ToggleGroupItem
                   value="password"

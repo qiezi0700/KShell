@@ -20,6 +20,8 @@ import { sidebarVisible, statusBarVisible, clearTerminal, clearScrollback } from
 import { monitorDialogOpen } from '@/stores/monitor'
 import { openKeyManager } from '@/stores/keys'
 import { openCommandPalette } from '@/stores/command-palette'
+import { importSessions, exportSessions } from '@/stores/sessions'
+import { isMac, modKey } from '@/lib/platform'
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
@@ -85,6 +87,9 @@ async function quitApp() {
     class="flex shrink-0 items-center border-b border-border bg-titlebar"
     :style="{ height: 'var(--size-titlebar)' }"
   >
+    <!-- macOS 交通灯占位:overlay 模式下需左侧留白避免遮挡 -->
+    <div v-if="isMac" data-tauri-drag-region class="h-full shrink-0" :style="{ width: '78px' }" />
+
     <div data-tauri-drag-region class="flex h-full items-center gap-1.5 pl-2.5 pr-2">
       <span class="flex items-center justify-center rounded-sm bg-gradient-to-br from-primary to-violet-500 font-semibold text-white" :style="{ width: 'var(--size-icon-sm)', height: 'var(--size-icon-sm)', fontSize: 'var(--text-xs)' }">K</span>
       <span class="text-title text-foreground">KShell</span>
@@ -101,13 +106,13 @@ async function quitApp() {
         <DropdownMenuContent align="start">
           <DropdownMenuItem @select="openNewConnection()">
             新建连接…
-            <DropdownMenuShortcut>Ctrl+N</DropdownMenuShortcut>
+            <DropdownMenuShortcut>{{ modKey }}+N</DropdownMenuShortcut>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem disabled>
+          <DropdownMenuItem @select="importSessions()">
             导入会话…
           </DropdownMenuItem>
-          <DropdownMenuItem disabled>
+          <DropdownMenuItem @select="exportSessions()">
             导出会话…
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -148,7 +153,7 @@ async function quitApp() {
         <DropdownMenuContent align="start">
           <DropdownMenuItem @select="sidebarVisible = !sidebarVisible">
             {{ sidebarVisible ? '隐藏' : '显示' }}侧边栏
-            <DropdownMenuShortcut>Ctrl+B</DropdownMenuShortcut>
+            <DropdownMenuShortcut>{{ modKey }}+B</DropdownMenuShortcut>
           </DropdownMenuItem>
           <DropdownMenuItem @select="statusBarVisible = !statusBarVisible">
             {{ statusBarVisible ? '隐藏' : '显示' }}状态栏
@@ -166,7 +171,7 @@ async function quitApp() {
         <DropdownMenuContent align="start">
           <DropdownMenuItem @select="openCommandPalette()">
             命令面板…
-            <DropdownMenuShortcut>Ctrl+K</DropdownMenuShortcut>
+            <DropdownMenuShortcut>{{ modKey }}+K</DropdownMenuShortcut>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem :disabled="!hasActiveTerminal" @select="monitorDialogOpen = true">
@@ -210,7 +215,8 @@ async function quitApp() {
 
     <div data-tauri-drag-region class="h-full flex-1" />
 
-    <div class="flex h-full">
+    <!-- Windows/Linux 自定义窗口按钮;macOS 使用原生交通灯 -->
+    <div v-if="!isMac" class="flex h-full">
       <Tooltip>
         <TooltipTrigger as-child>
           <button
