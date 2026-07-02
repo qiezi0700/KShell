@@ -51,6 +51,7 @@ function resetFont() {
           type="single"
           :model-value="themeMode"
           variant="outline"
+          :spacing="1"
           class="grid w-full grid-cols-3 gap-2"
           @update:model-value="(v) => v && (themeMode = v as ThemeMode)"
         >
