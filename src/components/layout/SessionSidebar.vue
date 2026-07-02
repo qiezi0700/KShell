@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Plus, FolderPlus, Download, ChevronRight, Folder, Server, Trash2, Pencil } from 'lucide-vue-next'
+import { Plus, FolderPlus, Download, ChevronRight, Folder, Server, Trash2, Pencil, KeyRound } from 'lucide-vue-next'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
@@ -26,6 +26,7 @@ import {
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { openNewConnection } from '@/stores/dialogs'
+import { openKeyManager } from '@/stores/keys'
 import TunnelPanel from '@/components/tunnels/TunnelPanel.vue'
 import MonitorSummary from '@/components/monitor/MonitorSummary.vue'
 import {
@@ -305,8 +306,11 @@ async function delSession(s: StoredSession) {
       </div>
 
       <!-- 密钥 -->
-      <div v-show="activeTab === 'keys'" class="text-body p-3 text-muted-foreground">
-        密钥管理(待实现)
+      <div v-show="activeTab === 'keys'" class="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
+        <Button variant="outline" size="sm" @click="openKeyManager()">
+          <KeyRound class="size-3.5" />
+          打开密钥库管理
+        </Button>
       </div>
 
       <!-- 隧道 -->
