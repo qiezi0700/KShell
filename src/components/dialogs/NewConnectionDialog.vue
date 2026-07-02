@@ -337,6 +337,7 @@ async function submit() {
             :model-value="form.authKind"
             variant="outline"
             size="sm"
+            :spacing="1"
             class="w-full"
             @update:model-value="(v: string) => v && (form.authKind = v as AuthKind)"
           >
@@ -495,6 +496,7 @@ async function submit() {
                 :model-value="form.jumpAuthKind"
                 variant="outline"
                 size="sm"
+                :spacing="1"
                 class="w-full"
                 @update:model-value="(v: string) => v && (form.jumpAuthKind = v as AuthKind)"
               >
