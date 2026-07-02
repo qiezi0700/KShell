@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import {
   KeyRound,
   Plus,
-  Upload,
+  FolderOpen,
   Trash2,
   Pencil,
   Copy,
@@ -58,6 +58,7 @@ import {
 } from '@/api/keys'
 import { tabs } from '@/stores/tabs'
 import { toast } from '@/stores/toast'
+import { openConfirm, openPrompt } from '@/stores/prompt'
 
 // ============================================================
 // 状态
@@ -220,7 +221,14 @@ async function importKey() {
 }
 
 async function confirmDelete(key: SshKey) {
-  if (!confirm(`确定删除密钥「${key.name}」吗?此操作不可撤销。`)) return
+  const ok = await openConfirm({
+    title: '删除密钥',
+    message: `确定删除密钥「${key.name}」吗?此操作不可撤销。`,
+    confirmText: '删除',
+    cancelText: '取消',
+    destructive: true,
+  })
+  if (!ok) return
   try {
     await deleteKey(key.id)
     if (viewingKey.value?.id === key.id) viewingKey.value = null
@@ -231,7 +239,14 @@ async function confirmDelete(key: SshKey) {
 }
 
 async function startRename(key: SshKey) {
-  const name = prompt('输入新名称', key.name)
+  const name = await openPrompt({
+    title: '重命名密钥',
+    message: '输入新名称',
+    defaultValue: key.name,
+    placeholder: '例如 my-key',
+    confirmText: '保存',
+    cancelText: '取消',
+  })
   if (name === null) return
   if (!name.trim()) {
     toast.error('名称不能为空')
@@ -291,7 +306,7 @@ watch(keyManagerDialogOpen, (v) => {
           生成密钥
         </Button>
         <Button size="sm" variant="outline" @click="showImport = !showImport; showGenerate = false; err = null">
-          <Upload class="size-3.5" />
+          <FolderOpen class="size-3.5" />
           导入密钥
         </Button>
         <span class="flex-1" />
@@ -359,8 +374,8 @@ watch(keyManagerDialogOpen, (v) => {
             <Label>私钥文件</Label>
             <div class="flex gap-1.5">
               <Input v-model="importForm.sourcePath" placeholder="点右侧按钮选择,或手动粘贴路径" class="flex-1" />
-              <Button variant="outline" size="icon" @click="pickImportFile" title="浏览…">
-                <Upload class="size-3.5" />
+              <Button variant="outline" size="icon" class="size-9 shrink-0" @click="pickImportFile" title="浏览…">
+                <FolderOpen class="size-3.5" />
               </Button>
             </div>
           </div>
