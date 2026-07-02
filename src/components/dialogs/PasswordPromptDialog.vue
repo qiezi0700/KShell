@@ -35,7 +35,7 @@ function onOpenChange(open: boolean) {
 
 <template>
   <Dialog :open="passwordPromptOpen" @update:open="onOpenChange">
-    <DialogContent class="max-w-[400px]">
+    <DialogContent class="z-[60] max-w-[400px]" overlay-class="z-[60]">
       <DialogHeader>
         <DialogTitle>{{ passwordPromptState?.title }}</DialogTitle>
         <DialogDescription v-if="passwordPromptState?.message" class="whitespace-pre-line">

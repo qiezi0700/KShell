@@ -30,7 +30,7 @@ function onOpenChange(open: boolean) {
 
 <template>
   <Dialog :open="promptOpen" @update:open="onOpenChange">
-    <DialogContent class="max-w-[400px]">
+    <DialogContent class="z-[60] max-w-[400px]" overlay-class="z-[60]">
       <DialogHeader>
         <DialogTitle>{{ promptState?.title }}</DialogTitle>
         <DialogDescription v-if="promptState?.message">

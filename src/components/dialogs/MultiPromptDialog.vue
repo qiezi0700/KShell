@@ -40,7 +40,7 @@ function toggleVisibility(idx: number) {
 
 <template>
   <Dialog :open="multiPromptOpen" @update:open="onOpenChange">
-    <DialogContent class="max-w-[420px]">
+    <DialogContent class="z-[60] max-w-[420px]" overlay-class="z-[60]">
       <DialogHeader>
         <DialogTitle>{{ multiPromptState?.title }}</DialogTitle>
         <DialogDescription v-if="multiPromptState?.message" class="whitespace-pre-line">

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { X } from 'lucide-vue-next'
 import {
   DialogClose,
@@ -11,14 +12,19 @@ import {
 import { cn } from '@/lib/utils'
 import DialogOverlay from './DialogOverlay.vue'
 
-const props = defineProps<DialogContentProps & { class?: string }>()
+const props = defineProps<DialogContentProps & { class?: string, overlayClass?: string }>()
 const emits = defineEmits<DialogContentEmits>()
-const forwarded = useForwardPropsEmits(props, emits)
+// overlayClass / class 是宿主样式,不透传给 reka-ui 的 DialogContent
+const forwardedProps = computed(() => {
+  const { overlayClass: _o, class: _c, ...rest } = props
+  return rest
+})
+const forwarded = useForwardPropsEmits(forwardedProps, emits)
 </script>
 
 <template>
   <DialogPortal>
-    <DialogOverlay />
+    <DialogOverlay :class="overlayClass" />
     <DialogContent
       v-bind="forwarded"
       :class="cn(
