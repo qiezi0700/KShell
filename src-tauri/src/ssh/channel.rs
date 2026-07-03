@@ -94,3 +94,27 @@ pub async fn open_shell(
 
     Ok(ChannelHandle { tx, session_id })
 }
+
+/// 在 PTY 上执行指定命令(如 `docker exec -it <c> sh`),命令退出后 channel 自动收尾。
+/// 与 open_shell 的区别:用 `channel.exec` 代替 `request_shell`,前端复用同一套数据事件。
+pub async fn open_exec(
+    session_handle: &mut russh::client::Handle<super::client::ClientHandler>,
+    app: AppHandle,
+    id: ChannelId,
+    session_id: SessionId,
+    command: String,
+    cols: u32,
+    rows: u32,
+) -> Result<ChannelHandle> {
+    let channel = session_handle.channel_open_session().await?;
+    // PTY 必须先于 exec 申请,否则远端不会分配终端,-it 的 t 不生效
+    channel
+        .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])
+        .await?;
+    channel.exec(true, command.as_bytes()).await?;
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(run_channel(channel, rx, app, id));
+
+    Ok(ChannelHandle { tx, session_id })
+}

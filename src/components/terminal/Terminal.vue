@@ -12,6 +12,7 @@ import '@xterm/xterm/css/xterm.css'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
   sshOpenShell,
+  sshOpenExec,
   sshWrite,
   sshResize,
   sshCloseChannel,
@@ -24,6 +25,8 @@ const props = defineProps<{
   tabId: string
   sessionId: string
   channelId: string | null
+  /** 非空表示以 PTY exec 模式启动(如 docker exec -it),而非默认 shell */
+  command?: string
 }>()
 
 const container = ref<HTMLDivElement | null>(null)
@@ -92,7 +95,11 @@ onMounted(async () => {
 
   try {
     const { cols, rows } = t
-    const chId = props.channelId ?? (await sshOpenShell(props.sessionId, cols, rows))
+    const chId =
+      props.channelId ??
+      (props.command
+        ? await sshOpenExec(props.sessionId, props.command, cols, rows)
+        : await sshOpenShell(props.sessionId, cols, rows))
     currentChannelId = chId
     updateTab(props.tabId, { channelId: chId } as any)
     status.value = 'connected'

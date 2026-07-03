@@ -12,5 +12,7 @@ defineProps<{ tab: TerminalTab }>()
     :channel-id="tab.channelId"
     :host="tab.host"
     :user="tab.user"
+    :with-sftp="!tab.command"
+    :command="tab.command"
   />
 </template>

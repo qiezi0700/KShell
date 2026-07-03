@@ -188,6 +188,40 @@ pub async fn ssh_open_shell(
     Ok(ch_id)
 }
 
+/// 在已有 SSH 会话上以 PTY 模式执行指定命令(交互式,如 docker exec -it),
+/// 返回 channel id 供前端持续读写,命令结束后 channel 自动关闭。
+#[tauri::command]
+pub async fn ssh_open_exec(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    session_id: SessionId,
+    command: String,
+    cols: u32,
+    rows: u32,
+) -> Result<ChannelId, String> {
+    let session = state
+        .sessions
+        .get(&session_id)
+        .ok_or_else(|| format!("会话不存在: {session_id}"))?
+        .clone();
+    let ch_id: ChannelId = Uuid::new_v4().to_string();
+    let mut guard = session.lock().await;
+    let handle = ssh::channel::open_exec(
+        &mut guard.handle,
+        app,
+        ch_id.clone(),
+        session_id.clone(),
+        command,
+        cols,
+        rows,
+    )
+    .await
+    .map_err(err)?;
+    drop(guard);
+    state.channels.insert(ch_id.clone(), handle);
+    Ok(ch_id)
+}
+
 /// 在已有 SSH 会话上一次性执行命令(request_exec),收集 stdout+stderr 后关闭 channel。
 /// 供 M4 监控采集与 M5 Docker 数据获取复用。
 #[tauri::command]

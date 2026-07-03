@@ -36,6 +36,16 @@ export async function sshOpenShell(
   return await invoke<string>('ssh_open_shell', { sessionId, cols, rows })
 }
 
+/** 在已有 SSH 会话上以 PTY 模式交互式执行命令(如 docker exec -it),返回 channel id。 */
+export async function sshOpenExec(
+  sessionId: string,
+  command: string,
+  cols: number,
+  rows: number,
+): Promise<string> {
+  return await invoke<string>('ssh_open_exec', { sessionId, command, cols, rows })
+}
+
 export async function sshWrite(channelId: string, data: Uint8Array): Promise<void> {
   await invoke('ssh_write', { channelId, data: Array.from(data) })
 }

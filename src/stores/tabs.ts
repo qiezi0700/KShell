@@ -1,4 +1,5 @@
 import { computed, ref } from 'vue'
+import { sshDisconnect } from '@/api/ssh'
 
 export type TabType = 'terminal' | 'sftp' | 'monitor' | 'docker'
 
@@ -16,6 +17,8 @@ export interface TerminalTab extends BaseTab {
   user: string
   /** 关联的已保存会话 id;仅从会话列表打开的连接才有,供侧栏做活跃指示 */
   storedSessionId?: string
+  /** 非空表示这是 exec 终端(如 docker exec 进容器),不附带 SFTP 面板 */
+  command?: string
 }
 
 export interface SftpTab extends BaseTab {
@@ -24,6 +27,8 @@ export interface SftpTab extends BaseTab {
   sftpId: string | null  // 打开后填充
   host: string
   user: string
+  /** 关联的已保存会话 id */
+  storedSessionId?: string
 }
 
 export interface DockerTab extends BaseTab {
@@ -31,6 +36,8 @@ export interface DockerTab extends BaseTab {
   sessionId: string
   host: string
   user: string
+  /** 关联的已保存会话 id */
+  storedSessionId?: string
 }
 
 export type Tab = TerminalTab | SftpTab | DockerTab
@@ -67,7 +74,21 @@ export function updateTab(id: string, patch: Partial<Tab>) {
 export const activeStoredSessionIds = computed<Set<string>>(() => {
   const s = new Set<string>()
   for (const t of tabs.value) {
-    if (t.type === 'terminal' && t.storedSessionId) s.add(t.storedSessionId)
+    if (t.storedSessionId) s.add(t.storedSessionId)
   }
   return s
 })
+
+/**
+ * 关闭与某个已保存会话相关的所有 tab(终端/SFTP/Docker),
+ * 并断开各自后端的 SSH 连接。供编辑/删除会话前清理使用。
+ */
+export async function closeTabsByStoredSession(storedSessionId: string) {
+  const related = tabs.value.filter((t) => t.storedSessionId === storedSessionId)
+  if (related.length === 0) return
+  // 先断开各自 SSH 会话,再移除 tab(组件 onBeforeUnmount 会关 channel/sftp,容错)
+  await Promise.all(
+    related.map((t) => sshDisconnect(t.sessionId).catch(() => {})),
+  )
+  for (const t of related) closeTab(t.id)
+}

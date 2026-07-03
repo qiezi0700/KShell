@@ -39,6 +39,7 @@ pub fn run() {
             // SSH
             commands::ssh_connect,
             commands::ssh_open_shell,
+            commands::ssh_open_exec,
             commands::ssh_write,
             commands::ssh_resize,
             commands::ssh_close_channel,

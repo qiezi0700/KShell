@@ -11,10 +11,16 @@ const props = defineProps<{
   channelId: string | null
   host: string
   user: string
+  /** 是否附带 SFTP 面板;exec 终端(如进容器)传 false */
+  withSftp?: boolean
+  /** exec 模式启动命令(如 docker exec -it <c> sh),透传给底层 Terminal */
+  command?: string
 }>()
 
+// 是否附带 SFTP 面板;exec 终端(进容器)不附带
+const hasSftp = props.withSftp ?? true
 // SFTP 面板可见性。默认打开。
-const sftpVisible = ref(true)
+const sftpVisible = ref(hasSftp)
 // SFTP 占容器高度百分比(10-80)。默认 40。
 const sftpHeightPct = ref(40)
 
@@ -72,18 +78,19 @@ onBeforeUnmount(() => {
     <!-- 上半:终端(flex-grow 按比例分配,flex-basis:0 避免溢出) -->
     <div
       class="min-h-0 overflow-hidden"
-      :style="{ flexGrow: sftpVisible ? terminalFlex : 1, flexBasis: '0px' }"
+      :style="{ flexGrow: sftpVisible && hasSftp ? terminalFlex : 1, flexBasis: '0px' }"
     >
       <Terminal
         :tab-id="tabId"
         :session-id="sessionId"
         :channel-id="channelId"
+        :command="command"
       />
     </div>
 
     <!-- 可拖拽分隔条 + SFTP 切换按钮 -->
     <div
-      v-if="sftpVisible"
+      v-if="hasSftp && sftpVisible"
       class="group relative h-[3px] shrink-0 cursor-row-resize bg-border hover:bg-primary/50"
       @mousedown="onDividerDown"
     >
@@ -92,6 +99,7 @@ onBeforeUnmount(() => {
 
     <!-- SFTP 切换按钮(始终在终端右下角) -->
     <Button
+      v-if="hasSftp"
       variant="outline"
       size="xs"
       class="absolute bottom-2 right-3 z-10 bg-popover hover:bg-muted"
@@ -105,7 +113,7 @@ onBeforeUnmount(() => {
 
     <!-- 下半:SFTP -->
     <div
-      v-if="sftpVisible"
+      v-if="hasSftp && sftpVisible"
       class="min-h-0 overflow-hidden border-t border-border"
       :style="{ flexGrow: sftpFlex, flexBasis: '0px' }"
     >
