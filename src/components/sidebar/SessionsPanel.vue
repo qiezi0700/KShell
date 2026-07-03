@@ -202,45 +202,58 @@ async function delSession(s: StoredSession) {
       </div>
       <Input v-model="query" placeholder="搜索会话…" />
 
-      <!-- 选中会话副工具栏:仅在选中时出现,左侧会话名 + 右侧操作按钮 -->
-      <div
-        v-if="selectedSession"
-        class="mt-1.5 flex items-center gap-1 rounded-md bg-sidebar-accent/50 px-1.5 py-1"
-      >
-        <Server class="size-3.5 shrink-0 text-primary" />
-        <span class="text-body min-w-0 flex-1 truncate font-medium">{{ selectedSession.name }}</span>
-        <div class="flex shrink-0 items-center gap-0.5">
-          <Tooltip v-for="a in sessionActions" :key="a.id">
-            <TooltipTrigger as-child>
-              <Button variant="ghost" size="icon-sm" @click="a.run(selectedSession)">
-                <component :is="a.icon" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{{ a.label }}</TooltipContent>
-          </Tooltip>
-          <div class="mx-0.5 h-4 w-px bg-sidebar-border" />
-          <Tooltip>
-            <TooltipTrigger as-child>
-              <Button variant="ghost" size="icon-sm" @click="editSession(selectedSession)">
-                <Pencil />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>编辑会话</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger as-child>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                class="hover:bg-destructive/20 hover:text-destructive"
-                @click="delSession(selectedSession)"
-              >
-                <Trash2 />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>删除会话</TooltipContent>
-          </Tooltip>
-        </div>
+      <!--
+        选中会话副工具栏:常驻固定高度,避免选中时下方列表被挤位。
+        - 未选中:显示提示占位文字,opacity 淡化
+        - 选中:淡入显示会话名和操作按钮
+        双击列表行时,由于本区域高度不变,下方列表不会移动,第二下点击不会误中上一行
+      -->
+      <div class="mt-1.5 flex h-7 items-center gap-1 rounded-md bg-sidebar-accent/40 px-1.5">
+        <Server
+          class="size-3.5 shrink-0 transition-colors"
+          :class="selectedSession ? 'text-primary' : 'text-muted-foreground/50'"
+        />
+        <template v-if="selectedSession">
+          <span class="text-body min-w-0 flex-1 truncate font-medium">{{ selectedSession.name }}</span>
+          <div class="flex shrink-0 items-center gap-0.5">
+            <Tooltip v-for="a in sessionActions" :key="a.id">
+              <TooltipTrigger as-child>
+                <Button variant="ghost" size="icon-sm" @click="a.run(selectedSession)">
+                  <component :is="a.icon" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{{ a.label }}</TooltipContent>
+            </Tooltip>
+            <div class="mx-0.5 h-4 w-px bg-sidebar-border" />
+            <Tooltip>
+              <TooltipTrigger as-child>
+                <Button variant="ghost" size="icon-sm" @click="editSession(selectedSession)">
+                  <Pencil />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>编辑会话</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger as-child>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  class="hover:bg-destructive/20 hover:text-destructive"
+                  @click="delSession(selectedSession)"
+                >
+                  <Trash2 />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>删除会话</TooltipContent>
+            </Tooltip>
+          </div>
+        </template>
+        <span
+          v-else
+          class="text-caption flex-1 truncate text-muted-foreground/70"
+        >
+          单击会话可查看操作
+        </span>
       </div>
     </div>
 
