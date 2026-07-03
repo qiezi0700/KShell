@@ -4,7 +4,8 @@ import { useStorage } from '@vueuse/core'
 import { PanelBottomClose, PanelBottomOpen } from 'lucide-vue-next'
 import Terminal from '@/components/terminal/Terminal.vue'
 import SftpView from '@/components/sftp/SftpView.vue'
-import { Button } from '@/components/ui/button'
+import QuickCommandFab from '@/components/terminal/QuickCommandFab.vue'
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 
 const props = defineProps<{
   tabId: string
@@ -28,6 +29,12 @@ const sftpHeightPct = useStorage('terminal-sftp-height-pct', 40)
 // 拖拽中
 const dragging = ref(false)
 const containerEl = ref<HTMLDivElement | null>(null)
+
+// Terminal 组件 ref:用于 QuickCommandFab 转发 sendCommand
+const terminalRef = ref<InstanceType<typeof Terminal> | null>(null)
+function onQuickCommand(cmd: string) {
+  terminalRef.value?.sendCommand(cmd)
+}
 
 // 终端 flex 比例 = 100 - SFTP 比例;flex-basis:0 确保严格按比例分配
 const terminalFlex = computed(() => 100 - sftpHeightPct.value)
@@ -82,6 +89,7 @@ onBeforeUnmount(() => {
       :style="{ flexGrow: sftpVisible && hasSftp ? terminalFlex : 1, flexBasis: '0px' }"
     >
       <Terminal
+        ref="terminalRef"
         :tab-id="tabId"
         :session-id="sessionId"
         :channel-id="channelId"
@@ -98,19 +106,27 @@ onBeforeUnmount(() => {
       <div class="absolute left-1/2 top-1/2 h-1 w-8 -translate-x-1/2 -translate-y-1/2 rounded-full bg-muted-foreground/30 group-hover:bg-primary" />
     </div>
 
-    <!-- SFTP 切换按钮(始终在终端右下角) -->
-    <Button
-      v-if="hasSftp"
-      variant="outline"
-      size="xs"
-      class="absolute bottom-2 right-3 z-10 bg-popover hover:bg-muted"
-      :title="sftpVisible ? '隐藏文件管理' : '显示文件管理'"
-      @click="toggleSftp"
-    >
-      <PanelBottomClose v-if="sftpVisible" class="size-3.5" />
-      <PanelBottomOpen v-else class="size-3.5" />
-      <span>SFTP</span>
-    </Button>
+    <!-- 快捷指令 FAB:带 SFTP 时为 SFTP 圆钮让位;不带 SFTP 时贴右下角 -->
+    <QuickCommandFab
+      :offset-right="hasSftp ? '3.5rem' : '0.75rem'"
+      @send="onQuickCommand"
+    />
+
+    <!-- SFTP 切换按钮:圆形悬浮按钮,常驻终端右下角 -->
+    <Tooltip>
+      <TooltipTrigger as-child>
+        <button
+          v-if="hasSftp"
+          type="button"
+          class="absolute bottom-3 right-3 z-10 inline-flex size-9 items-center justify-center rounded-full border border-border bg-popover text-foreground shadow-md ring-1 ring-black/5 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          @click="toggleSftp"
+        >
+          <PanelBottomClose v-if="sftpVisible" class="size-4" />
+          <PanelBottomOpen v-else class="size-4" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="left">{{ sftpVisible ? '隐藏文件管理' : '显示文件管理' }}</TooltipContent>
+    </Tooltip>
 
     <!-- 下半:SFTP -->
     <div

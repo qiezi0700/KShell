@@ -207,6 +207,12 @@ defineExpose({
   close() {
     closeTab(props.tabId)
   },
+  /** 由 QuickCommandFab 调用:把指令直接写入通道并追加回车立即执行 */
+  sendCommand(cmd: string) {
+    if (!currentChannelId) return
+    sshWrite(currentChannelId, encoder.encode(cmd + '\r'))
+    term.value?.focus()
+  },
 })
 
 // 菜单「编辑 → 清屏」:仅活跃 tab 响应
