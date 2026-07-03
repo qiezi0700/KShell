@@ -30,7 +30,7 @@ import {
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { ChevronDown, Network } from 'lucide-vue-next'
 import { newConnectionPrefill, showNewConnection } from '@/stores/dialogs'
-import { addTab, nextTabId } from '@/stores/tabs'
+import { addTab, nextTabId, closeTabsByStoredSession } from '@/stores/tabs'
 import { sshConnect, type SshConfig } from '@/api/ssh'
 import { keys as sshKeys, refreshKeys, openKeyManager } from '@/stores/keys'
 import { sshKeyPassphrase } from '@/api/keys'
@@ -281,6 +281,11 @@ async function submit() {
           jumpKeyPath: form.useJump && form.jumpAuthKind === 'private_key' ? form.jumpKeyPath : null,
         }
         const saved = await saveSession(input)
+        // 编辑模式:配置已变更,关闭该会话旧的终端/SFTP/Docker 连接,
+        // 随后会用新配置建立终端 tab
+        if (form.savedSessionId) {
+          await closeTabsByStoredSession(form.savedSessionId)
+        }
         // 新建连接后,把这个会话 id 绑定到 tab,侧栏才能显示"已打开"状态
         if (!form.savedSessionId) form.savedSessionId = saved.id
       } catch {

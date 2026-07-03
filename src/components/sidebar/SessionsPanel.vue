@@ -32,6 +32,7 @@ import {
   exportSessions,
   DEFAULT_GROUP_NAME,
 } from '@/stores/sessions'
+import { closeTabsByStoredSession } from '@/stores/tabs'
 import { openConfirm, openPrompt } from '@/stores/prompt'
 import { activeStoredSessionIds } from '@/stores/tabs'
 import type { StoredSession } from '@/api/sessions'
@@ -39,6 +40,16 @@ import type { StoredSession } from '@/api/sessions'
 const expanded = ref<Record<string, boolean>>({})
 const selectedId = ref<string | null>(null)
 const query = ref('')
+
+/** 当前选中的会话对象;操作栏按钮据此判断可用性 */
+const selectedSession = computed<StoredSession | null>(() => {
+  if (!selectedId.value) return null
+  for (const node of groupTree.value) {
+    const s = node.sessions.find((x) => x.id === selectedId.value)
+    if (s) return s
+  }
+  return null
+})
 
 /** 是否是系统内置默认分组(不可重命名/删除) */
 function isDefaultGroup(name: string) {
@@ -90,7 +101,7 @@ async function onSessionDblclick(s: StoredSession) {
   }
 }
 
-/** 单击"编辑"按钮:打开对话框走编辑模式 */
+/** 单击"编辑"按钮:打开对话框走编辑模式(保存时才关闭旧连接) */
 async function editSession(s: StoredSession) {
   selectedId.value = s.id
   openNewConnection(s)
@@ -144,13 +155,16 @@ async function delGroup(id: string, name: string) {
 async function delSession(s: StoredSession) {
   const ok = await openConfirm({
     title: `删除会话「${s.name}」?`,
-    message: '此操作不可撤销。',
+    message: '关联的终端/SFTP/Docker 连接会被关闭,此操作不可撤销。',
     confirmText: '删除',
     destructive: true,
   })
   if (!ok) return
+  // 先关闭该会话所有相关 tab 与 SSH 连接,再从库中删除
+  await closeTabsByStoredSession(s.id)
   try {
     await removeSession(s.id)
+    if (selectedId.value === s.id) selectedId.value = null
   } catch (e) {
     toast.error(String(e), '删除失败')
   }
@@ -187,6 +201,47 @@ async function delSession(s: StoredSession) {
         </Tooltip>
       </div>
       <Input v-model="query" placeholder="搜索会话…" />
+
+      <!-- 选中会话副工具栏:仅在选中时出现,左侧会话名 + 右侧操作按钮 -->
+      <div
+        v-if="selectedSession"
+        class="mt-1.5 flex items-center gap-1 rounded-md bg-sidebar-accent/50 px-1.5 py-1"
+      >
+        <Server class="size-3.5 shrink-0 text-primary" />
+        <span class="text-body min-w-0 flex-1 truncate font-medium">{{ selectedSession.name }}</span>
+        <div class="flex shrink-0 items-center gap-0.5">
+          <Tooltip v-for="a in sessionActions" :key="a.id">
+            <TooltipTrigger as-child>
+              <Button variant="ghost" size="icon-sm" @click="a.run(selectedSession)">
+                <component :is="a.icon" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{{ a.label }}</TooltipContent>
+          </Tooltip>
+          <div class="mx-0.5 h-4 w-px bg-sidebar-border" />
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <Button variant="ghost" size="icon-sm" @click="editSession(selectedSession)">
+                <Pencil />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>编辑会话</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                class="hover:bg-destructive/20 hover:text-destructive"
+                @click="delSession(selectedSession)"
+              >
+                <Trash2 />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>删除会话</TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
     </div>
 
     <div class="flex-1 overflow-y-auto py-1">

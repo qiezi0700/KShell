@@ -1,6 +1,6 @@
 import { markRaw, shallowRef } from 'vue'
 import type { Component } from 'vue'
-import { TerminalSquare, FolderOpen, Container } from 'lucide-vue-next'
+import { TerminalSquare, FolderOpen, Boxes } from 'lucide-vue-next'
 import type { StoredSession } from '@/api/sessions'
 import { connectSession, quickConnect } from '@/stores/sessions'
 import { addTab, nextTabId } from '@/stores/tabs'
@@ -63,6 +63,7 @@ registerSessionAction({
         sftpId,
         host: s.host,
         user: s.username,
+        storedSessionId: s.id,
       })
     } catch (e) {
       silentHostKeyError(e)
@@ -73,7 +74,7 @@ registerSessionAction({
 registerSessionAction({
   id: 'open-docker',
   label: '打开 Docker',
-  icon: Container,
+  icon: Boxes,
   run: async (s) => {
     let sessionId: string
     try {
@@ -102,6 +103,7 @@ registerSessionAction({
       sessionId,
       host: s.host,
       user: s.username,
+      storedSessionId: s.id,
     })
   },
 })
