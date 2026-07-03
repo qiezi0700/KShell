@@ -291,7 +291,7 @@ function stateBadgeClass(s: string): string {
     <!-- 镜像使用详情弹窗 -->
     <Dialog :open="selectedImage !== null" @update:open="(v) => { if (!v) selectedImage = null }">
       <DialogContent v-if="selectedImage" class="max-w-lg w-[92vw] overflow-hidden">
-        <DialogHeader>
+        <DialogHeader class="min-w-0">
           <DialogTitle class="flex min-w-0 items-center gap-2 pr-8 text-base text-foreground">
             <div class="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
               <Package class="size-4" />
@@ -306,7 +306,7 @@ function stateBadgeClass(s: string): string {
           <DialogDescription class="sr-only">镜像使用详情</DialogDescription>
         </DialogHeader>
 
-        <div class="relative max-h-[60vh] overflow-y-auto px-1 py-2">
+        <div class="relative min-w-0 max-h-[60vh] overflow-y-auto px-1 py-2">
           <!-- 扫描线纹理背景,用前景色低透明度绘制,随主题自动切换 -->
           <div
             class="pointer-events-none absolute inset-0 opacity-[0.03]"
