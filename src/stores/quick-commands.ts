@@ -13,7 +13,17 @@ export interface QuickCommand {
   command: string
 }
 
-export const quickCommands = useStorage<QuickCommand[]>('kshell.quick-commands', [])
+// 首次安装时内置的常用命令,用户仍可增删改;已有 localStorage 时不会覆盖
+const DEFAULT_COMMANDS: QuickCommand[] = [
+  // 目录操作
+  { id: 'kshell-builtin-ls', label: 'ls', description: '', command: 'ls' },
+  { id: 'kshell-builtin-lsl', label: 'ls -la', description: '', command: 'ls -la' },
+  { id: 'kshell-builtin-cdup', label: 'cd ..', description: '', command: 'cd ..' },
+  { id: 'kshell-builtin-cdhome', label: 'cd ~', description: '', command: 'cd ~' },
+  { id: 'kshell-builtin-pwd', label: 'pwd', description: '', command: 'pwd' },
+]
+
+export const quickCommands = useStorage<QuickCommand[]>('kshell.quick-commands', DEFAULT_COMMANDS)
 
 export function addQuickCommand(command: string, label?: string, description?: string) {
   const cmd = command.trim()

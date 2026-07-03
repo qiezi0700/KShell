@@ -17,7 +17,7 @@ import {
   dockerImageInspect,
   dockerImageHistory,
   dockerPull,
-  dockerRecreate,
+  inspectToRunSpec,
   dockerRemoveVolume,
   dockerPruneVolumes,
   dockerInspectVolume,
@@ -36,6 +36,7 @@ import {
   type DockerVolume,
   type DockerNetwork,
   type DockerStack,
+  type DockerRunSpec,
 } from '@/api/docker'
 import { addTab, nextTabId, type DockerTab } from '@/stores/tabs'
 import DockerContainers from './DockerContainers.vue'
@@ -90,6 +91,11 @@ const inspectLoading = ref(false)
 // 新建容器向导
 const runOpen = ref(false)
 
+// 更新并重建向导:预填现有 spec,提交后 pull + stop + rm + run
+const recreateOpen = ref(false)
+const recreateInitial = ref<DockerRunSpec | null>(null)
+const recreateName = ref('')
+
 // 容器编辑弹窗;editInspect 非空即视为打开
 const editInspect = ref<DockerInspect | null>(null)
 
@@ -112,14 +118,8 @@ function setPulling(ref: string, on: boolean) {
   pullingRefs.value = next
 }
 
-// 正在重建的容器 ID 集合,供 DockerContainers 行内 spin/禁用
+// 正在重建的容器 ID 集合;新流程走弹窗,不再显示行内 spin,但保留结构避免子组件 prop 断裂
 const recreatingIds = ref<Set<string>>(new Set())
-function setRecreating(id: string, on: boolean) {
-  const next = new Set(recreatingIds.value)
-  if (on) next.add(id)
-  else next.delete(id)
-  recreatingIds.value = next
-}
 
 onMounted(() => {
   startDocker(sessionId.value)
@@ -413,8 +413,8 @@ async function showInspect(c: DockerContainer) {
 
 async function doRecreate(c: DockerContainer) {
   if (recreatingIds.value.has(c.id)) return
-  // 先取一次 inspect,拿到当前镜像 tag 和完整配置(重建后用同样参数 docker run)
-  let insp
+  // 先取一次 inspect,拿到当前完整配置作为编辑弹窗的预填
+  let insp: DockerInspect
   try {
     insp = await dockerInspect(sessionId.value, c.id)
   } catch (e: unknown) {
@@ -426,29 +426,16 @@ async function doRecreate(c: DockerContainer) {
     toast.warning('该容器绑定的是镜像 digest,无法自动拉取更新')
     return
   }
-  const ok = await openConfirm({
-    title: '更新并重建容器',
-    message:
-      `将执行:pull ${insp.image} → stop → rm → 用同名同配置重新 run 「${insp.name}」。\n` +
-      '重建期间会有短暂停机;仅覆盖常见字段(端口/卷/环境变量/网络/重启策略/CMD),' +
-      '不覆盖 --entrypoint 覆盖、资源限制、健康检查等高级配置。是否继续?',
-    confirmText: '更新并重建',
-    cancelText: '取消',
-    destructive: true,
-  })
-  if (!ok) return
+  recreateInitial.value = inspectToRunSpec(insp)
+  recreateName.value = insp.name
+  recreateOpen.value = true
+}
 
-  setRecreating(c.id, true)
-  toast.info(`正在重建 ${insp.name}…`)
-  try {
-    await dockerRecreate(sessionId.value, insp)
-    toast.success(`容器 ${insp.name} 已用最新镜像重建`)
-    refreshDocker(sessionId.value)
-  } catch (e: unknown) {
-    toast.error(String(e), '重建失败')
-  } finally {
-    setRecreating(c.id, false)
-  }
+/** DockerRunDialog 在 recreate 模式提交完成后触发,刷新列表并清理状态 */
+function onRecreated() {
+  refreshDocker(sessionId.value)
+  recreateInitial.value = null
+  recreateName.value = ''
 }
 
 async function doEdit(c: DockerContainer) {
@@ -599,6 +586,7 @@ function doExec(c: DockerContainer) {
     <DockerImages
       v-show="subTab === 'images'"
       :images="state?.images ?? []"
+      :networks="state?.networks ?? []"
       :containers="state?.containers ?? []"
       :loading="state?.loading ?? false"
       :error="state?.imagesError ?? null"
@@ -695,8 +683,22 @@ function doExec(c: DockerContainer) {
       :open="runOpen"
       :session-id="sessionId"
       :images="state?.images ?? []"
+      :networks="state?.networks ?? []"
       @update:open="runOpen = $event"
       @created="refreshDocker(sessionId)"
+    />
+
+    <!-- 更新并重建向导:复用 DockerRunDialog + 预填 -->
+    <DockerRunDialog
+      :open="recreateOpen"
+      :session-id="sessionId"
+      :images="state?.images ?? []"
+      :networks="state?.networks ?? []"
+      mode="recreate"
+      :initial="recreateInitial"
+      :initial-name="recreateName"
+      @update:open="recreateOpen = $event"
+      @recreated="onRecreated"
     />
 
     <!-- 容器编辑(改名 / 资源限制) -->

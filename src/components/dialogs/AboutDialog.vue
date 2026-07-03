@@ -40,13 +40,13 @@ defineExpose({ open: () => (open.value = true) })
 
       <div class="flex gap-2 pt-1">
         <Button as-child variant="outline" class="text-body flex-1 border-border text-foreground hover:bg-panel-2 hover:border-primary/40">
-          <a href="https://github.com/anomalyco/opencode" target="_blank">
+          <a href="https://github.com/qiezi0700/KShell" target="_blank">
             <Github class="size-3.5" />
             GitHub
           </a>
         </Button>
         <Button as-child variant="outline" class="text-body flex-1 border-border text-foreground hover:bg-panel-2 hover:border-primary/40">
-          <a href="https://opencode.ai" target="_blank">
+          <a href="https://github.com/qiezi0700/KShell/issues" target="_blank">
             <Heart class="size-3.5" />
             反馈
           </a>

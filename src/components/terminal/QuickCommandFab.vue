@@ -166,8 +166,8 @@ function runCommand(cmd: string) {
         </div>
       </div>
 
-      <!-- 指令列表:命令允许换行完整展示,不再 truncate -->
-      <div class="max-h-72 min-h-0 overflow-y-auto py-1">
+      <!-- 指令列表:max-height 约 10 行,内容少时自动收缩,超出再滚动;命令允许换行完整展示,不再 truncate -->
+      <div class="max-h-[320px] min-h-0 overflow-y-auto py-1">
         <div
           v-if="quickCommands.length === 0 && !showForm"
           class="px-3 py-4 text-center text-caption text-muted-foreground"

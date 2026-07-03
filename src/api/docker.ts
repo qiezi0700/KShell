@@ -49,6 +49,16 @@ export interface DockerInspectMount {
   mode: string
 }
 
+/** 单条端口绑定(HostConfig.PortBindings 的权威视图),IPv4/IPv6 双栈时会有两条,重建时会自动去重 */
+export interface DockerInspectPortBinding {
+  /** 容器内端口及协议,如 80/tcp */
+  container: string
+  /** 宿主机 IP,如 0.0.0.0 / :: ;空串表示所有接口 */
+  hostIp: string
+  /** 宿主机端口 */
+  hostPort: string
+}
+
 export interface DockerInspect {
   id: string
   name: string
@@ -79,6 +89,8 @@ export interface DockerInspect {
   memoryBytes: number
   /** HostConfig.NanoCpus / 1e9,浮点值(如 1.5);0 表示无限制 */
   cpus: number
+  /** HostConfig.PortBindings 展开(权威源,补齐 NetworkSettings.Ports 缺失场景) */
+  portBindings: DockerInspectPortBinding[]
 }
 
 // 镜像详情(docker inspect --type=image)
@@ -316,7 +328,9 @@ export async function dockerUpdateContainer(
 
 // 单条端口映射:host 侧写 "8080" 或 "0.0.0.0:8080";container 写 "80" 或 "80/tcp"
 export interface DockerPortMapping {
+  /** 宿主机端口。可以是纯数字(8080)或形如 "0.0.0.0:8080" / "127.0.0.1:8080" 的完整绑定 */
   host: string
+  /** 容器内端口,如 80 或 80/tcp */
   container: string
 }
 
@@ -334,8 +348,10 @@ export interface DockerRunSpec {
   workingDir?: string
   /** no/always/unless-stopped/on-failure;空串表示不指定 */
   restartPolicy?: string
-  /** host/bridge/container:xxx/自定义网络名;空串表示默认 */
+  /** 主网络(docker run --network),host/bridge/container:xxx/自定义网络名;空串表示默认 */
   networkMode?: string
+  /** 附加网络列表:docker run 只能一个 --network,其余在 run 后用 docker network connect 依次挂载 */
+  additionalNetworks?: string[]
   ports: DockerPortMapping[]
   volumes: DockerVolumeBinding[]
   /** KEY=VALUE 字符串数组 */
@@ -418,6 +434,76 @@ export function buildRunCommandFromSpec(s: DockerRunSpec): string {
 /** 新建容器(docker run -d)。返回 docker 输出(通常是容器 ID)。 */
 export async function dockerRun(sessionId: string, spec: DockerRunSpec): Promise<string> {
   return sshExec(sessionId, `${buildRunCommandFromSpec(spec)} 2>&1`)
+}
+
+/** 把 DockerInspect 转成 DockerRunSpec,用于"更新并重建"时预填编辑弹窗。
+ * - 端口权威源用 HostConfig.PortBindings;IPv4/IPv6 双栈自动合并为一条(优先 IPv4)
+ * - 网络优先用 NetworkMode(host/自定义 bridge 名),回退到 Networks 里第一个非 bridge
+ * - 挂载只取 bind + 命名 volume(tmpfs 等不还原)
+ * - 高级字段(cap/priv/dns/devices 等)不进入 spec — 编辑弹窗不暴露,重建后丢失 */
+export function inspectToRunSpec(i: DockerInspect): DockerRunSpec {
+  // 双栈去重:同 container+hostPort 组合优先保留 IPv4 那条
+  const seen = new Set<string>()
+  const ports: DockerPortMapping[] = []
+  // 先过一遍 IPv4,再过一遍其余
+  const sorted = [...i.portBindings].sort((a, b) => {
+    const av = a.hostIp === '' || /^\d/.test(a.hostIp) ? 0 : 1
+    const bv = b.hostIp === '' || /^\d/.test(b.hostIp) ? 0 : 1
+    return av - bv
+  })
+  for (const b of sorted) {
+    const key = `${b.container}|${b.hostPort}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    // IPv6 "::" 用户无法编辑,归一为空(所有接口)
+    const useIp = b.hostIp && b.hostIp !== '::' && b.hostIp !== '0.0.0.0'
+    const host = useIp ? `${b.hostIp}:${b.hostPort}` : b.hostPort
+    ports.push({ host, container: b.container })
+  }
+
+  const volumes: DockerVolumeBinding[] = []
+  for (const m of i.mounts) {
+    if (m.type !== 'bind' && m.type !== 'volume') continue
+    const readOnly = m.mode ? /(^|,)ro(,|$)/.test(m.mode) : false
+    volumes.push({ source: m.source, destination: m.destination, readOnly })
+  }
+
+  // 网络:主网络优先取 HostConfig.NetworkMode(host / container:xx / 自定义 bridge 名);
+  // NetworkMode = "default" 时回退到 Networks[0]。其余 Networks 作为附加网络,
+  // 重建时先 --network 主的,run 完再对每个附加网络执行 docker network connect。
+  let networkMode = ''
+  const nm = i.networkMode
+  if (nm && nm !== 'default') {
+    networkMode = nm
+  } else if (i.networks[0]) {
+    networkMode = i.networks[0]
+  }
+  const additionalNetworks = i.networks.filter((n) => n && n !== networkMode)
+
+  return {
+    image: i.image,
+    name: i.name || undefined,
+    hostname: i.hostname || undefined,
+    workingDir: i.workingDir || undefined,
+    restartPolicy: i.restartPolicy && i.restartPolicy !== 'no' ? i.restartPolicy : undefined,
+    networkMode: networkMode || undefined,
+    additionalNetworks: additionalNetworks.length ? additionalNetworks : undefined,
+    ports,
+    volumes,
+    env: [...i.env],
+    cmd: [...i.cmd],
+    memory: i.memoryBytes > 0 ? bytesToMemStr(i.memoryBytes) : undefined,
+    cpus: i.cpus > 0 ? String(i.cpus) : undefined,
+  }
+}
+
+/** 内存字节数 → docker --memory 字符串(优先 g / m,取整,避免 0.5g 之类) */
+function bytesToMemStr(bytes: number): string {
+  const g = bytes / (1024 * 1024 * 1024)
+  if (g >= 1 && Number.isInteger(g)) return `${g}g`
+  const m = Math.round(bytes / (1024 * 1024))
+  if (m > 0) return `${m}m`
+  return String(bytes)
 }
 
 // ============================================================
@@ -820,63 +906,8 @@ function shq(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`
 }
 
-/** 从 inspect 数据还原出 `docker run` 命令(不含 pull/stop/rm 步骤)。
- * 覆盖常见字段:name、restart、network、hostname、workdir、-p、-v、-e、cmd。
- * 已知未覆盖:多网络(仅第一个)、--entrypoint 覆盖、privileged、resource limits、healthcheck。 */
-export function buildRunCommand(i: DockerInspect): string {
-  const parts: string[] = ['docker', 'run', '-d']
-  if (i.name) parts.push('--name', shq(i.name))
-  if (i.restartPolicy && i.restartPolicy !== 'no' && i.restartPolicy !== '') {
-    parts.push('--restart', shq(i.restartPolicy))
-  }
-  if (i.hostname) parts.push('--hostname', shq(i.hostname))
-  if (i.workingDir) parts.push('--workdir', shq(i.workingDir))
-
-  // 网络:优先 HostConfig.NetworkMode(host/container:xx/自定义 bridge 名),
-  // 否则退回 NetworkSettings.Networks 里的第一个;'default' 就是 docker 默认桥,不必显式
-  const nm = i.networkMode
-  if (nm && nm !== 'default' && nm !== 'bridge') parts.push('--network', shq(nm))
-  else if (i.networks[0] && i.networks[0] !== 'bridge') parts.push('--network', shq(i.networks[0]))
-
-  for (const p of i.ports) {
-    if (p.host && p.host !== ':') parts.push('-p', shq(`${p.host}:${p.container}`))
-    else parts.push('--expose', shq(p.container))
-  }
-
-  for (const m of i.mounts) {
-    if (m.type === 'bind' || m.type === 'volume') {
-      const roSuffix = m.mode && /(^|,)ro(,|$)/.test(m.mode) ? ':ro' : ''
-      parts.push('-v', shq(`${m.source}:${m.destination}${roSuffix}`))
-    }
-  }
-
-  for (const e of i.env) parts.push('-e', shq(e))
-
-  parts.push(shq(i.image))
-  for (const a of i.cmd) parts.push(shq(a))
-
-  return parts.join(' ')
-}
-
-/** 用最新镜像重建容器:分四步 pull → stop → rm → run,任一步失败抛错。
- * stop 若容器已停止不算失败(docker 会退非零但错误里含 "is not running"),内部吞掉。 */
-export async function dockerRecreate(sessionId: string, inspect: DockerInspect): Promise<void> {
-  validateImageId(inspect.image)
-  validateName(inspect.name)
-
-  await sshExec(sessionId, `docker pull ${inspect.image} 2>&1`)
-
-  try {
-    await sshExec(sessionId, `docker stop ${inspect.name}`)
-  } catch (e: unknown) {
-    // 已停止的容器直接进入 rm;其他错误抛出让上层看到
-    const msg = (e as Error)?.message ?? String(e)
-    if (!/is not running|No such container/i.test(msg)) throw e
-  }
-
-  await sshExec(sessionId, `docker rm ${inspect.name}`)
-  await sshExec(sessionId, `${buildRunCommand(inspect)} 2>&1`)
-}
+// 旧版 buildRunCommand / dockerRecreate 已废弃,统一走 DockerRunDialog 的 recreate 模式
+// (inspectToRunSpec → 用户编辑 → buildRunCommandFromSpec + pull/stop/rm/run)
 
 // ============================================================
 // 资源统计
@@ -972,6 +1003,25 @@ function parsePorts(ports: unknown): DockerInspectPort[] {
   return result
 }
 
+/** 解析 HostConfig.PortBindings:{"80/tcp":[{"HostIp":"0.0.0.0","HostPort":"8080"}]}
+ * 权威源,即使容器已停止也存在;NetworkSettings.Ports 仅运行中容器完整 */
+function parsePortBindings(bindings: unknown): DockerInspectPortBinding[] {
+  const result: DockerInspectPortBinding[] = []
+  if (!bindings || typeof bindings !== 'object') return result
+  for (const [key, val] of Object.entries(bindings as Record<string, unknown>)) {
+    if (!Array.isArray(val) || val.length === 0) continue
+    for (const b of val) {
+      if (b && typeof b === 'object') {
+        const hp = str((b as Record<string, unknown>).HostPort)
+        const hip = str((b as Record<string, unknown>).HostIp)
+        if (!hp) continue
+        result.push({ container: key, hostIp: hip, hostPort: hp })
+      }
+    }
+  }
+  return result
+}
+
 /** 将 docker inspect 的 [0] 归一化为 DockerInspect */
 function normalizeInspect(r: Record<string, unknown>): DockerInspect {
   const config = (r.Config ?? {}) as Record<string, unknown>
@@ -1016,6 +1066,7 @@ function normalizeInspect(r: Record<string, unknown>): DockerInspect {
       typeof host.NanoCpus === 'number' && (host.NanoCpus as number) > 0
         ? (host.NanoCpus as number) / 1e9
         : 0,
+    portBindings: parsePortBindings(host.PortBindings),
   }
 }
 
