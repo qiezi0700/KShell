@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import type { DialogContentEmits, DialogContentProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
+import { ref, watch } from "vue"
 import { X } from "lucide-vue-next"
 import { reactiveOmit } from "@vueuse/core"
 import {
   DialogClose,
   DialogContent,
   DialogPortal,
+  injectDialogRootContext,
   useForwardPropsEmits,
 } from "reka-ui"
 import { cn } from "@/lib/utils"
+import { nextZIndex } from "@/lib/z-index"
 import SheetOverlay from "./SheetOverlay.vue"
 
 interface SheetContentProps extends DialogContentProps {
@@ -29,11 +32,22 @@ const emits = defineEmits<DialogContentEmits>()
 const delegatedProps = reactiveOmit(props, "class", "side")
 
 const forwarded = useForwardPropsEmits(delegatedProps, emits)
+
+// 与 DialogContent 一致:按打开时序分配递增 z-index,后打开的抽屉/弹窗总在更上层
+const ctx = injectDialogRootContext()
+const zIndex = ref(50)
+watch(
+  () => ctx?.open.value,
+  (open) => {
+    if (open) zIndex.value = nextZIndex()
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
   <DialogPortal>
-    <SheetOverlay />
+    <SheetOverlay :style="{ zIndex }" />
     <DialogContent
       data-slot="sheet-content"
       :class="cn(
@@ -47,6 +61,7 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
         side === 'bottom'
           && 'data-[state=closed]:slide-out-to-bottom data-[state=open]:slide-in-from-bottom inset-x-0 bottom-0 h-auto border-t',
         props.class)"
+      :style="{ zIndex }"
       v-bind="{ ...$attrs, ...forwarded }"
     >
       <slot />
