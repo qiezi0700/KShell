@@ -18,7 +18,7 @@ function onOpenChange(open: boolean) {
 
 <template>
   <Dialog :open="confirmOpen" @update:open="onOpenChange">
-    <DialogContent class="z-[60] max-w-[400px]" overlay-class="z-[60]">
+    <DialogContent class="max-w-[400px]">
       <DialogHeader>
         <DialogTitle>{{ confirmState?.title }}</DialogTitle>
         <DialogDescription v-if="confirmState?.message" class="whitespace-pre-line">

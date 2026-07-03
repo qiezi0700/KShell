@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { X } from 'lucide-vue-next'
 import {
   DialogClose,
@@ -7,9 +7,11 @@ import {
   type DialogContentEmits,
   type DialogContentProps,
   DialogPortal,
+  injectDialogRootContext,
   useForwardPropsEmits,
 } from 'reka-ui'
 import { cn } from '@/lib/utils'
+import { nextZIndex } from '@/lib/z-index'
 import DialogOverlay from './DialogOverlay.vue'
 
 const props = defineProps<DialogContentProps & { class?: string, overlayClass?: string }>()
@@ -20,11 +22,23 @@ const forwardedProps = computed(() => {
   return rest
 })
 const forwarded = useForwardPropsEmits(forwardedProps, emits)
+
+// 多重弹窗按打开时序分配递增 z-index,后打开的总在更上层。
+// 内联 style 优先级高于 class,覆盖下方默认的 z-50。
+const ctx = injectDialogRootContext()
+const zIndex = ref(50)
+watch(
+  () => ctx?.open.value,
+  (open) => {
+    if (open) zIndex.value = nextZIndex()
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
   <DialogPortal>
-    <DialogOverlay :class="overlayClass" />
+    <DialogOverlay :class="overlayClass" :style="{ zIndex }" />
     <DialogContent
       v-bind="forwarded"
       :class="cn(
@@ -35,6 +49,7 @@ const forwarded = useForwardPropsEmits(forwardedProps, emits)
         'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
         props.class,
       )"
+      :style="{ zIndex }"
     >
       <slot />
       <DialogClose class="absolute right-3 top-3 rounded-sm text-muted-foreground opacity-70 hover:opacity-100 focus:outline-none">
