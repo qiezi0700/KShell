@@ -52,18 +52,8 @@ const filtered = computed(() => {
       </Tooltip>
     </div>
 
-    <!-- 列表表头 -->
-    <div
-      v-if="filtered.length"
-      class="grid grid-cols-[1.75rem_2fr_1fr_auto] items-center gap-3 px-3 py-1.5 text-caption text-muted-foreground border-b border-border/30"
-    >
-      <span />
-      <span>名称</span>
-      <span>元数据</span>
-      <span class="text-right">操作</span>
-    </div>
-
-    <div class="flex-1 overflow-y-auto p-2">
+    <!-- 列表区:表头 sticky 在滚动区顶部,与卡片共享同一滚动容器 -->
+    <div class="flex-1 overflow-y-auto">
       <div v-if="error && volumes.length === 0" class="flex flex-col items-center gap-2 py-12 text-muted-foreground">
         <AlertCircle class="size-8 text-warning" />
         <span class="text-body">{{ error }}</span>
@@ -75,11 +65,21 @@ const filtered = computed(() => {
         <span class="text-body">没有卷</span>
       </div>
       <div v-else-if="filtered.length === 0" class="py-12 text-center text-muted-foreground">没有匹配的卷</div>
-      <div v-else class="space-y-1.5">
+      <template v-else>
+        <!-- 列表表头 -->
+        <div
+          class="sticky top-0 z-10 grid grid-cols-[1.75rem_minmax(0,2fr)_minmax(0,1fr)_3.5rem] items-center gap-3 border-x border-transparent bg-card px-3 py-1.5 text-caption text-muted-foreground border-b border-border/30"
+        >
+          <span />
+          <span>名称</span>
+          <span>元数据</span>
+          <span>操作</span>
+        </div>
+        <div class="space-y-1.5 py-2">
         <div
           v-for="v in filtered"
           :key="v.name"
-          class="group grid grid-cols-[1.75rem_2fr_1fr_auto] items-center gap-3 rounded-lg border border-border/50 bg-card/30 px-3 py-2 transition-all hover:border-primary/30 hover:bg-card/60 hover:ring-1 hover:ring-primary/10"
+          class="group grid grid-cols-[1.75rem_minmax(0,2fr)_minmax(0,1fr)_3.5rem] items-center gap-3 rounded-lg border border-border/50 bg-card/30 px-3 py-2 transition-all hover:border-primary/30 hover:bg-card/60 hover:ring-1 hover:ring-primary/10"
         >
           <div class="flex size-7 items-center justify-center rounded-md bg-primary/10 text-primary">
             <HardDrive class="size-3.5" />
@@ -94,7 +94,7 @@ const filtered = computed(() => {
             <span class="truncate font-mono text-caption text-muted-foreground">{{ v.driver }} · {{ v.scope }}</span>
           </div>
 
-          <div class="flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <div class="flex items-center justify-start gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
             <Tooltip>
               <TooltipTrigger as-child>
                 <Button variant="ghost" size="icon-sm" @click.stop="emit('inspect', v)">
@@ -114,6 +114,7 @@ const filtered = computed(() => {
           </div>
         </div>
       </div>
+      </template>
     </div>
   </div>
 </template>

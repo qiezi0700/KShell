@@ -88,20 +88,9 @@ function stateLabel(s: string): string {
       </Tooltip>
     </div>
 
-    <!-- 列表表头:与每行 grid 列完全对齐,首列为状态条占位 -->
-    <div
-      v-if="filtered.length"
-      class="grid grid-cols-[0.25rem_2fr_1.5fr_5rem_7rem_auto] items-center gap-3 px-3 py-1.5 text-caption text-muted-foreground border-b border-border/30"
-    >
-      <span />
-      <span>容器</span>
-      <span class="hidden lg:block">镜像</span>
-      <span>状态</span>
-      <span class="text-right">资源</span>
-      <span class="text-right">操作</span>
-    </div>
-
-    <div class="flex-1 overflow-y-auto p-2">
+    <!-- 列表区:表头 sticky 在滚动区顶部,与卡片共享同一滚动容器,
+         避免滚动条占位导致表头与内容列错位 -->
+    <div class="flex-1 overflow-y-auto">
       <!-- 不可用 / 出错且无数据 -->
       <div
         v-if="error && containers.length === 0"
@@ -131,12 +120,25 @@ function stateLabel(s: string): string {
         没有匹配的容器
       </div>
 
-      <!-- 容器卡片列表 -->
-      <div v-else class="space-y-1.5">
+      <template v-else>
+        <!-- 列表表头:sticky 在滚动区顶部,首列为状态条占位 -->
+        <div
+          class="sticky top-0 z-10 grid grid-cols-[0.25rem_minmax(0,2fr)_minmax(0,1.5fr)_5rem_7rem_13rem] items-center gap-3 border-x border-transparent bg-card px-3 py-1.5 text-caption text-muted-foreground border-b border-border/30"
+        >
+          <span />
+          <span>容器</span>
+          <span class="hidden lg:block">镜像</span>
+          <span>状态</span>
+          <span>资源</span>
+          <span>操作</span>
+        </div>
+
+        <!-- 容器卡片列表 -->
+        <div class="space-y-1.5 py-2">
         <div
           v-for="c in filtered"
           :key="c.id"
-          class="group relative grid grid-cols-[0.25rem_2fr_1.5fr_5rem_7rem_auto] items-center gap-3 rounded-lg border border-border/50 bg-card/30 px-3 py-2 transition-all hover:border-primary/30 hover:bg-card/60 hover:ring-1 hover:ring-primary/10"
+          class="group relative grid grid-cols-[0.25rem_minmax(0,2fr)_minmax(0,1.5fr)_5rem_7rem_13rem] items-center gap-3 rounded-lg border border-border/50 bg-card/30 px-3 py-2 transition-all hover:border-primary/30 hover:bg-card/60 hover:ring-1 hover:ring-primary/10"
         >
           <!-- 左侧状态条:running 时带辉光 -->
           <div class="relative h-full">
@@ -183,7 +185,7 @@ function stateLabel(s: string): string {
 
           <!-- 资源 -->
           <div
-            class="text-right font-mono text-caption"
+            class="font-mono text-caption"
             :class="c.state === 'running' ? 'text-success' : 'text-muted-foreground'"
             :title="c.state === 'running' && stats[c.id] ? `网络 IO: ${stats[c.id].netIo}　块 IO: ${stats[c.id].blockIo}　PID: ${stats[c.id].pids}` : undefined"
           >
@@ -195,7 +197,7 @@ function stateLabel(s: string): string {
           </div>
 
           <!-- 操作按钮 -->
-          <div class="flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <div class="flex items-center justify-start gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
             <Tooltip>
               <TooltipTrigger as-child>
                 <Button
@@ -281,6 +283,7 @@ function stateLabel(s: string): string {
           </div>
         </div>
       </div>
+      </template>
     </div>
   </div>
 </template>

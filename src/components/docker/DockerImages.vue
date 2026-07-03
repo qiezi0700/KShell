@@ -172,19 +172,8 @@ function stateBadgeClass(s: string): string {
       </div>
     </div>
 
-    <!-- 列表表头 -->
-    <div
-      v-if="filtered.length"
-      class="grid grid-cols-[1.75rem_2fr_1fr_5rem_auto] items-center gap-3 px-3 py-1.5 text-caption text-muted-foreground border-b border-border/30"
-    >
-      <span />
-      <span>镜像</span>
-      <span>标识 / 大小</span>
-      <span>使用</span>
-      <span class="text-right">操作</span>
-    </div>
-
-    <div class="flex-1 overflow-y-auto p-2">
+    <!-- 列表区:表头 sticky 在滚动区顶部,与卡片共享同一滚动容器 -->
+    <div class="flex-1 overflow-y-auto">
       <!-- 不可用 / 出错且无数据 -->
       <div
         v-if="error && images.length === 0"
@@ -211,12 +200,24 @@ function stateBadgeClass(s: string): string {
         没有匹配的镜像
       </div>
 
-      <!-- 镜像卡片列表 -->
-      <div v-else class="space-y-1.5">
+      <template v-else>
+        <!-- 列表表头 -->
+        <div
+          class="sticky top-0 z-10 grid grid-cols-[1.75rem_minmax(0,2fr)_minmax(0,1fr)_5rem_5rem] items-center gap-3 border-x border-transparent bg-card px-3 py-1.5 text-caption text-muted-foreground border-b border-border/30"
+        >
+          <span />
+          <span>镜像</span>
+          <span>标识 / 大小</span>
+          <span>使用</span>
+          <span>操作</span>
+        </div>
+
+        <!-- 镜像卡片列表 -->
+        <div class="space-y-1.5 py-2">
         <div
           v-for="img in filtered"
           :key="img.id"
-          class="group relative grid grid-cols-[1.75rem_2fr_1fr_5rem_auto] items-center gap-3 rounded-lg border border-border/50 bg-card/30 px-3 py-2 transition-all hover:border-primary/30 hover:bg-card/60 hover:ring-1 hover:ring-primary/10"
+          class="group relative grid grid-cols-[1.75rem_minmax(0,2fr)_minmax(0,1fr)_5rem_5rem] items-center gap-3 rounded-lg border border-border/50 bg-card/30 px-3 py-2 transition-all hover:border-primary/30 hover:bg-card/60 hover:ring-1 hover:ring-primary/10"
         >
           <!-- 图标块 -->
           <div class="flex size-7 items-center justify-center rounded-md bg-primary/10 text-primary">
@@ -251,7 +252,7 @@ function stateBadgeClass(s: string): string {
           </div>
 
           <!-- 操作按钮 -->
-          <div class="flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <div class="flex items-center justify-start gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
             <Tooltip>
               <TooltipTrigger as-child>
                 <Button variant="ghost" size="icon-sm" @click.stop="emit('inspect', img)">
@@ -284,19 +285,20 @@ function stateBadgeClass(s: string): string {
           </div>
         </div>
       </div>
+      </template>
     </div>
 
     <!-- 镜像使用详情弹窗 -->
     <Dialog :open="selectedImage !== null" @update:open="(v) => { if (!v) selectedImage = null }">
       <DialogContent v-if="selectedImage" class="max-w-lg w-[92vw] overflow-hidden">
         <DialogHeader>
-          <DialogTitle class="flex items-center gap-2 text-base text-foreground">
-            <div class="flex size-7 items-center justify-center rounded-md bg-primary/10 text-primary">
+          <DialogTitle class="flex min-w-0 items-center gap-2 pr-8 text-base text-foreground">
+            <div class="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
               <Package class="size-4" />
             </div>
-            <span class="truncate font-mono">{{ selectedImage.repository }}:{{ selectedImage.tag }}</span>
+            <span class="truncate font-mono" :title="`${selectedImage.repository}:${selectedImage.tag}`">{{ selectedImage.repository }}:{{ selectedImage.tag }}</span>
           </DialogTitle>
-          <div class="mt-1 flex items-center gap-2 font-mono text-xs text-muted-foreground">
+          <div class="mt-1 flex items-center gap-2 pr-8 font-mono text-xs text-muted-foreground">
             <span>{{ shortId(selectedImage.id) }}</span>
             <span class="text-border">|</span>
             <span>{{ selectedImage.size }}</span>
