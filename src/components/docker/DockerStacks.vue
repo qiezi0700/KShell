@@ -78,13 +78,13 @@ function isRunning(status: string): boolean {
         </div>
         <div class="relative flex-1 max-w-xs">
           <Search class="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input v-model="keyword" placeholder="筛选 stack 名" class="h-7 pl-7 text-body" />
+          <Input v-model="keyword" placeholder="筛选 stack 名" size="sm" class="pl-7" />
         </div>
         <Tooltip>
           <TooltipTrigger as-child>
-            <Button variant="outline" size="sm" class="h-7 gap-1.5 px-2" @click="openDeploy">
+            <Button variant="outline" size="sm" @click="openDeploy">
               <Upload class="size-3.5" />
-              <span class="text-body">部署</span>
+              <span>部署</span>
             </Button>
           </TooltipTrigger>
           <TooltipContent>用 compose 文件部署新 stack</TooltipContent>
@@ -97,12 +97,12 @@ function isRunning(status: string): boolean {
             ref="deployInputEl"
             v-model="deployPath"
             placeholder="远端 compose 文件绝对路径,如 /root/myapp/docker-compose.yml"
-            class="h-7 pl-7 text-body"
+            size="sm" class="pl-7"
             @keydown.enter="submitDeploy"
             @keydown.esc="cancelDeploy"
           />
         </div>
-        <Button variant="default" size="sm" class="h-7 px-2 text-body" :disabled="!deployPath.trim()" @click="submitDeploy">
+        <Button variant="default" size="sm" :disabled="!deployPath.trim()" @click="submitDeploy">
           up -d
         </Button>
         <Button variant="ghost" size="icon-sm" @click="cancelDeploy">

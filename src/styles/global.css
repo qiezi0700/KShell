@@ -107,6 +107,23 @@
   --size-icon-md: calc(var(--font-size-ui) + 11px);    /* 24px @13,列表图标 */
   --size-row-list: calc(var(--font-size-ui) + 10px);   /* 23px @13,文件列表行高 */
 
+  /* 控件尺寸档位:统一控制 height + padding + icon + font,不依赖字号“撑”高度。
+     组件通过 size="xs/sm/md/lg" 选择档位,而不是自由组合 h-* + text-*。 */
+  --control-xs: calc(var(--font-size-ui) + 11px);       /* 24px @13 */
+  --control-sm: calc(var(--font-size-ui) + 15px);       /* 28px @13 */
+  --control-md: calc(var(--font-size-ui) + 19px);       /* 32px @13 */
+  --control-lg: calc(var(--font-size-ui) + 23px);       /* 36px @13 */
+
+  --control-xs-px: 0.5rem;  --control-xs-py: 0px;   --control-xs-icon: 14px;
+  --control-sm-px: 0.5rem;  --control-sm-py: 2px;   --control-sm-icon: 16px;
+  --control-md-px: 0.75rem; --control-md-py: 4px;   --control-md-icon: 16px;
+  --control-lg-px: 1rem;    --control-lg-py: 6px;   --control-lg-icon: 18px;
+
+  --control-xs-text: var(--text-sm);
+  --control-sm-text: var(--text-sm);
+  --control-md-text: var(--text-base);
+  --control-lg-text: var(--text-base);
+
   --background: oklch(0.19 0.005 260);
   --foreground: oklch(0.92 0.005 260);
 

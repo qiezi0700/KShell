@@ -133,13 +133,13 @@ function stateBadgeClass(s: string): string {
         </div>
         <div class="relative flex-1 max-w-xs">
           <Search class="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input v-model="keyword" placeholder="筛选镜像名:标签" class="h-7 pl-7 text-body" />
+          <Input v-model="keyword" placeholder="筛选镜像名:标签" size="sm" class="pl-7" />
         </div>
         <Tooltip>
           <TooltipTrigger as-child>
-            <Button variant="outline" size="sm" class="h-7 gap-1.5 px-2" @click="emit('registry')">
+            <Button variant="outline" size="sm" @click="emit('registry')">
               <KeyRound class="size-3.5" />
-              <span class="text-body">私有库</span>
+              <span>私有库</span>
             </Button>
           </TooltipTrigger>
           <TooltipContent>登录私有 Registry</TooltipContent>
@@ -151,7 +151,7 @@ function stateBadgeClass(s: string): string {
           <Input
             v-model="pullRef"
             placeholder="拉取镜像:输入引用后回车,如 nginx:latest 或 registry/repo:tag"
-            class="h-7 pl-7 text-body"
+            size="sm" class="pl-7"
             @keydown.enter="submitPull"
           />
         </div>
@@ -160,12 +160,11 @@ function stateBadgeClass(s: string): string {
             <Button
               variant="default"
               size="sm"
-              class="h-7 gap-1.5 px-2"
               :disabled="!pullRef.trim()"
               @click="submitPull"
             >
               <Download class="size-3.5" />
-              <span class="text-body">拉取</span>
+              <span>拉取</span>
             </Button>
           </TooltipTrigger>
           <TooltipContent>拉取镜像(docker pull)</TooltipContent>

@@ -75,13 +75,13 @@ function stateLabel(s: string): string {
       </div>
       <div class="relative flex-1 max-w-xs">
         <Search class="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Input v-model="keyword" placeholder="筛选容器名 / 镜像" class="h-7 pl-7 text-body" />
+        <Input v-model="keyword" placeholder="筛选容器名 / 镜像" size="sm" class="pl-7" />
       </div>
       <Tooltip>
         <TooltipTrigger as-child>
-          <Button variant="outline" size="sm" class="h-7 gap-1.5 px-2" @click="emit('create')">
+          <Button variant="outline" size="sm" @click="emit('create')">
             <PlusCircle class="size-3.5" />
-            <span class="text-body">新建</span>
+            <span>新建</span>
           </Button>
         </TooltipTrigger>
         <TooltipContent>用 docker run 创建一个新容器</TooltipContent>

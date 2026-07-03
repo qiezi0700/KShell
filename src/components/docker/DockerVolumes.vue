@@ -39,13 +39,13 @@ const filtered = computed(() => {
       </div>
       <div class="relative flex-1 max-w-xs">
         <Search class="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Input v-model="keyword" placeholder="筛选卷名 / 驱动" class="h-7 pl-7 text-body" />
+        <Input v-model="keyword" placeholder="筛选卷名 / 驱动" size="sm" class="pl-7" />
       </div>
       <Tooltip>
         <TooltipTrigger as-child>
-          <Button variant="outline" size="sm" class="h-7 gap-1.5 px-2" @click="emit('prune')">
+          <Button variant="outline" size="sm" @click="emit('prune')">
             <Trash2 class="size-3.5" />
-            <span class="text-body">清理未使用</span>
+            <span>清理未使用</span>
           </Button>
         </TooltipTrigger>
         <TooltipContent>删除无容器引用的卷</TooltipContent>

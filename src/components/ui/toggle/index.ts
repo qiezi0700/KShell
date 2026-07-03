@@ -13,9 +13,9 @@ export const toggleVariants = cva(
           "border border-input bg-transparent shadow-xs hover:bg-accent hover:text-accent-foreground",
       },
       size: {
-        default: "h-9 px-2 min-w-9",
-        sm: "h-8 px-1.5 min-w-8",
-        lg: "h-10 px-2.5 min-w-10",
+        default: "h-[var(--control-md)] px-[var(--control-md-px)] py-[var(--control-md-py)] min-w-[var(--control-md)]",
+        sm: "h-[var(--control-sm)] px-[var(--control-sm-px)] py-[var(--control-sm-py)] min-w-[var(--control-sm)]",
+        lg: "h-[var(--control-lg)] px-[var(--control-lg-px)] py-[var(--control-lg-py)] min-w-[var(--control-lg)]",
       },
     },
     defaultVariants: {
