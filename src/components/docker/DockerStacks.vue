@@ -159,7 +159,7 @@ function isRunning(status: string): boolean {
             <span class="truncate font-mono text-caption text-muted-foreground" :title="s.configFiles">{{ s.configFiles }}</span>
           </div>
 
-          <div class="flex items-center justify-start gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <div class="flex items-center justify-start gap-0.5">
             <Tooltip>
               <TooltipTrigger as-child>
                 <Button

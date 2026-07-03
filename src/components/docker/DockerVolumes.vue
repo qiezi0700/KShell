@@ -94,7 +94,7 @@ const filtered = computed(() => {
             <span class="truncate font-mono text-caption text-muted-foreground">{{ v.driver }} · {{ v.scope }}</span>
           </div>
 
-          <div class="flex items-center justify-start gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <div class="flex items-center justify-start gap-0.5">
             <Tooltip>
               <TooltipTrigger as-child>
                 <Button variant="ghost" size="icon-sm" @click.stop="emit('inspect', v)">

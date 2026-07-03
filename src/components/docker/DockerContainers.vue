@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { Search, Play, Square, RotateCw, Trash2, Logs, AlertCircle, Info, SquareTerminal, PackageCheck, PlusCircle, Box, SquarePen } from 'lucide-vue-next'
+import { Search, Play, Square, RotateCw, Trash2, Logs, AlertCircle, Info, SquareTerminal, PackageCheck, PlusCircle, Box, SquarePen, Ellipsis } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import type { DockerContainer, DockerStats } from '@/api/docker'
 
 const props = defineProps<{
@@ -123,7 +124,7 @@ function stateLabel(s: string): string {
       <template v-else>
         <!-- 列表表头:sticky 在滚动区顶部,首列为状态条占位 -->
         <div
-          class="sticky top-0 z-10 grid grid-cols-[0.25rem_minmax(0,2fr)_minmax(0,1.5fr)_5rem_7rem_13rem] items-center gap-3 border-x border-transparent bg-card px-3 py-1.5 text-caption text-muted-foreground border-b border-border/30"
+          class="sticky top-0 z-10 grid grid-cols-[0.25rem_minmax(0,2fr)_minmax(0,1.5fr)_5rem_7rem_9rem] items-center gap-3 border-x border-transparent bg-card px-3 py-1.5 text-caption text-muted-foreground border-b border-border/30"
         >
           <span />
           <span>容器</span>
@@ -138,7 +139,7 @@ function stateLabel(s: string): string {
         <div
           v-for="c in filtered"
           :key="c.id"
-          class="group relative grid grid-cols-[0.25rem_minmax(0,2fr)_minmax(0,1.5fr)_5rem_7rem_13rem] items-center gap-3 rounded-lg border border-border/50 bg-card/30 px-3 py-2 transition-all hover:border-primary/30 hover:bg-card/60 hover:ring-1 hover:ring-primary/10"
+          class="group relative grid grid-cols-[0.25rem_minmax(0,2fr)_minmax(0,1.5fr)_5rem_7rem_9rem] items-center gap-3 rounded-lg border border-border/50 bg-card/30 px-3 py-2 transition-all hover:border-primary/30 hover:bg-card/60 hover:ring-1 hover:ring-primary/10"
         >
           <!-- 左侧状态条:running 时带辉光 -->
           <div class="relative h-full">
@@ -196,8 +197,8 @@ function stateLabel(s: string): string {
             <template v-else>—</template>
           </div>
 
-          <!-- 操作按钮 -->
-          <div class="flex items-center justify-start gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <!-- 操作按钮:关键操作直接显示,次要操作收入「更多」下拉 -->
+          <div class="flex items-center justify-start gap-0.5">
             <Tooltip>
               <TooltipTrigger as-child>
                 <Button
@@ -229,43 +230,6 @@ function stateLabel(s: string): string {
             </Tooltip>
             <Tooltip>
               <TooltipTrigger as-child>
-                <Button variant="ghost" size="icon-sm" @click.stop="emit('restart', c)">
-                  <RotateCw class="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>重启</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger as-child>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  :disabled="recreating.has(c.id)"
-                  @click.stop="emit('recreate', c)"
-                >
-                  <PackageCheck class="size-3.5" :class="recreating.has(c.id) && 'animate-spin'" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>更新并重建(拉取最新镜像)</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger as-child>
-                <Button variant="ghost" size="icon-sm" @click.stop="emit('edit', c)">
-                  <SquarePen class="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>编辑(改名 / 资源限制 / 网络)</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger as-child>
-                <Button variant="ghost" size="icon-sm" @click.stop="emit('inspect', c)">
-                  <Info class="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>详情</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger as-child>
                 <Button variant="ghost" size="icon-sm" @click.stop="emit('logs', c)">
                   <Logs class="size-3.5" />
                 </Button>
@@ -280,6 +244,32 @@ function stateLabel(s: string): string {
               </TooltipTrigger>
               <TooltipContent>删除</TooltipContent>
             </Tooltip>
+            <!-- 次要操作:重启 / 更新重建 / 编辑 / 详情 -->
+            <DropdownMenu>
+              <DropdownMenuTrigger as-child>
+                <Button variant="ghost" size="icon-sm">
+                  <Ellipsis class="size-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" class="min-w-40">
+                <DropdownMenuItem @select="emit('restart', c)">
+                  <RotateCw class="size-3.5" />
+                  重启
+                </DropdownMenuItem>
+                <DropdownMenuItem :disabled="recreating.has(c.id)" @select="emit('recreate', c)">
+                  <PackageCheck class="size-3.5" :class="recreating.has(c.id) && 'animate-spin'" />
+                  更新并重建
+                </DropdownMenuItem>
+                <DropdownMenuItem @select="emit('edit', c)">
+                  <SquarePen class="size-3.5" />
+                  编辑
+                </DropdownMenuItem>
+                <DropdownMenuItem @select="emit('inspect', c)">
+                  <Info class="size-3.5" />
+                  详情
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </div>

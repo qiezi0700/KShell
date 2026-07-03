@@ -252,7 +252,7 @@ function stateBadgeClass(s: string): string {
           </div>
 
           <!-- 操作按钮 -->
-          <div class="flex items-center justify-start gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <div class="flex items-center justify-start gap-0.5">
             <Tooltip>
               <TooltipTrigger as-child>
                 <Button variant="ghost" size="icon-sm" @click.stop="emit('inspect', img)">
