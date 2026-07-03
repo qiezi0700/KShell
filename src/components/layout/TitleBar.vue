@@ -13,6 +13,7 @@ import {
 import AboutDialog from '@/components/dialogs/AboutDialog.vue'
 import ShortcutsDialog from '@/components/dialogs/ShortcutsDialog.vue'
 import PreferencesDialog from '@/components/dialogs/PreferencesDialog.vue'
+import KnownHostsDialog from '@/components/dialogs/KnownHostsDialog.vue'
 import { openNewConnection } from '@/stores/dialogs'
 import { openConfirm } from '@/stores/prompt'
 import { tabs, activeTabId } from '@/stores/tabs'
@@ -45,6 +46,7 @@ const close = () => withWindow('close')
 const aboutRef = ref<InstanceType<typeof AboutDialog> | null>(null)
 const shortcutsRef = ref<InstanceType<typeof ShortcutsDialog> | null>(null)
 const prefsRef = ref<InstanceType<typeof PreferencesDialog> | null>(null)
+const knownHostsRef = ref<InstanceType<typeof KnownHostsDialog> | null>(null)
 
 async function openAbout() {
   aboutRef.value?.open()
@@ -56,6 +58,10 @@ async function openShortcuts() {
 
 async function openPreferences() {
   prefsRef.value?.open()
+}
+
+async function openKnownHosts() {
+  knownHostsRef.value?.open()
 }
 
 async function openGithub() {
@@ -181,11 +187,8 @@ async function quitApp() {
             SSH 密钥库…
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem disabled>
+          <DropdownMenuItem @select="openKnownHosts()">
             管理已知主机…
-          </DropdownMenuItem>
-          <DropdownMenuItem disabled>
-            设置…
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -255,5 +258,6 @@ async function quitApp() {
     <AboutDialog ref="aboutRef" />
     <ShortcutsDialog ref="shortcutsRef" />
     <PreferencesDialog ref="prefsRef" />
+    <KnownHostsDialog ref="knownHostsRef" />
   </div>
 </template>

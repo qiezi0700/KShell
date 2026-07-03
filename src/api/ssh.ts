@@ -136,6 +136,25 @@ export async function sshRemoveKnownHost(host: string, port: number): Promise<vo
   await invoke('ssh_remove_known_host', { host, port })
 }
 
+/** 已知主机管理面板用:合并 app 库与系统 ~/.ssh/known_hosts 的单条视图 */
+export interface KnownHostRecord {
+  host: string
+  port: number
+  keyType: string
+  fingerprint: string
+  /** app = KShell 自管;system = 系统 ~/.ssh/known_hosts */
+  source: 'app' | 'system'
+  /** ISO8601;仅 app 条目有值 */
+  trustedAt: string
+  /** 系统层 HashKnownHosts yes 生成的哈希主机名,不能显示明文 host */
+  hashed: boolean
+}
+
+/** 列出全部已知主机(app + 系统只读参考) */
+export async function sshListKnownHosts(): Promise<KnownHostRecord[]> {
+  return await invoke<KnownHostRecord[]>('ssh_list_known_hosts')
+}
+
 /** 监听首次连接的公钥确认请求 */
 export async function onHostKeyConfirm(
   handler: (payload: HostKeyConfirmPayload) => void,

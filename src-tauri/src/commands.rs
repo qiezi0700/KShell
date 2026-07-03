@@ -145,6 +145,16 @@ pub async fn ssh_remove_known_host(
     kh.remove(&host, port).map_err(err)
 }
 
+/// 列出全部已知主机(app 库 + 系统 ~/.ssh/known_hosts 只读参考)。
+/// 前端"管理已知主机"面板用
+#[tauri::command]
+pub async fn ssh_list_known_hosts(
+    state: State<'_, AppState>,
+) -> Result<Vec<ssh::known_hosts::KnownHostRecord>, String> {
+    let kh = state.known_hosts.read().await;
+    Ok(kh.list())
+}
+
 /// 前端收到 ssh://ki-prompt 事件后,把用户填写的 answers 回传,继续 keyboard-interactive 认证。
 #[tauri::command]
 pub async fn ssh_ki_respond(

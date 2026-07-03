@@ -34,6 +34,23 @@ pub struct HostEntry {
     pub trusted_at: String,
 }
 
+/// 展示层记录:合并 app 库与系统层的单条条目视图。
+/// 系统层哈希主机名的 host 为空、`hashed=true`,UI 上另行提示
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownHostRecord {
+    pub host: String,
+    pub port: u16,
+    pub key_type: String,
+    pub fingerprint: String,
+    /// "app" 或 "system"
+    pub source: &'static str,
+    /// 仅 app 条目有值(ISO8601);系统层留空
+    pub trusted_at: String,
+    /// 系统层哈希主机名(HashKnownHosts yes)条目 true
+    pub hashed: bool,
+}
+
 pub enum HostCheckResult {
     /// 公钥与已信任记录匹配
     Trusted,
@@ -175,6 +192,61 @@ impl KnownHosts {
         let k = Self::key_of(host, port);
         self.entries.remove(&k);
         self.save()
+    }
+
+    /// 列出全部信任条目(app + 系统层),用于"管理已知主机"界面。
+    /// 系统层删除受限于我们不改用户 ~/.ssh/known_hosts,前端只允许删 source=app
+    pub fn list(&self) -> Vec<KnownHostRecord> {
+        let mut out = Vec::with_capacity(self.entries.len() + self.system.len());
+
+        // App 库:key 形如 "host:port"
+        for (k, e) in &self.entries {
+            let (host, port) = parse_app_key(k);
+            let key_type = e.key.split_whitespace().next().unwrap_or("").to_string();
+            out.push(KnownHostRecord {
+                host,
+                port,
+                key_type,
+                fingerprint: e.fingerprint.clone(),
+                source: "app",
+                trusted_at: e.trusted_at.clone(),
+                hashed: false,
+            });
+        }
+
+        // 系统层:一条 SystemEntry 的 Plain 可能匹配多个 pattern,拆成多行显示
+        for entry in &self.system {
+            let key_type = entry.key.split_whitespace().next().unwrap_or("").to_string();
+            let fingerprint = fingerprint_of_openssh_key(&entry.key).unwrap_or_default();
+            match &entry.matcher {
+                HostMatcher::Plain(patterns) => {
+                    for p in patterns {
+                        let (host, port) = split_system_hostspec(p);
+                        out.push(KnownHostRecord {
+                            host,
+                            port,
+                            key_type: key_type.clone(),
+                            fingerprint: fingerprint.clone(),
+                            source: "system",
+                            trusted_at: String::new(),
+                            hashed: false,
+                        });
+                    }
+                }
+                HostMatcher::Hashed { .. } => {
+                    out.push(KnownHostRecord {
+                        host: String::new(),
+                        port: 0,
+                        key_type: key_type.clone(),
+                        fingerprint: fingerprint.clone(),
+                        source: "system",
+                        trusted_at: String::new(),
+                        hashed: true,
+                    });
+                }
+            }
+        }
+        out
     }
 
     fn save(&self) -> Result<()> {
@@ -328,4 +400,31 @@ fn fingerprint_of_openssh_key(line: &str) -> Option<String> {
     line.parse::<PublicKey>()
         .ok()
         .map(|k| k.fingerprint(HashAlg::Sha256).to_string())
+}
+
+/// app 库的 key 是我们自己拼的 "host:port" 格式,解析回 (host, port)。
+/// 兜底端口 22,避免历史数据缺失时崩溃
+fn parse_app_key(k: &str) -> (String, u16) {
+    if let Some(idx) = k.rfind(':') {
+        if let Ok(p) = k[idx + 1..].parse::<u16>() {
+            return (k[..idx].to_string(), p);
+        }
+    }
+    (k.to_string(), 22)
+}
+
+/// 系统 known_hosts 的 hostspec:"[host]:port" 或裸 "host",拆回 (host, port)。
+/// 兼容 IPv6 括号包裹与自定义端口
+fn split_system_hostspec(spec: &str) -> (String, u16) {
+    if let Some(rest) = spec.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            let host = rest[..end].to_string();
+            let port = rest[end + 1..]
+                .strip_prefix(':')
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(22);
+            return (host, port);
+        }
+    }
+    (spec.to_string(), 22)
 }
