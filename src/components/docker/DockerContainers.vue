@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { Search, Play, Square, RotateCw, Trash2, ScrollText, Box, AlertCircle } from 'lucide-vue-next'
+import { Search, Play, Square, RotateCw, Trash2, Logs, AlertCircle, Info, SquareTerminal, PackageCheck, PlusCircle, SquarePen } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
-import type { DockerContainer } from '@/api/docker'
+import type { DockerContainer, DockerStats } from '@/api/docker'
 
 const props = defineProps<{
   containers: DockerContainer[]
@@ -13,6 +13,10 @@ const props = defineProps<{
   error: string | null
   /** 是否已成功采集过(决定错误文案是「不可用」还是临时报错) */
   available: boolean
+  /** 容器资源占用,按容器短 ID 索引 */
+  stats: Record<string, DockerStats>
+  /** 正在重建的容器 ID 集合(pull + stop + rm + run 中),显示 spin 并禁用重复触发 */
+  recreating: Set<string>
 }>()
 
 const emit = defineEmits<{
@@ -21,6 +25,14 @@ const emit = defineEmits<{
   (e: 'restart', c: DockerContainer): void
   (e: 'remove', c: DockerContainer): void
   (e: 'logs', c: DockerContainer): void
+  (e: 'inspect', c: DockerContainer): void
+  (e: 'exec', c: DockerContainer): void
+  /** 拉取最新镜像并重建同名容器,保留原配置 */
+  (e: 'recreate', c: DockerContainer): void
+  /** 打开编辑弹窗:改名 / 资源限制 / 重启策略 */
+  (e: 'edit', c: DockerContainer): void
+  /** 打开创建向导 */
+  (e: 'create'): void
   (e: 'retry'): void
 }>()
 
@@ -54,13 +66,22 @@ function stateLabel(s: string): string {
 </script>
 
 <template>
-  <div class="flex h-full flex-col">
-    <!-- 搜索框(仅有数据时显示) -->
-    <div v-if="containers.length" class="shrink-0 px-2 pt-2">
-      <div class="relative">
+  <div class="flex min-h-0 flex-1 flex-col">
+    <!-- 工具栏:搜索 + 新建按钮 -->
+    <div class="shrink-0 flex items-center gap-1.5 px-2 pt-2">
+      <div class="relative flex-1">
         <Search class="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input v-model="keyword" placeholder="筛选容器名 / 镜像" class="h-7 pl-7 text-body" />
       </div>
+      <Tooltip>
+        <TooltipTrigger as-child>
+          <Button variant="outline" size="sm" class="h-7 gap-1.5 px-2" @click="emit('create')">
+            <PlusCircle class="size-3.5" />
+            <span class="text-body">新建</span>
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>用 docker run 创建一个新容器</TooltipContent>
+      </Tooltip>
     </div>
 
     <div class="flex-1 overflow-y-auto p-2">
@@ -80,8 +101,12 @@ function stateLabel(s: string): string {
       </div>
 
       <!-- 空列表 -->
-      <div v-else-if="containers.length === 0" class="py-12 text-center text-muted-foreground">
-        没有容器,使用 docker run 创建
+      <div v-else-if="containers.length === 0" class="flex flex-col items-center gap-2 py-12 text-muted-foreground">
+        <span class="text-body">没有容器</span>
+        <Button variant="outline" size="sm" @click="emit('create')">
+          <PlusCircle class="size-3.5" />
+          新建容器
+        </Button>
       </div>
 
       <!-- 过滤后为空 -->
@@ -106,13 +131,33 @@ function stateLabel(s: string): string {
               <span class="text-body truncate font-medium">{{ c.name }}</span>
               <Badge variant="outline" class="text-caption shrink-0" :class="stateColor(c.state)">{{ stateLabel(c.state) }}</Badge>
             </div>
-            <div class="text-caption truncate text-muted-foreground">
-              <span class="font-mono">{{ c.image }}</span>
-              <span v-if="c.ports" class="ml-2">{{ c.ports }}</span>
+            <div class="flex items-center gap-2 text-caption text-muted-foreground">
+              <span class="truncate font-mono">{{ c.image }}</span>
+              <span v-if="c.ports" class="truncate font-mono" :title="c.ports">{{ c.ports }}</span>
+              <span
+                v-if="c.state === 'running' && stats[c.id]"
+                class="ml-auto shrink-0 font-mono"
+                :title="`网络 IO: ${stats[c.id].netIo}　块 IO: ${stats[c.id].blockIo}　PID: ${stats[c.id].pids}`"
+              >
+                CPU {{ stats[c.id].cpuPercent }} · Mem {{ stats[c.id].memPercent }}
+              </span>
             </div>
           </div>
           <!-- 操作按钮 -->
           <div class="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+            <Tooltip>
+              <TooltipTrigger as-child>
+                <Button
+                  v-if="c.state === 'running'"
+                  variant="ghost"
+                  size="icon-sm"
+                  @click.stop="emit('exec', c)"
+                >
+                  <SquareTerminal class="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>进入终端</TooltipContent>
+            </Tooltip>
             <Tooltip>
               <TooltipTrigger as-child>
                 <Button v-if="c.state !== 'running'" variant="ghost" size="icon-sm" @click.stop="emit('start', c)">
@@ -139,8 +184,37 @@ function stateLabel(s: string): string {
             </Tooltip>
             <Tooltip>
               <TooltipTrigger as-child>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  :disabled="recreating.has(c.id)"
+                  @click.stop="emit('recreate', c)"
+                >
+                  <PackageCheck class="size-3.5" :class="recreating.has(c.id) && 'animate-spin'" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>更新并重建(拉取最新镜像)</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger as-child>
+                <Button variant="ghost" size="icon-sm" @click.stop="emit('edit', c)">
+                  <SquarePen class="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>编辑(改名 / 资源限制)</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger as-child>
+                <Button variant="ghost" size="icon-sm" @click.stop="emit('inspect', c)">
+                  <Info class="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>详情</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger as-child>
                 <Button variant="ghost" size="icon-sm" @click.stop="emit('logs', c)">
-                  <ScrollText class="size-3.5" />
+                  <Logs class="size-3.5" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>日志</TooltipContent>

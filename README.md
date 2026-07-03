@@ -6,19 +6,21 @@
 
 > **Vibe Coding 项目** — 本项目从第一行代码到最终功能实现,全程由 AI 驱动开发。开发者通过自然语言描述需求与设计意图,AI 生成全部代码,开发者负责架构决策、审查与引导。没有一行代码是手动敲出来的。
 >
-> 状态:M1 / M1.5 / M2 / M3 / M4 / M6 + SSH 密钥库 已代码完成,等待真机联调。
+> 状态:M1 / M1.5 / M2 / M3 / M4 / M5 / M6 + SSH 密钥库 已代码完成,等待真机联调。
 
 ## 功能一览
 
 | 功能 | 说明 |
 |------|------|
-| SSH 终端 | 密码 / 私钥 / SSH agent 认证,多标签,PTY resize,上下分栏 |
+| SSH 终端 | 密码 / 私钥 / SSH agent / keyboard-interactive 认证,多标签,PTY resize,上下分栏 |
 | 主机校验 | known_hosts 指纹校验,首次连接确认,mismatch 拒绝 |
-| 会话管理 | 分组树形管理,SQLite 持久化,凭据 AES-256-GCM 加密 |
+| 会话管理 | 分组树形管理,SQLite 持久化,凭据 AES-256-GCM 加密,会话级操作栏 + 右键菜单 |
 | SFTP | 双栏文件管理,拖拽 / 复制 / 剪切,目录递归传输,进度队列 |
 | 服务器监控 | CPU / 内存 / 网络 / 磁盘 / 负载实时图表(ECharts) |
+| Docker 面板 | 容器 / 镜像 / 卷 / 网络 / Compose stack 管理,日志流,容器新建 / 编辑 / 重建,系统清理 |
 | 端口隧道 | 本地转发 + 远程转发,会话级管理 |
 | SSH 密钥库 | 生成 / 导入 / 管理密钥对,部署公钥到远端 |
+| 命令面板 | Ctrl+K 快速搜索并执行命令 |
 | 主题系统 | OKLCH 色彩,7 种主题色,明亮 / 暗黑 / 跟随系统,字号可调 |
 
 ## 里程碑
@@ -30,7 +32,7 @@
 | M2 | 会话持久化(SQLite)+ 凭据加密(AES-256-GCM,KEK 存 OS keychain) | ✅ 代码完成 |
 | M3 | SFTP 双栏文件管理 + 传输队列 + 拖拽/复制/剪切 | ✅ 代码完成 |
 | M4 | 服务器监控面板(CPU/内存/网络/磁盘/负载,ECharts) | ✅ 代码完成 |
-| M5 | Docker 面板(容器/镜像/网络) | ⏳ 规划中(插件化) |
+| M5 | Docker 面板(容器/镜像/卷/网络/Compose stack + 日志/详情/新建/编辑/重建/系统清理) | ✅ 代码完成 |
 | M6 | 端口隧道 / 转发(本地转发 + 远程转发) | ✅ 代码完成 |
 | — | SSH 密钥库(生成/导入/管理/部署公钥) | ✅ 代码完成 |
 
@@ -39,11 +41,14 @@
 **前端**
 - Vue 3.5 + TypeScript + Vite 6
 - Tailwind CSS 4(`@tailwindcss/vite` 插件,OKLCH 主题,`--primary-hue` 参数化主题色)
-- shadcn-vue(new-york 风格,基于 reka-ui):alert / badge / card / collapsible / context-menu / dialog / dropdown-menu / progress / select / sidebar / slider / table / tabs / textarea / toggle-group / tooltip 等组件
+- shadcn-vue(new-york 风格,基于 reka-ui):alert / badge / card / collapsible / context-menu / dialog / dropdown-menu / input / label / progress / scroll-area / select / separator / sheet / sidebar / skeleton / slider / status-dot / switch / table / tabs / textarea / toggle / toggle-group / tooltip 等组件
 - xterm.js 5.5 + fit / web-links 插件
 - ECharts 6(监控图表,动态加载避免进主 chunk)
 - lucide-vue-next 图标
 - @vueuse/core(快捷键 / 响应式工具)
+- @tanstack/vue-table(Docker 列表虚拟化备用)
+- highlight.js(Docker 日志高亮备用)
+- uuid(标签页 id 生成)
 - 偏好持久化:localStorage(`kshell-preferences`)
 
 **后端**
@@ -65,12 +70,13 @@
 | `Ctrl+N` / `Ctrl+T` | 新建连接 |
 | `Ctrl+W` | 关闭当前标签 |
 | `Ctrl+B` | 切换侧边栏 |
+| `Ctrl+K` | 命令面板 |
 | `Ctrl+PgDn` / `Ctrl+PgUp` | 切换标签 |
 | `Ctrl+Shift+C` | 终端复制选中文本 |
 | `Ctrl+Shift+V` | 粘贴到终端 |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | SFTP 复制 / 剪切 / 粘贴文件 |
 | `Ctrl+滚轮` | 终端字号独立缩放(8–32px) |
-| 右键 | 会话/分组操作菜单(编辑/删除/连接) |
+| 右键 | 会话/分组操作菜单(连接终端/SFTP/Docker、编辑/删除) |
 
 ## 项目结构
 
@@ -83,23 +89,34 @@ KShell/
 │   │   ├── sessions.ts           #   会话分组 CRUD
 │   │   ├── keys.ts               #   SSH 密钥库
 │   │   ├── monitor.ts            #   监控采集脚本 + 解析
+│   │   ├── docker.ts             #   Docker CLI 封装 + 归一化
 │   │   └── tunnel.ts             #   端口隧道/转发
 │   ├── components/
 │   │   ├── ui/                   # shadcn-vue 基础组件
-│   │   ├── layout/               # TitleBar / SessionSidebar / WorkArea / StatusBar
-│   │   ├── dialogs/              # 全局弹窗(新建连接/偏好/关于/快捷键/确认/提示/toast/监控/密钥库)
+│   │   ├── layout/               # TitleBar / ActivityBar / SessionSidebar / WorkArea / StatusBar
+│   │   ├── sidebar/              # 侧栏业务面板(SessionsPanel / KeysPanel)
+│   │   ├── dialogs/              # 全局弹窗(新建连接/偏好/关于/快捷键/确认/提示/toast/监控/密钥库/命令面板)
 │   │   ├── terminal/             # xterm 集成 + 上下分栏(TerminalSplit)
 │   │   ├── sftp/                 # SFTP 双栏(SftpView / FilePane / TransferPanel)
 │   │   ├── monitor/              # 监控侧栏精简卡(MonitorSummary)
+│   │   ├── docker/               # Docker 面板(容器/镜像/卷/网络/Compose + 日志/详情/新建/编辑/系统清理)
 │   │   └── tunnels/              # 端口隧道面板(TunnelPanel)
 │   ├── stores/                   # 响应式全局状态
-│   │   ├── tabs.ts               #   标签页
+│   │   ├── tabs.ts               #   标签页 + 按 storedSession 关闭相关 tab
+│   │   ├── tab-views.ts          #   tab 类型 → 视图组件注册表
 │   │   ├── sessions.ts           #   会话/分组
+│   │   ├── session-actions.ts    #   会话级动作注册表(连接终端/SFTP/Docker)
 │   │   ├── keys.ts               #   SSH 密钥库
 │   │   ├── monitor.ts            #   监控轮询(跟随活跃终端)
+│   │   ├── docker.ts             #   Docker 数据轮询(容器/镜像/卷/网络/stack + stats)
+│   │   ├── sidebar-panels.ts     #   侧栏面板注册表 + 宽度拖拽
+│   │   ├── status-actions.ts     #   状态栏动作注册表
+│   │   ├── command-palette.ts    #   命令面板开关
+│   │   ├── overlays.ts           #   浮层组件注册表
 │   │   ├── dialogs.ts            #   弹窗触发
 │   │   ├── transfers.ts          #   传输队列
 │   │   ├── host-key.ts           #   主机公钥确认
+│   │   ├── ki-prompt.ts          #   keyboard-interactive 认证响应
 │   │   ├── prompt.ts             #   交互式输入
 │   │   ├── toast.ts              #   toast 通知
 │   │   ├── ui.ts                 #   侧边栏/状态栏可见性 + 清屏
@@ -116,7 +133,7 @@ KShell/
 │   │   ├── crypto.rs             # 机器绑定 AES-256-GCM(key.bin 加密/解密)
 │   │   ├── ssh/
 │   │   │   ├── client.rs         # russh 连接 + 认证 + known_hosts 校验
-│   │   │   ├── channel.rs        # PTY / shell 通道
+│   │   │   ├── channel.rs        # PTY / shell / exec 通道
 │   │   │   ├── tunnel.rs         # 本地/远程端口转发
 │   │   │   └── known_hosts.rs    # 主机公钥信任库(JSON)
 │   │   ├── sftp/
@@ -138,7 +155,8 @@ KShell/
 ├── components.json               # shadcn-vue 配置
 ├── CLAUDE.md                     # 项目规范(供 AI 协作参考)
 ├── LICENSE
-└── README.md
+├── README.md
+└── README.en.md
 ```
 
 ## 开发
@@ -227,6 +245,18 @@ cargo check                # 后端编译检查
 - 侧栏「隧道」tab 管理面板,支持添加 / 删除 / 状态实时更新
 - 会话断开时隧道自动关闭
 
+## Docker 面板(M5)
+
+- 通过 `ssh_exec` 在远端调用 docker CLI,前端 `api/docker.ts` 按 `--format '{{json .}}'` 归一化为 camelCase
+- `stores/docker.ts` 每 5 秒轮询容器/镜像/卷/网络/stack,stats 独立采集避免阻塞主列表
+- 五个子面板(容器 / 镜像 / 卷 / 网络 / Compose stack)以子 tab 切换,计数 Badge 实时更新
+- **容器**:启停 / 重启 / 删除 / 进入终端(docker exec -it sh)/ 日志流(跟随 / 过滤 / 时间戳 / 文件定位)/ 详情 / 重建(pull + stop + rm + run 原配置)/ 编辑(改名 / 内存 / CPU / 重启策略)
+- **镜像**:删除 / 拉取 / 更新 / 详情(配置 + 构建层历史)
+- **卷 / 网络**:删除 / 清理未使用 / 原始 JSON 详情
+- **Compose stack**:up / down / restart / deploy,按 stack 名分组管理
+- **新建容器向导**:`DockerRunDialog` 支持端口映射 / 卷绑定 / 环境变量 / 资源限制 / 网络 / 重启策略
+- **系统清理**:`docker system df` 汇总 + 一键 prune(含 / 不含卷)
+
 ## 偏好与主题
 
 - `stores/preferences.ts` 管理主题模式(明亮 / 暗黑 / 跟随系统)、主题色(7 种,通过 `--primary-hue` 参数化)、界面字体大小(10–18px)
@@ -243,7 +273,8 @@ cargo check                # 后端编译检查
 
 ## 已知限制
 
-- M5 Docker 面板规划以插件化形式实现,后端复用 `ssh_exec` 调用 docker CLI
+- Docker 面板依赖远端 docker CLI,需当前用户具有 docker 组权限;无 docker 或无权限时会断开并提示
+- Docker 子面板(容器/镜像/卷/网络/stack)各表头/行高在极端字体缩放下可能略有错位
 
 ## License
 

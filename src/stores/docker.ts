@@ -3,9 +3,17 @@ import {
   dockerVersion,
   dockerListContainers,
   dockerListImages,
+  dockerStats,
+  dockerListVolumes,
+  dockerListNetworks,
+  dockerListStacks,
   type DockerContainer,
   type DockerImage,
   type DockerVersion,
+  type DockerStats,
+  type DockerVolume,
+  type DockerNetwork,
+  type DockerStack,
 } from '@/api/docker'
 
 // 轮询间隔(ms)
@@ -16,16 +24,28 @@ interface SessionDocker {
   version: DockerVersion | null
   containers: DockerContainer[]
   images: DockerImage[]
+  volumes: DockerVolume[]
+  networks: DockerNetwork[]
+  stacks: DockerStack[]
+  /** 容器资源占用,按容器短 ID 索引;stats 采集较慢,独立于主列表 */
+  stats: Record<string, DockerStats>
   /** 仅首次加载与手动刷新为 true,后台轮询不触发,避免刷新按钮反复 spin */
   loading: boolean
-  error: string | null
+  // 四类资源分别独立采集,失败也各自记录,互不影响展示
+  containersError: string | null
+  imagesError: string | null
+  volumesError: string | null
+  networksError: string | null
+  stacksError: string | null
 }
 
 const sessions = shallowRef<Record<string, SessionDocker>>({})
 // 定时器句柄不属于 UI 状态,单独用 Map 管理,避免进入响应式对象
 const timers = new Map<string, number>()
-// 进行中的请求守卫,避免轮询与手动刷新并发叠加
+// 主列表(容器/镜像)进行中请求守卫,避免轮询与手动刷新并发叠加
 const inFlight = new Set<string>()
+// stats 采集单独守卫,避免慢查询与主列表互相阻塞或叠加
+const statsInFlight = new Set<string>()
 
 function ensure(sessionId: string): SessionDocker {
   let s = sessions.value[sessionId]
@@ -35,8 +55,16 @@ function ensure(sessionId: string): SessionDocker {
       version: null,
       containers: [],
       images: [],
+      volumes: [],
+      networks: [],
+      stacks: [],
+      stats: {},
       loading: false,
-      error: null,
+      containersError: null,
+      imagesError: null,
+      volumesError: null,
+      networksError: null,
+      stacksError: null,
     }
     sessions.value = { ...sessions.value, [sessionId]: s }
   }
@@ -53,24 +81,72 @@ function patch(sessionId: string, p: Partial<SessionDocker>) {
   sessions.value = { ...sessions.value, [sessionId]: { ...cur, ...p } }
 }
 
+// 把 docker CLI 抛出的错误归一成中文短消息
+function errMsg(e: unknown, prefix: string): string {
+  const raw = typeof e === 'string' ? e : (e as Error)?.message ?? String(e)
+  return `${prefix}: ${raw}`
+}
+
 async function tick(sessionId: string, showLoading: boolean) {
   if (inFlight.has(sessionId)) return
   inFlight.add(sessionId)
   ensure(sessionId)
   if (showLoading) patch(sessionId, { loading: true })
+  // 容器与镜像并行采集,各自独立成败:任一失败不影响另一类展示,
+  // 也可让 UI 各自给出重试入口,而不是整体坍塌成空。
+  const [cRes, iRes, vRes, nRes, sRes] = await Promise.allSettled([
+    dockerListContainers(sessionId),
+    dockerListImages(sessionId),
+    dockerListVolumes(sessionId),
+    dockerListNetworks(sessionId),
+    dockerListStacks(sessionId),
+  ])
+  let anyOk = false
+  const wasAvailable = sessions.value[sessionId]?.available === true
+  const applyList = <T,>(
+    r: PromiseSettledResult<T>,
+    okKey: keyof SessionDocker,
+    errKey: keyof SessionDocker,
+    label: string,
+  ) => {
+    if (r.status === 'fulfilled') {
+      patch(sessionId, { [okKey]: r.value, [errKey]: null } as Partial<SessionDocker>)
+      anyOk = true
+    } else {
+      patch(sessionId, {
+        [errKey]: wasAvailable
+          ? errMsg(r.reason, `${label}刷新失败`)
+          : 'Docker 不可用: ' + errMsg(r.reason, label),
+      } as Partial<SessionDocker>)
+    }
+  }
+  applyList(cRes, 'containers', 'containersError', '容器列表')
+  applyList(iRes, 'images', 'imagesError', '镜像列表')
+  applyList(vRes, 'volumes', 'volumesError', '卷列表')
+  applyList(nRes, 'networks', 'networksError', '网络列表')
+  // compose 不装的话 sRes 会 fulfilled 拿到空数组(dockerListStacks 内部 catch 了),
+  // 极少数场景下才会 rejected(命令本身超时/权限异常),给同样的错误处理
+  applyList(sRes, 'stacks', 'stacksError', 'Compose 列表')
+  if (anyOk) patch(sessionId, { available: true, loading: false })
+  else patch(sessionId, { loading: false })
+  inFlight.delete(sessionId)
+  // stats 采集较慢(--no-stream 仍需秒级),不阻塞主列表 loading,独立异步刷新
+  void refreshStats(sessionId)
+}
+
+/** 采集运行中容器的资源占用,按容器短 ID 建索引后写回状态 */
+async function refreshStats(sessionId: string) {
+  if (statsInFlight.has(sessionId)) return
+  statsInFlight.add(sessionId)
   try {
-    const [containers, images] = await Promise.all([
-      dockerListContainers(sessionId),
-      dockerListImages(sessionId),
-    ])
-    patch(sessionId, { containers, images, available: true, error: null, loading: false })
-  } catch (e: unknown) {
-    const msg = typeof e === 'string' ? e : (e as Error)?.message ?? String(e)
-    const cur = sessions.value[sessionId]
-    if (!cur) return
-    patch(sessionId, { error: cur.available ? msg : 'Docker 不可用: ' + msg, loading: false })
+    const list = await dockerStats(sessionId)
+    const map: Record<string, DockerStats> = {}
+    for (const s of list) map[s.container] = s
+    patch(sessionId, { stats: map })
+  } catch {
+    // stats 失败不阻断主列表,静默保留上次数据
   } finally {
-    inFlight.delete(sessionId)
+    statsInFlight.delete(sessionId)
   }
 }
 
@@ -100,6 +176,7 @@ export function stopDocker(sessionId: string) {
 export function clearDocker(sessionId: string) {
   stopDocker(sessionId)
   inFlight.delete(sessionId)
+  statsInFlight.delete(sessionId)
   if (!sessions.value[sessionId]) return
   const next = { ...sessions.value }
   delete next[sessionId]
