@@ -42,7 +42,6 @@ const emit = defineEmits<{
 }>()
 
 const keyword = ref('')
-// 拉取输入常驻:一次拉取后立即清空,便于连拉多个
 const pullRef = ref('')
 
 function submitPull() {
@@ -74,16 +73,12 @@ function imageRef(img: DockerImage): string {
 function containerUsesImage(c: DockerContainer, img: DockerImage): boolean {
   const imgName = c.image.trim()
   if (!imgName) return false
-  // 名字完全匹配(含 registry/repo:tag)
   if (imgName === imageRef(img)) return true
-  // 容器用的是 digest,看 digest 是否与镜像 id 匹配
   if (imgName.startsWith('sha256:')) {
     return imgName === img.id || imgName.slice(7) === img.id
   }
-  // 镜像 ID 短 ID 匹配(12 位)——docker ps 在名字丢失时有时会显示短 id
   const short = shortId(img.id)
   if (imgName === short) return true
-  // 镜像 tag 为 <none> 但仓库名匹配时也算(同一仓库不同 digest)
   if (img.tag === '<none>' && img.repository !== '<none>' && imgName.startsWith(img.repository + '@')) return true
   return false
 }
@@ -99,7 +94,6 @@ const usageMap = computed(() => {
   return map
 })
 
-// 当前选中的镜像,用于打开使用详情抽屉
 const selectedImage = ref<DockerImage | null>(null)
 const selectedUsage = computed(() =>
   selectedImage.value ? usageMap.value.get(selectedImage.value.id) ?? [] : [],
@@ -114,15 +108,42 @@ function stateColor(s: string): string {
   if (s === 'exited' || s === 'dead') return 'text-muted-foreground'
   return 'text-warning'
 }
+
+function stateStripClass(s: string): string {
+  if (s === 'running') return 'bg-success'
+  if (s === 'exited' || s === 'dead') return 'bg-muted-foreground/30'
+  return 'bg-warning'
+}
+
+function stateBadgeClass(s: string): string {
+  if (s === 'running') return 'border-success/30 bg-success/10 text-success'
+  if (s === 'exited' || s === 'dead') return 'border-border bg-muted/40 text-muted-foreground'
+  return 'border-warning/30 bg-warning/10 text-warning'
+}
 </script>
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <!-- 顶部工具栏:搜索(第一行) + 拉取输入(第二行,常驻) -->
-    <div class="shrink-0 space-y-1.5 px-2 pt-2">
-      <div class="relative">
-        <Search class="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Input v-model="keyword" placeholder="筛选镜像名:标签" class="h-7 pl-7 text-body" />
+    <!-- 顶部工具栏 -->
+    <div class="shrink-0 space-y-1.5 border-b border-border/50 px-3 py-2">
+      <div class="flex items-center gap-2">
+        <div class="flex items-center gap-1.5">
+          <Package class="size-4 text-primary" />
+          <span class="text-title">镜像</span>
+        </div>
+        <div class="relative flex-1 max-w-xs">
+          <Search class="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input v-model="keyword" placeholder="筛选镜像名:标签" class="h-7 pl-7 text-body" />
+        </div>
+        <Tooltip>
+          <TooltipTrigger as-child>
+            <Button variant="outline" size="sm" class="h-7 gap-1.5 px-2" @click="emit('registry')">
+              <KeyRound class="size-3.5" />
+              <span class="text-body">私有库</span>
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>登录私有 Registry</TooltipContent>
+        </Tooltip>
       </div>
       <div class="flex items-center gap-1.5">
         <div class="relative flex-1">
@@ -149,16 +170,19 @@ function stateColor(s: string): string {
           </TooltipTrigger>
           <TooltipContent>拉取镜像(docker pull)</TooltipContent>
         </Tooltip>
-        <Tooltip>
-          <TooltipTrigger as-child>
-            <Button variant="outline" size="sm" class="h-7 gap-1.5 px-2" @click="emit('registry')">
-              <KeyRound class="size-3.5" />
-              <span class="text-body">私有库</span>
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>登录私有 Registry</TooltipContent>
-        </Tooltip>
       </div>
+    </div>
+
+    <!-- 列表表头 -->
+    <div
+      v-if="filtered.length"
+      class="grid grid-cols-[1.75rem_2fr_1fr_5rem_auto] items-center gap-3 px-3 py-1.5 text-caption text-muted-foreground border-b border-border/30"
+    >
+      <span />
+      <span>镜像</span>
+      <span>标识 / 大小</span>
+      <span>使用</span>
+      <span class="text-right">操作</span>
     </div>
 
     <div class="flex-1 overflow-y-auto p-2">
@@ -177,7 +201,7 @@ function stateColor(s: string): string {
         加载中…
       </div>
 
-      <!-- 空列表:提示直接在上方拉取即可 -->
+      <!-- 空列表 -->
       <div v-else-if="images.length === 0" class="flex flex-col items-center gap-2 py-12 text-muted-foreground">
         <Package class="size-8" />
         <span class="text-body">没有本地镜像,可在上方输入引用后回车拉取</span>
@@ -189,32 +213,46 @@ function stateColor(s: string): string {
       </div>
 
       <!-- 镜像卡片列表 -->
-      <div v-else class="space-y-1">
+      <div v-else class="space-y-1.5">
         <div
           v-for="img in filtered"
           :key="img.id"
-          class="group flex w-full items-center gap-3 rounded-md border border-border/40 px-3 py-2 transition-colors hover:bg-muted/40"
+          class="group relative grid grid-cols-[1.75rem_2fr_1fr_5rem_auto] items-center gap-3 rounded-lg border border-border/50 bg-card/30 px-3 py-2 transition-all hover:border-primary/30 hover:bg-card/60 hover:ring-1 hover:ring-primary/10"
         >
-          <Package class="size-3.5 shrink-0 text-muted-foreground" />
-          <div class="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span class="text-body truncate font-mono font-medium">{{ img.repository }}:{{ img.tag }}</span>
-            <div class="text-caption truncate font-mono text-muted-foreground">
-              {{ img.size }} · {{ shortId(img.id) }}
-              <button
-                v-if="usageMap.get(img.id)?.length"
-                type="button"
-                class="ml-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-caption hover:bg-muted/60 hover:text-foreground"
-                @click.stop="openUsage(img)"
-              >
-                · 被
-                <Badge variant="secondary" class="h-4 px-1 text-caption font-mono">
-                  {{ usageMap.get(img.id)?.length }}
-                </Badge>
-                个容器使用
-              </button>
-            </div>
+          <!-- 图标块 -->
+          <div class="flex size-7 items-center justify-center rounded-md bg-primary/10 text-primary">
+            <Package class="size-3.5" />
           </div>
-          <div class="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+
+          <!-- 镜像名 -->
+          <div class="flex min-w-0 flex-col">
+            <span class="truncate font-mono text-body font-medium text-foreground">
+              {{ img.repository }}:{{ img.tag }}
+            </span>
+          </div>
+
+          <!-- ID / 大小 -->
+          <div class="flex min-w-0 flex-col">
+            <span class="truncate font-mono text-caption text-muted-foreground">{{ shortId(img.id) }}</span>
+            <span class="truncate font-mono text-caption text-muted-foreground">{{ img.size }}</span>
+          </div>
+
+          <!-- 使用计数 -->
+          <div class="flex justify-start">
+            <button
+              v-if="usageMap.get(img.id)?.length"
+              type="button"
+              class="inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/10 px-2 py-0.5 text-caption text-success transition-colors hover:bg-success/20"
+              @click.stop="openUsage(img)"
+            >
+              <Box class="size-3" />
+              <span class="tabular-nums">{{ usageMap.get(img.id)?.length }}</span>
+            </button>
+            <span v-else class="text-caption text-muted-foreground">—</span>
+          </div>
+
+          <!-- 操作按钮 -->
+          <div class="flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
             <Tooltip>
               <TooltipTrigger as-child>
                 <Button variant="ghost" size="icon-sm" @click.stop="emit('inspect', img)">
@@ -222,25 +260,6 @@ function stateColor(s: string): string {
                 </Button>
               </TooltipTrigger>
               <TooltipContent>详情(inspect + 构建层)</TooltipContent>
-            </Tooltip>
-            <Tooltip v-if="usageMap.get(img.id)?.length">
-              <TooltipTrigger as-child>
-                <Button variant="ghost" size="icon-sm" @click.stop>
-                  <Box class="size-3.5 text-success" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <div class="max-w-xs space-y-1 text-caption">
-                  <div class="font-medium">被 {{ usageMap.get(img.id)?.length }} 个容器使用:</div>
-                  <div
-                    v-for="c in usageMap.get(img.id)"
-                    :key="c.id"
-                    class="truncate font-mono"
-                  >
-                    {{ c.name }}
-                  </div>
-                </div>
-              </TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger as-child>
@@ -267,20 +286,18 @@ function stateColor(s: string): string {
         </div>
       </div>
     </div>
+
+    <!-- 镜像使用详情弹窗 -->
     <Dialog :open="selectedImage !== null" @update:open="(v) => { if (!v) selectedImage = null }">
-      <DialogContent v-if="selectedImage" class="max-w-lg w-[92vw]">
+      <DialogContent v-if="selectedImage" class="max-w-lg w-[92vw] overflow-hidden">
         <DialogHeader>
-          <div class="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-primary">
-            <span class="size-1.5 animate-pulse rounded-full bg-primary" />
-            IMAGE INSPECTOR
-          </div>
-          <DialogTitle class="mt-1 flex items-center gap-2 text-base text-foreground">
-            <Package class="size-5 text-primary" />
-            <span class="truncate font-mono">{{ selectedImage.repository }}</span>
+          <DialogTitle class="flex items-center gap-2 text-base text-foreground">
+            <div class="flex size-7 items-center justify-center rounded-md bg-primary/10 text-primary">
+              <Package class="size-4" />
+            </div>
+            <span class="truncate font-mono">{{ selectedImage.repository }}:{{ selectedImage.tag }}</span>
           </DialogTitle>
           <div class="mt-1 flex items-center gap-2 font-mono text-xs text-muted-foreground">
-            <span class="rounded bg-muted px-1.5 py-0.5 text-warning">:{{ selectedImage.tag }}</span>
-            <span class="text-border">|</span>
             <span>{{ shortId(selectedImage.id) }}</span>
             <span class="text-border">|</span>
             <span>{{ selectedImage.size }}</span>
@@ -289,52 +306,56 @@ function stateColor(s: string): string {
         </DialogHeader>
 
         <div class="relative max-h-[60vh] overflow-y-auto px-1 py-2">
-          <!-- 扫描线纹理背景 -->
-          <div class="pointer-events-none absolute inset-0 opacity-[0.03]" style="background-image: repeating-linear-gradient(0deg, transparent, transparent 2px, hsl(var(--foreground)) 2px, hsl(var(--foreground)) 4px);" />
+          <!-- 扫描线纹理背景,用前景色低透明度绘制,随主题自动切换 -->
+          <div
+            class="pointer-events-none absolute inset-0 opacity-[0.03]"
+            style="background-image: repeating-linear-gradient(0deg, transparent, transparent 2px, hsl(var(--foreground)) 2px, hsl(var(--foreground)) 4px);"
+          />
 
-          <!-- 使用统计仪表 -->
-          <section class="relative mb-6">
+          <section class="relative mb-5">
             <div class="mb-3 flex items-end justify-between border-b border-border pb-2">
-              <h4 class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+              <h4 class="flex items-center gap-2 text-caption text-muted-foreground">
                 <Box class="size-3.5 text-success" />
                 容器引用
               </h4>
-              <div class="font-mono text-2xl font-bold leading-none" :class="selectedUsage.length ? 'text-success' : 'text-muted-foreground'">
+              <div
+                class="font-mono text-3xl font-bold leading-none"
+                :class="selectedUsage.length ? 'text-success' : 'text-muted-foreground'"
+              >
                 {{ selectedUsage.length.toString().padStart(2, '0') }}
               </div>
             </div>
 
             <div class="grid grid-cols-3 gap-2">
-              <div class="rounded border border-border bg-muted/40 p-2 text-center">
+              <div class="rounded-lg border border-border bg-muted/40 p-2 text-center">
                 <div class="font-mono text-lg font-bold text-success">
                   {{ selectedUsage.filter((c) => c.state === 'running').length }}
                 </div>
-                <div class="text-[10px] uppercase tracking-wide text-muted-foreground">运行</div>
+                <div class="text-caption text-muted-foreground">运行</div>
               </div>
-              <div class="rounded border border-border bg-muted/40 p-2 text-center">
+              <div class="rounded-lg border border-border bg-muted/40 p-2 text-center">
                 <div class="font-mono text-lg font-bold text-destructive">
                   {{ selectedUsage.filter((c) => c.state === 'exited' || c.state === 'dead').length }}
                 </div>
-                <div class="text-[10px] uppercase tracking-wide text-muted-foreground">停止</div>
+                <div class="text-caption text-muted-foreground">停止</div>
               </div>
-              <div class="rounded border border-border bg-muted/40 p-2 text-center">
+              <div class="rounded-lg border border-border bg-muted/40 p-2 text-center">
                 <div class="font-mono text-lg font-bold text-warning">
                   {{ selectedUsage.filter((c) => c.state !== 'running' && c.state !== 'exited' && c.state !== 'dead').length }}
                 </div>
-                <div class="text-[10px] uppercase tracking-wide text-muted-foreground">其它</div>
+                <div class="text-caption text-muted-foreground">其它</div>
               </div>
             </div>
           </section>
 
-          <!-- 容器列表 -->
           <section class="relative">
-            <h4 class="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+            <h4 class="mb-3 flex items-center gap-2 text-caption text-muted-foreground">
               <span class="size-1.5 rounded-full bg-primary" />
               引用实例
             </h4>
 
-            <div v-if="!selectedUsage.length" class="rounded border border-dashed border-border bg-muted/30 py-8 text-center text-sm text-muted-foreground">
-              NO ACTIVE REFERENCES
+            <div v-if="!selectedUsage.length" class="rounded-lg border border-dashed border-border bg-muted/30 py-8 text-center text-body text-muted-foreground">
+              没有容器引用该镜像
             </div>
 
             <div v-else class="space-y-2">
@@ -342,16 +363,17 @@ function stateColor(s: string): string {
                 v-for="c in selectedUsage"
                 :key="c.id"
                 type="button"
-                class="group/container relative flex w-full items-center gap-3 overflow-hidden rounded border border-border bg-muted/40 px-3 py-2.5 text-left transition-all hover:-translate-y-px hover:border-primary/60 hover:bg-muted/60 hover:shadow-[0_0_0_1px_hsl(var(--primary)/0.1)] active:translate-y-0"
+                class="group/container relative flex w-full items-center gap-3 overflow-hidden rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-left transition-all hover:-translate-y-px hover:border-primary/30 hover:bg-muted/60 hover:ring-1 hover:ring-primary/10 active:translate-y-0"
                 @click="emit('containerClick', c)"
               >
-                <!-- 左侧状态条 -->
                 <div
-                  class="absolute left-0 top-0 bottom-0 w-1"
-                  :class="c.state === 'running' ? 'bg-success' : c.state === 'exited' || c.state === 'dead' ? 'bg-destructive' : 'bg-warning'"
+                  class="absolute left-0 top-0 bottom-0 w-1 rounded-r-full"
+                  :class="stateStripClass(c.state)"
+                  :style="c.state === 'running' ? { boxShadow: '0 0 8px hsl(var(--success) / 55%)' } : undefined"
                 />
 
-                <div class="relative flex size-7 shrink-0 items-center justify-center rounded bg-background ring-1 ring-border">
+                <div class="relative flex size-7 shrink-0 items-center justify-center rounded-md bg-background ring-1 ring-border"
+                >
                   <Box class="size-3.5" :class="c.state === 'running' ? 'text-success' : 'text-muted-foreground'" />
                 </div>
 
@@ -359,29 +381,25 @@ function stateColor(s: string): string {
                   <div class="truncate font-mono text-sm font-semibold text-foreground">
                     {{ c.name }}
                   </div>
-                  <div class="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
+                  <div class="mt-0.5 truncate font-mono text-caption text-muted-foreground">
                     {{ c.ports || 'no ports' }}
                   </div>
                 </div>
 
-                <div class="flex shrink-0 flex-col items-end gap-1">
-                  <Badge
-                    variant="outline"
-                    class="border-none px-1.5 py-0 text-[10px] font-bold uppercase tracking-wide"
-                    :class="c.state === 'running' ? 'bg-success/10 text-success' : c.state === 'exited' || c.state === 'dead' ? 'bg-destructive/10 text-destructive' : 'bg-warning/10 text-warning'"
-                  >
+                <div class="flex shrink-0 flex-col items-end gap-1"
+                >
+                  <Badge variant="outline" class="text-[10px] font-bold uppercase tracking-wide" :class="stateBadgeClass(c.state)">
                     {{ c.state }}
                   </Badge>
-                  <span class="text-[10px] text-muted-foreground/70">view logs →</span>
+                  <span class="text-caption text-muted-foreground/70">查看日志 →</span>
                 </div>
               </button>
             </div>
           </section>
 
-          <!-- 底部元数据 -->
-          <div class="mt-6 rounded border border-border bg-muted/40 p-3">
-            <div class="mb-1 text-[10px] font-bold uppercase tracking-wide text-muted-foreground">IMAGE ID</div>
-            <div class="font-mono text-xs text-primary">{{ selectedImage.id }}</div>
+          <div class="mt-5 rounded-lg border border-border bg-muted/40 p-3">
+            <div class="mb-1 text-caption text-muted-foreground">IMAGE ID</div>
+            <div class="break-all font-mono text-xs text-primary">{{ selectedImage.id }}</div>
           </div>
         </div>
       </DialogContent>

@@ -69,9 +69,14 @@ function isRunning(status: string): boolean {
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <div class="shrink-0 space-y-1.5 px-2 pt-2">
-      <div class="flex items-center gap-1.5">
-        <div class="relative flex-1">
+    <!-- 顶部工具栏 -->
+    <div class="shrink-0 space-y-1.5 border-b border-border/50 px-3 py-2">
+      <div class="flex items-center gap-2">
+        <div class="flex items-center gap-1.5">
+          <Layers class="size-4 text-primary" />
+          <span class="text-title">Compose</span>
+        </div>
+        <div class="relative flex-1 max-w-xs">
           <Search class="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input v-model="keyword" placeholder="筛选 stack 名" class="h-7 pl-7 text-body" />
         </div>
@@ -106,6 +111,17 @@ function isRunning(status: string): boolean {
       </div>
     </div>
 
+    <!-- 列表表头 -->
+    <div
+      v-if="filtered.length"
+      class="grid grid-cols-[1.75rem_2fr_1fr_auto] items-center gap-3 px-3 py-1.5 text-caption text-muted-foreground border-b border-border/30"
+    >
+      <span />
+      <span>stack</span>
+      <span>配置文件</span>
+      <span class="text-right">操作</span>
+    </div>
+
     <div class="flex-1 overflow-y-auto p-2">
       <div v-if="error && stacks.length === 0" class="flex flex-col items-center gap-2 py-12 text-muted-foreground">
         <AlertCircle class="size-8 text-warning" />
@@ -122,23 +138,28 @@ function isRunning(status: string): boolean {
         </Button>
       </div>
       <div v-else-if="filtered.length === 0" class="py-12 text-center text-muted-foreground">没有匹配的 stack</div>
-      <div v-else class="space-y-1">
+      <div v-else class="space-y-1.5">
         <div
           v-for="s in filtered"
           :key="s.name"
-          class="group flex w-full items-center gap-3 rounded-md border border-border/40 px-3 py-2 transition-colors hover:bg-muted/40"
+          class="group grid grid-cols-[1.75rem_2fr_1fr_auto] items-center gap-3 rounded-lg border border-border/50 bg-card/30 px-3 py-2 transition-all hover:border-primary/30 hover:bg-card/60 hover:ring-1 hover:ring-primary/10"
         >
-          <Layers class="size-3.5 shrink-0 text-muted-foreground" />
-          <div class="flex min-w-0 flex-1 flex-col gap-0.5">
+          <div class="flex size-7 items-center justify-center rounded-md bg-primary/10 text-primary">
+            <Layers class="size-3.5" />
+          </div>
+
+          <div class="flex min-w-0 flex-col">
             <div class="flex items-center gap-2">
               <span class="text-body truncate font-medium">{{ s.name }}</span>
-              <Badge variant="outline" class="text-caption shrink-0" :class="statusColor(s.status)">{{ s.status }}</Badge>
-            </div>
-            <div class="text-caption truncate font-mono text-muted-foreground" :title="s.configFiles">
-              {{ s.configFiles }}
+              <Badge variant="outline" class="border-current/20 bg-current/10 text-caption" :class="statusColor(s.status)">{{ s.status }}</Badge>
             </div>
           </div>
-          <div class="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+
+          <div class="flex min-w-0 flex-col">
+            <span class="truncate font-mono text-caption text-muted-foreground" :title="s.configFiles">{{ s.configFiles }}</span>
+          </div>
+
+          <div class="flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
             <Tooltip>
               <TooltipTrigger as-child>
                 <Button
