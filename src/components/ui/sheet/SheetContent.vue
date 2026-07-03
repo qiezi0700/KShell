@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import type { DialogContentEmits, DialogContentProps } from "reka-ui"
-import type { HTMLAttributes } from "vue"
-import { ref, watch } from "vue"
+import { ref, watch, onUnmounted, type HTMLAttributes } from "vue"
 import { X } from "lucide-vue-next"
 import { reactiveOmit } from "@vueuse/core"
 import {
@@ -12,7 +11,7 @@ import {
   useForwardPropsEmits,
 } from "reka-ui"
 import { cn } from "@/lib/utils"
-import { nextZIndex } from "@/lib/z-index"
+import { nextZIndex, releaseZIndex } from "@/lib/z-index"
 import SheetOverlay from "./SheetOverlay.vue"
 
 interface SheetContentProps extends DialogContentProps {
@@ -33,16 +32,22 @@ const delegatedProps = reactiveOmit(props, "class", "side")
 
 const forwarded = useForwardPropsEmits(delegatedProps, emits)
 
-// 与 DialogContent 一致:按打开时序分配递增 z-index,后打开的抽屉/弹窗总在更上层
+// 与 DialogContent 一致:按打开时序分配递增 z-index,后打开的抽屉/弹窗总在更上层。
+// 关闭/卸载时释放,并同步 --reka-dialog-z 供浮层参照。
 const ctx = injectDialogRootContext()
 const zIndex = ref(50)
 watch(
   () => ctx?.open.value,
-  (open) => {
-    if (open) zIndex.value = nextZIndex()
+  (open, prevOpen) => {
+    if (open) {
+      zIndex.value = nextZIndex()
+    } else if (prevOpen) {
+      releaseZIndex(zIndex.value)
+    }
   },
   { immediate: true },
 )
+onUnmounted(() => releaseZIndex(zIndex.value))
 </script>
 
 <template>

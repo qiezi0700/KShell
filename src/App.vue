@@ -54,9 +54,12 @@ onBeforeUnmount(() => {
       </SidebarProvider>
     </div>
     <component v-for="(o, i) in overlays" :key="i" :is="o" />
-    <!-- 右上角浮动区:传输队列 + 消息提示,垂直堆叠 -->
+    <!-- 右上角浮动区:传输队列 -->
     <div class="pointer-events-none fixed right-3 top-[38px] z-40 flex w-[340px] flex-col gap-2">
       <TransferPanel />
+    </div>
+    <!-- 消息提示:必须在弹窗之上,参照 --reka-dialog-z -->
+    <div class="pointer-events-none fixed right-3 top-[38px] z-[calc(var(--reka-dialog-z,50)+20)] flex w-[340px] flex-col gap-2">
       <ToastContainer />
     </div>
   </TooltipProvider>
