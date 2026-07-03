@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { useStorage } from '@vueuse/core'
 import {
   Loader2,
   Save,
@@ -56,8 +57,8 @@ const props = defineProps<{
 // SFTP 会话
 const sftpId = ref<string | null>(props.sftpId)
 
-// 左右栏宽度比(本地栏百分比,默认 50)
-const localWidthPct = ref(50)
+// 左右栏宽度比(本地栏百分比,默认 50)。持久化到 localStorage
+const localWidthPct = useStorage('sftp-local-width-pct', 50)
 const hDragging = ref(false)
 const splitEl = ref<HTMLDivElement | null>(null)
 

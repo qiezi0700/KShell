@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { useStorage } from '@vueuse/core'
 import { PanelBottomClose, PanelBottomOpen } from 'lucide-vue-next'
 import Terminal from '@/components/terminal/Terminal.vue'
 import SftpView from '@/components/sftp/SftpView.vue'
@@ -21,8 +22,8 @@ const props = defineProps<{
 const hasSftp = props.withSftp ?? true
 // SFTP 面板可见性。默认打开。
 const sftpVisible = ref(hasSftp)
-// SFTP 占容器高度百分比(10-80)。默认 40。
-const sftpHeightPct = ref(40)
+// SFTP 占容器高度百分比(10-80)。默认 40。持久化到 localStorage
+const sftpHeightPct = useStorage('terminal-sftp-height-pct', 40)
 
 // 拖拽中
 const dragging = ref(false)

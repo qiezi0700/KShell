@@ -4,7 +4,15 @@ import { activeTabId } from '@/stores/tabs'
 import { clearTerminalTrigger, clearScrollbackTrigger, copySelectionTrigger } from '@/stores/ui'
 import { Badge } from '@/components/ui/badge'
 import { StatusDot } from '@/components/ui/status-dot'
-import { fontSize } from '@/stores/preferences'
+import {
+  fontSize,
+  effectiveMode,
+  terminalFontFamily,
+  terminalLineHeight,
+  terminalScrollback,
+  terminalPadding,
+} from '@/stores/preferences'
+import type { ITheme } from '@xterm/xterm'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -43,37 +51,68 @@ let currentChannelId: string | null = null
 
 const encoder = new TextEncoder()
 
+// 暗色终端色板(与原写死值一致)
+const DARK_TERM_THEME: ITheme = {
+  background: '#1e1f22',
+  foreground: '#dfe1e5',
+  cursor: '#a9adb3',
+  selectionBackground: '#3b82f680',
+  black: '#1e1f22',
+  red: '#f14c4c',
+  green: '#4ec9b0',
+  yellow: '#d7ba7d',
+  blue: '#3b82f6',
+  magenta: '#c586c0',
+  cyan: '#9cdcfe',
+  white: '#dfe1e5',
+  brightBlack: '#6f7379',
+  brightRed: '#f97583',
+  brightGreen: '#7ee787',
+  brightYellow: '#ffdf5d',
+  brightBlue: '#79b8ff',
+  brightMagenta: '#d2a8ff',
+  brightCyan: '#56d4dd',
+  brightWhite: '#ffffff',
+}
+
+// 亮色终端色板(参考 VS Code Light)
+const LIGHT_TERM_THEME: ITheme = {
+  background: '#ffffff',
+  foreground: '#1e1f22',
+  cursor: '#333333',
+  selectionBackground: '#3b82f630',
+  black: '#1e1f22',
+  red: '#d73a49',
+  green: '#28a745',
+  yellow: '#dbab09',
+  blue: '#0366d6',
+  magenta: '#6f42c1',
+  cyan: '#0598bc',
+  white: '#586069',
+  brightBlack: '#586069',
+  brightRed: '#cb2431',
+  brightGreen: '#22863a',
+  brightYellow: '#b08800',
+  brightBlue: '#005cc5',
+  brightMagenta: '#6f42c1',
+  brightCyan: '#005cc5',
+  brightWhite: '#1e1f22',
+}
+
+function getTermTheme(): ITheme {
+  return effectiveMode.value === 'dark' ? DARK_TERM_THEME : LIGHT_TERM_THEME
+}
+
 onMounted(async () => {
   if (!container.value) return
 
   const t = new Terminal({
-    fontFamily: 'JetBrains Mono, Cascadia Code, Consolas, Menlo, monospace',
+    fontFamily: terminalFontFamily.value,
     fontSize: fontSize.value,
-    lineHeight: 1.15,
+    lineHeight: terminalLineHeight.value,
     cursorBlink: true,
-    scrollback: 5000,
-    theme: {
-      background: '#1e1f22',
-      foreground: '#dfe1e5',
-      cursor: '#a9adb3',
-      selectionBackground: '#3b82f680',
-      black: '#1e1f22',
-      red: '#f14c4c',
-      green: '#4ec9b0',
-      yellow: '#d7ba7d',
-      blue: '#3b82f6',
-      magenta: '#c586c0',
-      cyan: '#9cdcfe',
-      white: '#dfe1e5',
-      brightBlack: '#6f7379',
-      brightRed: '#f97583',
-      brightGreen: '#7ee787',
-      brightYellow: '#ffdf5d',
-      brightBlue: '#79b8ff',
-      brightMagenta: '#d2a8ff',
-      brightCyan: '#56d4dd',
-      brightWhite: '#ffffff',
-    },
+    scrollback: terminalScrollback.value,
+    theme: getTermTheme(),
   })
   const f = new FitAddon()
   t.loadAddon(f)
@@ -205,12 +244,55 @@ watch(fontSize, () => {
   const { cols, rows } = t
   if (currentChannelId) sshResize(currentChannelId, cols, rows)
 })
+
+// 明暗主题切换:更新终端色板(无需 refit,xterm 自动重绘)
+watch(effectiveMode, () => {
+  const t = term.value
+  if (!t) return
+  t.options.theme = getTermTheme()
+})
+
+// 终端字体族 / 行高变化:更新 xterm + refit + resize
+watch([terminalFontFamily, terminalLineHeight], () => {
+  if (activeTabId.value !== props.tabId) return
+  const t = term.value
+  const f = fit.value
+  if (!t || !f) return
+  t.options.fontFamily = terminalFontFamily.value
+  t.options.lineHeight = terminalLineHeight.value
+  f.fit()
+  const { cols, rows } = t
+  if (currentChannelId) sshResize(currentChannelId, cols, rows)
+})
+
+// 滚动缓冲变化:直接更新 xterm options(无需 refit)
+watch(terminalScrollback, () => {
+  const t = term.value
+  if (!t) return
+  t.options.scrollback = terminalScrollback.value
+})
+
+// 终端内边距变化:容器 padding 由 Vue 响应式自动更新,等下一帧再 fit + resize
+watch(terminalPadding, () => {
+  if (activeTabId.value !== props.tabId) return
+  const f = fit.value
+  if (!f) return
+  nextTick(() => {
+    f.fit()
+    const t = term.value
+    if (t && currentChannelId) sshResize(currentChannelId, t.cols, t.rows)
+  })
+})
 </script>
 
 <template>
   <div class="relative h-full w-full">
-    <!-- 容器底色与 xterm 主题的 background 一致,避免终端 padding 区露出主背景色 -->
-    <div ref="container" class="absolute inset-0 p-2 bg-[#1e1f22]" />
+    <!-- 容器底色与 xterm 主题 background 一致,避免 padding 区露出主背景色 -->
+    <div
+      ref="container"
+      class="absolute inset-0"
+      :style="{ padding: terminalPadding + 'px', background: effectiveMode === 'dark' ? '#1e1f22' : '#ffffff' }"
+    />
     <Badge
       v-if="status === 'connecting'"
       variant="secondary"

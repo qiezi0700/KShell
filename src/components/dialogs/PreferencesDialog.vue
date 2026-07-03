@@ -1,14 +1,32 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { Sun, Moon, Monitor, Minus, Plus } from 'lucide-vue-next'
+import { Sun, Moon, Monitor } from 'lucide-vue-next'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { Slider } from '@/components/ui/slider'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Switch } from '@/components/ui/switch'
-import { themeMode, themeColorId, themeColors, fontSize, syncKnownHostsToSystem, type ThemeMode } from '@/stores/preferences'
+import {
+  themeMode,
+  themeColorId,
+  themeColors,
+  UI_SIZE_LEVELS,
+  fontSize,
+  syncKnownHostsToSystem,
+  terminalFontFamily,
+  terminalLineHeight,
+  terminalScrollback,
+  terminalPadding,
+  SCROLLBACK_LEVELS,
+  TERMINAL_FONT_OPTIONS,
+  DEFAULT_TERMINAL_FONT_FAMILY,
+  DEFAULT_TERMINAL_LINE_HEIGHT,
+  DEFAULT_TERMINAL_PADDING,
+  type ThemeMode,
+} from '@/stores/preferences'
 
 const open = ref(false)
 
@@ -22,23 +40,49 @@ const modes: { id: ThemeMode; label: string; icon: typeof Sun }[] = [
 
 const currentColor = computed(() => themeColors.find((c) => c.id === themeColorId.value) ?? themeColors[0])
 
-const MIN_FONT = 10
-const MAX_FONT = 18
+const currentLevel = computed(() => UI_SIZE_LEVELS.find((l) => l.fontSize === fontSize.value) ?? UI_SIZE_LEVELS[1])
 
-function decFont() {
-  fontSize.value = Math.max(MIN_FONT, fontSize.value - 1)
+const selectedLevelId = computed({
+  get: () => currentLevel.value.id,
+  set: (id: string) => setLevel(id),
+})
+
+function setLevel(id: string) {
+  const level = UI_SIZE_LEVELS.find((l) => l.id === id)
+  if (level) fontSize.value = level.fontSize
 }
-function incFont() {
-  fontSize.value = Math.min(MAX_FONT, fontSize.value + 1)
-}
+
 function resetFont() {
-  fontSize.value = 13
+  fontSize.value = UI_SIZE_LEVELS[1].fontSize
+}
+
+// 终端字体:Select 绑定 family 字符串,不匹配预设时回退到第一个
+const selectedFontFamily = computed({
+  get: () => {
+    const found = TERMINAL_FONT_OPTIONS.find((f) => f.family === terminalFontFamily.value)
+    return found ? found.family : TERMINAL_FONT_OPTIONS[0].family
+  },
+  set: (family: string) => {
+    terminalFontFamily.value = family
+  },
+})
+
+function resetTerminalFont() {
+  terminalFontFamily.value = DEFAULT_TERMINAL_FONT_FAMILY
+}
+
+function resetTerminalLineHeight() {
+  terminalLineHeight.value = DEFAULT_TERMINAL_LINE_HEIGHT
+}
+
+function resetTerminalPadding() {
+  terminalPadding.value = DEFAULT_TERMINAL_PADDING
 }
 </script>
 
 <template>
   <Dialog v-model:open="open">
-    <DialogContent class="max-w-[440px]">
+    <DialogContent class="max-w-[440px] max-h-[85vh] overflow-y-auto">
       <DialogHeader>
         <DialogTitle>偏好设置</DialogTitle>
         <DialogDescription>个性化 KShell 外观</DialogDescription>
@@ -102,43 +146,111 @@ function resetFont() {
         </div>
       </div>
 
-      <!-- 字体大小 -->
+      <!-- 界面字号 -->
       <div class="space-y-2">
         <div class="flex items-center justify-between">
-          <span class="text-caption text-muted-foreground">字体大小</span>
+          <span class="text-caption text-muted-foreground">界面字号</span>
           <Button variant="ghost" size="xs" class="text-muted-foreground hover:text-foreground" @click="resetFont">
             重置
           </Button>
         </div>
-        <div class="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="icon"
-            class="text-muted-foreground hover:bg-panel-2 hover:text-foreground"
-            :disabled="fontSize <= MIN_FONT"
-            @click="decFont"
+        <ToggleGroup
+          v-model="selectedLevelId"
+          type="single"
+          variant="outline"
+          size="sm"
+          :spacing="1"
+          class="grid w-full grid-cols-4"
+        >
+          <ToggleGroupItem
+            v-for="l in UI_SIZE_LEVELS"
+            :key="l.id"
+            :value="l.id"
+            class="text-body h-auto flex-col gap-1 py-2 data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-foreground"
           >
-            <Minus class="size-3.5" />
+            <span class="text-title">{{ l.label }}</span>
+            <span class="text-caption text-muted-foreground">{{ l.fontSize }}px</span>
+          </ToggleGroupItem>
+        </ToggleGroup>
+      </div>
+
+      <!-- 终端字体族 -->
+      <div class="space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-caption text-muted-foreground">终端字体</span>
+          <Button variant="ghost" size="xs" class="text-muted-foreground hover:text-foreground" @click="resetTerminalFont">
+            重置
           </Button>
-          <Slider
-            :model-value="[fontSize]"
-            :min="MIN_FONT"
-            :max="MAX_FONT"
-            :step="1"
-            class="flex-1"
-            @update:model-value="(v) => { if (v?.[0] != null) fontSize = v[0] }"
-          />
-          <Button
-            variant="outline"
-            size="icon"
-            class="text-muted-foreground hover:bg-panel-2 hover:text-foreground"
-            :disabled="fontSize >= MAX_FONT"
-            @click="incFont"
-          >
-            <Plus class="size-3.5" />
-          </Button>
-          <span class="text-body w-12 text-right font-mono tabular-nums text-foreground">{{ fontSize }}px</span>
         </div>
+        <Select v-model="selectedFontFamily">
+          <SelectTrigger class="h-[var(--control-sm)] text-body">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem v-for="f in TERMINAL_FONT_OPTIONS" :key="f.family" :value="f.family">
+              {{ f.label }}
+            </SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <!-- 终端行高 -->
+      <div class="space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-caption text-muted-foreground">终端行高</span>
+          <Button variant="ghost" size="xs" class="text-muted-foreground hover:text-foreground" @click="resetTerminalLineHeight">
+            重置
+          </Button>
+        </div>
+        <Slider
+          :model-value="[terminalLineHeight]"
+          :min="1"
+          :max="1.5"
+          :step="0.05"
+          @update:model-value="(v) => v && (terminalLineHeight = v[0])"
+        />
+        <div class="text-caption text-muted-foreground tabular-nums text-right">{{ terminalLineHeight.toFixed(2) }}</div>
+      </div>
+
+      <!-- 滚动缓冲行数 -->
+      <div class="space-y-2">
+        <div class="text-caption text-muted-foreground">滚动缓冲行数</div>
+        <ToggleGroup
+          :model-value="String(terminalScrollback)"
+          type="single"
+          variant="outline"
+          size="sm"
+          :spacing="1"
+          class="grid w-full grid-cols-5"
+          @update:model-value="(v) => v && (terminalScrollback = Number(v))"
+        >
+          <ToggleGroupItem
+            v-for="l in SCROLLBACK_LEVELS"
+            :key="l.value"
+            :value="String(l.value)"
+            class="text-body h-auto py-2 data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-foreground"
+          >
+            {{ l.label }}
+          </ToggleGroupItem>
+        </ToggleGroup>
+      </div>
+
+      <!-- 终端内边距 -->
+      <div class="space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-caption text-muted-foreground">终端内边距</span>
+          <Button variant="ghost" size="xs" class="text-muted-foreground hover:text-foreground" @click="resetTerminalPadding">
+            重置
+          </Button>
+        </div>
+        <Slider
+          :model-value="[terminalPadding]"
+          :min="0"
+          :max="16"
+          :step="1"
+          @update:model-value="(v) => v && (terminalPadding = v[0])"
+        />
+        <div class="text-caption text-muted-foreground tabular-nums text-right">{{ terminalPadding }}px</div>
       </div>
 
       <!-- 安全:known_hosts 同步 -->
