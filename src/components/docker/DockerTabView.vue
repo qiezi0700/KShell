@@ -50,6 +50,7 @@ import DockerSystemDialog from './DockerSystemDialog.vue'
 import DockerRunDialog from './DockerRunDialog.vue'
 import DockerContainerEditDialog from './DockerContainerEditDialog.vue'
 import DockerImageInspectDialog from './DockerImageInspectDialog.vue'
+import DockerRegistryDialog from './DockerRegistryDialog.vue'
 
 const props = defineProps<{ tab: DockerTab }>()
 
@@ -98,6 +99,9 @@ const imageInspectRef = ref<string | null>(null)
 const imageInspectData = ref<DockerImageInspect | null>(null)
 const imageInspectHistory = ref<DockerImageLayer[]>([])
 const imageInspectLoading = ref(false)
+
+// Registry 登录弹窗
+const registryOpen = ref(false)
 
 // 正在拉取的镜像引用集合(如 nginx:latest),供 DockerImages 显示行内 spin
 const pullingRefs = ref<Set<string>>(new Set())
@@ -595,6 +599,7 @@ function doExec(c: DockerContainer) {
     <DockerImages
       v-show="subTab === 'images'"
       :images="state?.images ?? []"
+      :containers="state?.containers ?? []"
       :loading="state?.loading ?? false"
       :error="state?.imagesError ?? null"
       :available="state?.available ?? false"
@@ -604,6 +609,8 @@ function doExec(c: DockerContainer) {
       @pull="doPullImage"
       @update="doUpdateImage"
       @inspect="showImageInspect"
+      @registry="registryOpen = true"
+      @container-click="subTab = 'containers'; showLogs($event)"
     />
 
     <!-- 卷列表 -->
@@ -709,6 +716,13 @@ function doExec(c: DockerContainer) {
       :data="imageInspectData"
       :history="imageInspectHistory"
       @update:open="imageInspectOpen = $event"
+    />
+
+    <!-- 私有 Registry 登录 / 登出 -->
+    <DockerRegistryDialog
+      :open="registryOpen"
+      :session-id="sessionId"
+      @update:open="registryOpen = $event"
     />
   </div>
 </template>

@@ -658,6 +658,88 @@ export async function dockerNetworkDisconnect(
 }
 
 // ============================================================
+// Registry 登录 / 登出
+// ============================================================
+
+// registry 地址白名单:host[:port][/path],host 允许字母数字点连字符,不允许协议前缀。
+// 空 registry 表示 Docker Hub 默认。
+const REGISTRY_RE = /^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?(:[0-9]{1,5})?(\/[a-zA-Z0-9._/-]*)?$/
+// 用户名白名单:字母/数字开头,允许 . _ - + @
+const REGISTRY_USER_RE = /^[a-zA-Z0-9][a-zA-Z0-9._+@-]*$/
+
+function validateRegistry(registry: string): void {
+  if (registry && !REGISTRY_RE.test(registry)) {
+    throw new Error(`registry 地址不合法(示例:registry.example.com:5000): ${registry}`)
+  }
+}
+
+function validateRegistryUser(user: string): void {
+  if (!REGISTRY_USER_RE.test(user)) {
+    throw new Error(`用户名不合法(允许字母数字与 . _ - + @)`)
+  }
+}
+
+/** 登录到远端 docker registry。凭据经环境变量传入 + printf 管道走 --password-stdin,
+ * 避免密码出现在 argv / shell 历史。docker login 成功后会把 token 写到远端
+ * ~/.docker/config.json(base64),这是 docker CLI 自身行为;需要清理走 dockerLogout。
+ * registry 传空串表示 Docker Hub 默认。 */
+export async function dockerLogin(
+  sessionId: string,
+  registry: string,
+  username: string,
+  password: string,
+): Promise<void> {
+  const reg = registry.trim()
+  const user = username.trim()
+  validateRegistry(reg)
+  validateRegistryUser(user)
+  if (!password) throw new Error('密码不能为空')
+  if (password.length > 4096) throw new Error('密码过长(>4096)')
+
+  // 内层 sh 脚本:从环境变量 KSHELL_PW 读密码,printf 是 sh 内置命令,不产生 exec argv
+  const inner = reg
+    ? `printf %s "$KSHELL_PW" | docker login -u ${shq(user)} --password-stdin ${shq(reg)} 2>&1`
+    : `printf %s "$KSHELL_PW" | docker login -u ${shq(user)} --password-stdin 2>&1`
+  // 外层:env 前缀 + sh -c 执行;env 的赋值段在 /proc/*/environ 里短暂可见,
+  // 但远远好于直接把密码放到 docker 命令行参数上被 ps 抓到
+  const wrapped = `env KSHELL_PW=${shq(password)} sh -c ${shq(inner)}`
+  const out = await sshExec(sessionId, wrapped)
+  if (!/Login Succeeded/i.test(out)) {
+    throw new Error(out.trim() || 'docker login 失败')
+  }
+}
+
+/** 从远端 docker registry 登出;清除 ~/.docker/config.json 中该 registry 的 auth 条目。
+ * registry 传空串表示 Docker Hub 默认。 */
+export async function dockerLogout(sessionId: string, registry: string): Promise<string> {
+  const reg = registry.trim()
+  validateRegistry(reg)
+  const cmd = reg ? `docker logout ${shq(reg)} 2>&1` : 'docker logout 2>&1'
+  return sshExec(sessionId, cmd)
+}
+
+/** 读远端 ~/.docker/config.json 的 auths keys,列出当前已登录的 registry 地址。
+ * 用 grep + sed 而不是 jq / python,尽量少依赖;解析容错,失败返回空数组。 */
+export async function dockerListRegistries(sessionId: string): Promise<string[]> {
+  try {
+    // 只提取 auths 对象下的一级 key;awk 状态机比嵌套 sed 稳
+    const cmd =
+      `awk '/"auths"[[:space:]]*:/{f=1;d=0;next} ` +
+      `f&&/{/{d++;next} ` +
+      `f&&/}/{d--;if(d<=0){f=0};next} ` +
+      `f&&d>=1&&/"[^"]+"[[:space:]]*:/{match($0,/"[^"]+"/);if(RSTART){print substr($0,RSTART+1,RLENGTH-2)}}' ` +
+      `~/.docker/config.json 2>/dev/null`
+    const out = await sshExec(sessionId, cmd)
+    return out
+      .split('\n')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+  } catch {
+    return []
+  }
+}
+
+// ============================================================
 // Compose Stack(仅 v2)
 // ============================================================
 
