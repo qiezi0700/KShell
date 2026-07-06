@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { PanelBottomClose, PanelBottomOpen } from '@lucide/vue'
 import Terminal from '@/components/terminal/Terminal.vue'
 import SftpView from '@/components/sftp/SftpView.vue'
 import QuickCommandFab from '@/components/terminal/QuickCommandFab.vue'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { settingsGet, settingsSet } from '@/api/settings'
+import { activeTabId } from '@/stores/tabs'
+import { setActiveTerminalSender, canSendToTerminal } from '@/stores/active-terminal'
 
 const props = defineProps<{
   tabId: string
@@ -37,6 +39,22 @@ const terminalRef = ref<InstanceType<typeof Terminal> | null>(null)
 function onQuickCommand(cmd: string) {
   terminalRef.value?.sendCommand(cmd)
 }
+
+// 活跃终端注册:切到本 tab 时注册 sendCommand,供侧栏代码片段面板调用
+watch(
+  activeTabId,
+  (cur) => {
+    if (cur === props.tabId) {
+      canSendToTerminal.value = true
+      setActiveTerminalSender((cmd: string) => terminalRef.value?.sendCommand(cmd))
+    } else if (canSendToTerminal.value) {
+      // 切走时清空发送权
+      canSendToTerminal.value = false
+      setActiveTerminalSender(null)
+    }
+  },
+  { immediate: true },
+)
 
 // 终端 flex 比例 = 100 - SFTP 比例;flex-basis:0 确保严格按比例分配
 const terminalFlex = computed(() => 100 - sftpHeightPct.value)
@@ -92,6 +110,11 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (dragging.value) onUp()
+  // 卸载时若是当前活跃终端,清空发送权
+  if (canSendToTerminal.value) {
+    canSendToTerminal.value = false
+    setActiveTerminalSender(null)
+  }
 })
 </script>
 
