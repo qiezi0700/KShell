@@ -16,25 +16,22 @@ import { sidebarVisible, statusBarVisible } from '@/stores/ui'
 import { sidebarWidth, sidebarResizing, initSidebarWidth } from '@/stores/sidebar-panels'
 import { activeMonitorSessionId, startMonitor, stopMonitor } from '@/stores/monitor'
 import { initQuickCommands } from '@/stores/quick-commands'
-import { migrateLocalStorage } from '@/lib/migrate-localStorage'
 
 // SQLite 设置加载完毕前不渲染主 UI,避免偏好/布局闪烁
 const settingsReady = ref(false)
 
 onMounted(async () => {
-  // 1) 一次性迁移老 localStorage 数据到 SQLite(新用户为空操作)
-  await migrateLocalStorage()
-  // 2) 并行加载全局设置:偏好 / 快捷指令 / 侧栏宽度
+  // 并行加载全局设置:偏好 / 快捷指令 / 侧栏宽度
   await Promise.all([
     initPreferences(),
     initQuickCommands(),
     initSidebarWidth(),
   ])
-  // 3) 偏好就位后再应用主题,确保用真实值生效
+  // 偏好就位后再应用主题,确保用真实值生效
   initTheme()
-  // 4) 放行主 UI 渲染
+  // 放行主 UI 渲染
   settingsReady.value = true
-  // 5) 不依赖设置的后台守护,放行后异步启动
+  // 不依赖设置的后台守护,放行后异步启动
   initHostKeyGuard().catch(() => {})
   initKiGuard().catch(() => {})
 })

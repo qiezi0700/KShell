@@ -218,7 +218,8 @@ const imageOptions = computed(() =>
 )
 
 // clone 模式下新容器名不能与原容器相同(docker 名唯一)
-const originalName = computed(() => (props.initial?.name || props.initialName || '').trim())
+// 只取 initialName(原始容器名),不能用 initial?.name(已被改写为 -clone 后缀)
+const originalName = computed(() => (props.initialName || '').trim())
 const nameConflict = computed(() =>
   props.mode === 'clone' &&
   !!form.name.trim() &&
