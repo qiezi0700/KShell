@@ -52,6 +52,7 @@ import DockerRunDialog from './DockerRunDialog.vue'
 import DockerContainerEditDialog from './DockerContainerEditDialog.vue'
 import DockerImageInspectDialog from './DockerImageInspectDialog.vue'
 import DockerRegistryDialog from './DockerRegistryDialog.vue'
+import DockerInstallDialog from './DockerInstallDialog.vue'
 
 const props = defineProps<{ tab: DockerTab }>()
 
@@ -95,6 +96,14 @@ const runOpen = ref(false)
 const recreateOpen = ref(false)
 const recreateInitial = ref<DockerRunSpec | null>(null)
 const recreateName = ref('')
+
+// 克隆容器向导:预填现有 spec,可选拉镜像/停止原容器,强制改名
+const cloneOpen = ref(false)
+const cloneInitial = ref<DockerRunSpec | null>(null)
+const cloneName = ref('')
+
+// Docker 安装对话框(设备未装时)
+const installOpen = ref(false)
 
 // 容器编辑弹窗;editInspect 非空即视为打开
 const editInspect = ref<DockerInspect | null>(null)
@@ -431,11 +440,37 @@ async function doRecreate(c: DockerContainer) {
   recreateOpen.value = true
 }
 
-/** DockerRunDialog 在 recreate 模式提交完成后触发,刷新列表并清理状态 */
+/** DockerRunDialog 在 recreate/clone 模式提交完成后触发,刷新列表并清理状态 */
 function onRecreated() {
   refreshDocker(sessionId.value)
   recreateInitial.value = null
   recreateName.value = ''
+  cloneInitial.value = null
+  cloneName.value = ''
+}
+
+/** 克隆容器:读取原容器配置,打开 DockerRunDialog 的 clone 模式 */
+async function doClone(c: DockerContainer) {
+  let insp: DockerInspect
+  try {
+    insp = await dockerInspect(sessionId.value, c.id)
+  } catch (e: unknown) {
+    toast.error(String(e), '读取容器配置失败')
+    return
+  }
+  cloneInitial.value = inspectToRunSpec(insp)
+  // 默认加 -clone 后缀,提示用户这是新容器
+  const spec = cloneInitial.value
+  if (spec.name && !spec.name.endsWith('-clone')) {
+    spec.name = `${spec.name}-clone`
+  }
+  cloneName.value = insp.name
+  cloneOpen.value = true
+}
+
+/** Docker 安装成功后触发,重新检测可用性 */
+async function onInstalled() {
+  refreshDocker(sessionId.value)
 }
 
 async function doEdit(c: DockerContainer) {
@@ -577,8 +612,10 @@ function doExec(c: DockerContainer) {
       @inspect="showInspect"
       @exec="doExec"
       @recreate="doRecreate"
+      @clone="doClone"
       @edit="doEdit"
       @create="runOpen = true"
+      @install="installOpen = true"
       @retry="refreshDocker(sessionId)"
     />
 
@@ -701,6 +738,19 @@ function doExec(c: DockerContainer) {
       @recreated="onRecreated"
     />
 
+    <!-- 克隆容器向导:可选拉镜像/停止原容器,强制改名 -->
+    <DockerRunDialog
+      :open="cloneOpen"
+      :session-id="sessionId"
+      :images="state?.images ?? []"
+      :networks="state?.networks ?? []"
+      mode="clone"
+      :initial="cloneInitial"
+      :initial-name="cloneName"
+      @update:open="cloneOpen = $event"
+      @recreated="onRecreated"
+    />
+
     <!-- 容器编辑(改名 / 资源限制) -->
     <DockerContainerEditDialog
       :open="editInspect !== null"
@@ -725,6 +775,14 @@ function doExec(c: DockerContainer) {
       :open="registryOpen"
       :session-id="sessionId"
       @update:open="registryOpen = $event"
+    />
+
+    <!-- Docker 安装对话框(设备未装时) -->
+    <DockerInstallDialog
+      :open="installOpen"
+      :session-id="sessionId"
+      @update:open="installOpen = $event"
+      @installed="onInstalled"
     />
   </div>
 </template>

@@ -175,6 +175,43 @@ export async function dockerAvailable(sessionId: string): Promise<boolean> {
   }
 }
 
+// ============================================================
+// Docker 安装(远端主机未装时使用)
+// ============================================================
+
+export type DockerInstallMirror = 'official' | 'aliyun' | 'azure'
+
+export interface DockerInstallOptions {
+  /** 镜像源:official 走 get.docker.com 默认;aliyun/azure 走官方脚本 --mirror 参数 */
+  mirror: DockerInstallMirror
+  /** 是否同时把当前用户加入 docker 组(需要 sudo;生效需重新登录会话) */
+  addUserToDockerGroup: boolean
+}
+
+/**
+ * 生成 Docker 安装命令字符串。
+ * 用 docker 官方一键脚本 get.docker.com,跨 CentOS/Ubuntu/Debian/RHEL 等主流发行版。
+ * --mirror 参数由官方脚本支持,Aliyun/AzureChinaCloud 为内置可选项。
+ * 脚本内部会自动调用 sudo(非 root 用户需配置免密 sudo 或在执行时被提示输密)。
+ */
+export function dockerInstallCommand(opts: DockerInstallOptions): string {
+  const mirrorArg = opts.mirror === 'aliyun'
+    ? ' --mirror Aliyun'
+    : opts.mirror === 'azure'
+      ? ' --mirror AzureChinaCloud'
+      : ''
+  // 脚本输出到 stdout,失败时 stderr 会包含 Error 信息
+  const install = `curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && sh /tmp/get-docker.sh${mirrorArg}`
+  if (!opts.addUserToDockerGroup) return install
+  // 加入 docker 组:usermod -aG 需 sudo;失败不阻断安装(组可能已存在或无 sudo 权限)
+  return `${install} && (sudo usermod -aG docker \\$USER 2>/dev/null || true)`
+}
+
+/** 在远端执行 Docker 安装命令。安装耗时 1-3 分钟,调用方需提示进行中。 */
+export async function dockerInstall(sessionId: string, opts: DockerInstallOptions): Promise<string> {
+  return sshExec(sessionId, `${dockerInstallCommand(opts)} 2>&1`)
+}
+
 /** 获取 Docker 服务端版本信息 */
 export async function dockerVersion(sessionId: string): Promise<DockerVersion | null> {
   try {

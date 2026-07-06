@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { Search, Play, Square, RotateCw, Trash2, Logs, AlertCircle, Info, SquareTerminal, PackageCheck, PlusCircle, Box, SquarePen, Ellipsis } from '@lucide/vue'
+import { Search, Play, Square, RotateCw, Trash2, Logs, AlertCircle, Info, SquareTerminal, PackageCheck, PlusCircle, Box, SquarePen, Ellipsis, Copy, Download } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -28,12 +28,16 @@ const emit = defineEmits<{
   (e: 'logs', c: DockerContainer): void
   (e: 'inspect', c: DockerContainer): void
   (e: 'exec', c: DockerContainer): void
-  /** 拉取最新镜像并重建同名容器,保留原配置 */
+  /** 拉取最新镜像并重建同名容器,保留原配置(pull + stop + rm + run) */
   (e: 'recreate', c: DockerContainer): void
+  /** 克隆容器:基于原配置创建新容器,不删除原容器(可选拉镜像/停止原容器) */
+  (e: 'clone', c: DockerContainer): void
   /** 打开编辑弹窗:改名 / 资源限制 / 重启策略 */
   (e: 'edit', c: DockerContainer): void
   /** 打开创建向导 */
   (e: 'create'): void
+  /** 打开 Docker 安装对话框(设备未装 docker 时) */
+  (e: 'install'): void
   (e: 'retry'): void
 }>()
 
@@ -95,11 +99,17 @@ function stateLabel(s: string): string {
       <!-- 不可用 / 出错且无数据 -->
       <div
         v-if="error && containers.length === 0"
-        class="flex flex-col items-center gap-2 py-12 text-muted-foreground"
+        class="flex flex-col items-center gap-3 py-12 text-muted-foreground"
       >
         <AlertCircle class="size-8 text-warning" />
         <span class="text-body">{{ error }}</span>
-        <Button variant="outline" size="sm" @click="emit('retry')">重试</Button>
+        <div class="flex items-center gap-2">
+          <Button variant="outline" size="sm" @click="emit('retry')">重试</Button>
+          <Button variant="default" size="sm" @click="emit('install')">
+            <Download class="size-3.5" />
+            安装 Docker
+          </Button>
+        </div>
       </div>
 
       <!-- 加载中且无数据 -->
@@ -259,6 +269,10 @@ function stateLabel(s: string): string {
                 <DropdownMenuItem :disabled="recreating.has(c.id)" @select="emit('recreate', c)">
                   <PackageCheck class="size-3.5" :class="recreating.has(c.id) && 'animate-spin'" />
                   更新并重建
+                </DropdownMenuItem>
+                <DropdownMenuItem @select="emit('clone', c)">
+                  <Copy class="size-3.5" />
+                  克隆容器
                 </DropdownMenuItem>
                 <DropdownMenuItem @select="emit('edit', c)">
                   <SquarePen class="size-3.5" />

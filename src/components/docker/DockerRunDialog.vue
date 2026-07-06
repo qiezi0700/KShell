@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { reactive, ref, watch, computed } from 'vue'
-import { PlusCircle, Plus, X, Package, ChevronDown, PackageCheck, Network as NetworkIcon } from '@lucide/vue'
+import { PlusCircle, Plus, X, Package, ChevronDown, PackageCheck, Network as NetworkIcon, Copy } from '@lucide/vue'
 import {
   Dialog,
   DialogContent,
@@ -48,11 +48,15 @@ const props = withDefaults(
     images: DockerImage[]
     /** 本地网络列表,供 "选网络" 下拉;传空数组则只保留手动输入 */
     networks?: DockerNetwork[]
-    /** 弹窗模式:create=新建;recreate=用旧配置重建(预填 + stop/rm/run) */
-    mode?: 'create' | 'recreate'
-    /** recreate 模式下预填的配置(通常来自 inspectToRunSpec) */
+    /** 弹窗模式:
+     *  - create:新建空表单
+     *  - recreate:用旧配置重建(pull + stop + rm + run),名可同可改
+     *  - clone:克隆容器(基于原配置创建新容器,不删原容器),可选是否拉取最新镜像/停止原容器
+     */
+    mode?: 'create' | 'recreate' | 'clone'
+    /** recreate/clone 模式下预填的配置(通常来自 inspectToRunSpec) */
     initial?: DockerRunSpec | null
-    /** recreate 模式下用于展示的原始容器名(标题里显示) */
+    /** recreate/clone 模式下用于展示的原始容器名(标题里显示) */
     initialName?: string
   }>(),
   { mode: 'create', initial: null, initialName: '', networks: () => [] },
@@ -132,12 +136,16 @@ const busy = ref(false)
 const advancedOpen = ref(false)
 const imagePickerOpen = ref(false)
 
-// 打开时按 mode 决定预填:create 清空;recreate 用 initial 填,并默认展开高级
+// clone 模式选项:是否拉取最新镜像、是否停止原容器
+const clonePullImage = ref(true)
+const cloneStopOriginal = ref(true)
+
+// 打开时按 mode 决定预填:create 清空;recreate/clone 用 initial 填,并默认展开高级
 watch(
   () => props.open,
   (v) => {
     if (v) {
-      if (props.mode === 'recreate' && props.initial) {
+      if (props.mode !== 'create' && props.initial) {
         Object.assign(form, fillFromSpec(props.initial))
         advancedOpen.value = true
       } else {
@@ -209,7 +217,18 @@ const imageOptions = computed(() =>
     .slice(0, 200),
 )
 
-const canSubmit = computed(() => !!form.image.trim() && !busy.value)
+// clone 模式下新容器名不能与原容器相同(docker 名唯一)
+const originalName = computed(() => (props.initial?.name || props.initialName || '').trim())
+const nameConflict = computed(() =>
+  props.mode === 'clone' &&
+  !!form.name.trim() &&
+  form.name.trim() === originalName.value,
+)
+const canSubmit = computed(() =>
+  !!form.image.trim() &&
+  !busy.value &&
+  !nameConflict.value,
+)
 
 function buildSpec(): DockerRunSpec {
   const nets = form.networks.map((n) => n.trim()).filter(Boolean)
@@ -240,6 +259,8 @@ async function submit() {
   if (!canSubmit.value) return
   if (props.mode === 'recreate') {
     await submitRecreate()
+  } else if (props.mode === 'clone') {
+    await submitClone()
   } else {
     await submitCreate()
   }
@@ -342,6 +363,68 @@ async function submitRecreate() {
     busy.value = false
   }
 }
+
+/** 克隆容器流程:基于原容器配置创建新容器,不删除原容器。
+ *  根据用户选项决定是否拉取最新镜像、是否停止原容器:
+ *  - pull + stop:升级并保留(原容器停止保留,便于回滚)
+ *  - pull + 不 stop:用最新镜像起一份新的(原容器继续运行,端口必须改)
+ *  - 不 pull + 不 stop:纯复制(同镜像多实例,端口必须改)
+ *  - 不 pull + stop:少见,用同镜像停旧起新(端口可复用) */
+async function submitClone() {
+  const spec = buildSpec()
+  const origName = originalName.value
+  if (!origName) {
+    toast.error('缺少原容器名,无法定位需要停止的容器')
+    return
+  }
+  if (!spec.name) {
+    toast.error('克隆模式必须指定新容器名')
+    return
+  }
+  let runCmd: string
+  try {
+    runCmd = buildRunCommandFromSpec(spec)
+  } catch (e: unknown) {
+    toast.error(String(e), '配置校验失败')
+    return
+  }
+
+  busy.value = true
+  try {
+    if (clonePullImage.value) {
+      toast.info(`正在拉取 ${spec.image}…`)
+      await sshExec(props.sessionId, `docker pull ${spec.image} 2>&1`)
+    }
+
+    if (cloneStopOriginal.value) {
+      // stop 原容器释放端口;已停止时吞掉错误
+      try {
+        await sshExec(props.sessionId, `docker stop ${origName}`)
+      } catch (e: unknown) {
+        const msg = (e as Error)?.message ?? String(e)
+        if (!/is not running|No such container/i.test(msg)) throw e
+      }
+    }
+
+    const out = await sshExec(props.sessionId, `${runCmd} 2>&1`)
+    if (/^Error/i.test(out)) throw new Error(out.trim())
+    const cid = spec.name || extractContainerId(out)
+    if (spec.additionalNetworks?.length && cid) {
+      await attachExtraNetworks(cid, spec.additionalNetworks)
+    }
+
+    const actions: string[] = ['新容器已启动']
+    if (cloneStopOriginal.value) actions.push(`原容器 ${origName} 已停止保留`)
+    else actions.push(`原容器 ${origName} 继续运行`)
+    toast.success(actions.join('，'))
+    emit('recreated')
+    emit('update:open', false)
+  } catch (e: unknown) {
+    toast.error(String(e), '克隆失败')
+  } finally {
+    busy.value = false
+  }
+}
 </script>
 
 <template>
@@ -350,15 +433,23 @@ async function submitRecreate() {
       <DialogHeader class="min-w-0">
         <DialogTitle class="flex min-w-0 items-center gap-2">
           <PackageCheck v-if="mode === 'recreate'" class="size-4 text-primary" />
+          <Copy v-else-if="mode === 'clone'" class="size-4 text-primary" />
           <PlusCircle v-else class="size-4" />
           <span v-if="mode === 'recreate'" class="truncate">
             更新并重建 · <span class="font-mono">{{ initialName || initial?.name || '' }}</span>
+          </span>
+          <span v-else-if="mode === 'clone'" class="truncate">
+            克隆容器 · <span class="font-mono">{{ initialName || initial?.name || '' }}</span>
           </span>
           <span v-else>新建容器</span>
         </DialogTitle>
         <DialogDescription v-if="mode === 'recreate'" class="text-caption text-muted-foreground">
           已按当前容器配置预填,可编辑后提交。提交时会依次执行 pull → stop → rm → run。
           仅覆盖弹窗内可编辑字段;--cap-add、--privileged、--dns、--device 等高级运行时字段不会保留。
+        </DialogDescription>
+        <DialogDescription v-else-if="mode === 'clone'" class="text-caption text-muted-foreground">
+          基于当前容器配置创建新容器,不删除原容器。可勾选是否拉取最新镜像、是否停止原容器。
+          新容器名必须不同;停止原容器后端口可复用,否则需修改宿主端口避免冲突。
         </DialogDescription>
         <DialogDescription v-else class="sr-only">用 docker run 从镜像创建一个新容器</DialogDescription>
       </DialogHeader>
@@ -394,7 +485,15 @@ async function submitRecreate() {
           <div class="grid grid-cols-2 gap-2">
             <div>
               <Label class="mb-1 block text-caption text-muted-foreground">容器名(可选)</Label>
-              <Input v-model="form.name" placeholder="留空由 docker 自动生成" class="h-7 text-body" />
+              <Input
+                v-model="form.name"
+                :placeholder="mode === 'clone' ? '必须输入新容器名' : '留空由 docker 自动生成'"
+                class="h-7 text-body"
+                :class="nameConflict && 'border-destructive focus-visible:ring-destructive'"
+              />
+              <p v-if="nameConflict" class="mt-1 text-caption text-destructive">
+                新容器名不能与原容器相同
+              </p>
             </div>
             <div>
               <Label class="mb-1 block text-caption text-muted-foreground">重启策略</Label>
@@ -496,6 +595,36 @@ async function submitRecreate() {
           </div>
         </section>
 
+        <!-- clone 模式:拉取镜像 / 停止原容器 选项 -->
+        <section v-if="mode === 'clone'" class="space-y-1.5 rounded-md border border-border/60 bg-muted/20 p-2.5">
+          <label class="flex cursor-pointer items-start gap-2">
+            <input
+              v-model="clonePullImage"
+              type="checkbox"
+              class="mt-0.5 size-3.5 accent-primary"
+            />
+            <div class="flex flex-col gap-0.5">
+              <span class="text-body">拉取最新镜像</span>
+              <span class="text-caption text-muted-foreground">
+                勾选后先 docker pull 再启动;不勾则直接用本地缓存镜像
+              </span>
+            </div>
+          </label>
+          <label class="flex cursor-pointer items-start gap-2">
+            <input
+              v-model="cloneStopOriginal"
+              type="checkbox"
+              class="mt-0.5 size-3.5 accent-primary"
+            />
+            <div class="flex flex-col gap-0.5">
+              <span class="text-body">停止原容器(不删除)</span>
+              <span class="text-caption text-muted-foreground">
+                勾选后停止原容器释放端口,便于回滚;不勾则原容器继续运行,宿主端口需修改避免冲突
+              </span>
+            </div>
+          </label>
+        </section>
+
         <!-- 端口映射 -->
         <section>
           <div class="mb-1 flex items-center justify-between">
@@ -508,6 +637,9 @@ async function submitRecreate() {
             暂无映射,点右上「+」新增
           </div>
           <div v-else class="space-y-1.5">
+            <p v-if="mode === 'clone' && !cloneStopOriginal" class="text-caption text-warning">
+              原容器仍在运行,宿主端口需修改避免冲突
+            </p>
             <div v-for="(p, i) in form.ports" :key="i" class="flex items-center gap-1.5">
               <Input v-model="p.host" placeholder="宿主端口,如 8080 或 0.0.0.0:8080" class="h-7 text-body font-mono" />
               <span class="text-muted-foreground">→</span>
@@ -619,6 +751,9 @@ async function submitRecreate() {
         <Button variant="default" :disabled="!canSubmit" @click="submit">
           <template v-if="mode === 'recreate'">
             {{ busy ? '重建中…' : '拉取并重建' }}
+          </template>
+          <template v-else-if="mode === 'clone'">
+            {{ busy ? '克隆中…' : '克隆容器' }}
           </template>
           <template v-else>
             {{ busy ? '创建中…' : 'docker run' }}
