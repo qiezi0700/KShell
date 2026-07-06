@@ -17,7 +17,7 @@
 | 会话管理 | 分组树形管理,SQLite 持久化,凭据 AES-256-GCM 加密,会话级操作栏 + 右键菜单 |
 | SFTP | 双栏文件管理,拖拽 / 复制 / 剪切,目录递归传输,进度队列 |
 | 服务器监控 | CPU / 内存 / 网络 / 磁盘 / 负载实时图表(ECharts) |
-| Docker 面板 | 容器 / 镜像 / 卷 / 网络 / Compose stack 管理,日志流,容器新建 / 编辑 / 重建,系统清理 |
+| Docker 面板 | 容器 / 镜像 / 卷 / 网络 / Compose stack 管理,日志流,容器新建 / 编辑 / 重建 / 克隆,Docker 安装,系统清理 |
 | 端口隧道 | 本地转发 + 远程转发,会话级管理 |
 | SSH 密钥库 | 生成 / 导入 / 管理密钥对,部署公钥到远端 |
 | 命令面板 | Ctrl+K 快速搜索并执行命令 |
@@ -39,25 +39,25 @@
 ## 技术栈
 
 **前端**
-- Vue 3.5 + TypeScript + Vite 6
+- Vue 3.5 + TypeScript 6 + Vite 8
 - Tailwind CSS 4(`@tailwindcss/vite` 插件,OKLCH 主题,`--primary-hue` 参数化主题色)
 - shadcn-vue(new-york 风格,基于 reka-ui):alert / badge / card / collapsible / context-menu / dialog / dropdown-menu / input / label / progress / scroll-area / select / separator / sheet / sidebar / skeleton / slider / status-dot / switch / table / tabs / textarea / toggle / toggle-group / tooltip 等组件
-- xterm.js 5.5 + fit / web-links 插件
+- xterm.js 6 + fit / web-links 插件
 - ECharts 6(监控图表,动态加载避免进主 chunk)
-- lucide-vue-next 图标
+- @lucide/vue 图标
 - @vueuse/core(快捷键 / 响应式工具)
 - @tanstack/vue-table(Docker 列表虚拟化备用)
 - highlight.js(Docker 日志高亮备用)
 - uuid(标签页 id 生成)
-- 偏好持久化:localStorage(`kshell-preferences`)
+- 偏好持久化:SQLite(`settings` KV 表 + `quick_commands` 表)
 
 **后端**
 - Tauri 2(Rust)
-- russh 0.61(纯 Rust SSH 客户端,ring 后端)
+- russh 0.62(纯 Rust SSH 客户端,ring 后端)
 - russh-sftp 2.3(SFTP 协议)
 - ssh-key 0.7(密钥对生成与序列化)
 - tokio + DashMap(会话/通道状态)
-- rusqlite 0.32(会话/分组/密钥库持久化,bundled)
+- rusqlite 0.40(会话/分组/密钥库/偏好/快捷指令持久化,bundled)
 - aes-gcm 0.10 + keyring 3(凭据 & passphrase AES-256-GCM 加密,KEK 存 OS keychain)
 - tauri-plugin-dialog / tauri-plugin-shell
 
@@ -90,7 +90,8 @@ KShell/
 │   │   ├── keys.ts               #   SSH 密钥库
 │   │   ├── monitor.ts            #   监控采集脚本 + 解析
 │   │   ├── docker.ts             #   Docker CLI 封装 + 归一化
-│   │   └── tunnel.ts             #   端口隧道/转发
+│   │   ├── tunnel.ts             #   端口隧道/转发
+│   │   └── settings.ts           #   偏好/快捷指令 SQLite CRUD
 │   ├── components/
 │   │   ├── ui/                   # shadcn-vue 基础组件
 │   │   ├── layout/               # TitleBar / ActivityBar / SessionSidebar / WorkArea / StatusBar
@@ -99,7 +100,7 @@ KShell/
 │   │   ├── terminal/             # xterm 集成 + 上下分栏(TerminalSplit)
 │   │   ├── sftp/                 # SFTP 双栏(SftpView / FilePane / TransferPanel)
 │   │   ├── monitor/              # 监控侧栏精简卡(MonitorSummary)
-│   │   ├── docker/               # Docker 面板(容器/镜像/卷/网络/Compose + 日志/详情/新建/编辑/系统清理)
+│   │   ├── docker/               # Docker 面板(容器/镜像/卷/网络/Compose + 日志/详情/新建/编辑/克隆/安装/系统清理)
 │   │   └── tunnels/              # 端口隧道面板(TunnelPanel)
 │   ├── stores/                   # 响应式全局状态
 │   │   ├── tabs.ts               #   标签页 + 按 storedSession 关闭相关 tab
@@ -120,9 +121,10 @@ KShell/
 │   │   ├── prompt.ts             #   交互式输入
 │   │   ├── toast.ts              #   toast 通知
 │   │   ├── ui.ts                 #   侧边栏/状态栏可见性 + 清屏
-│   │   └── preferences.ts        #   主题/字号偏好(localStorage 持久化)
+│   │   └── preferences.ts        #   主题/字号偏好(SQLite 持久化)
 │   ├── styles/global.css         # Tailwind 4 + OKLCH 主题变量(字号/尺寸/主题色/sidebar 语义色)
 │   ├── lib/utils.ts              # cn() 等工具
+│   ├── lib/migrate-localStorage.ts # 一次性 localStorage → SQLite 迁移
 │   ├── App.vue
 │   └── main.ts
 ├── src-tauri/                    # 后端(Rust)
@@ -145,8 +147,8 @@ KShell/
 │   │   │   ├── commands.rs       # 密钥库 Tauri 命令
 │   │   │   └── mod.rs            # 模块入口
 │   │   └── store/
-│   │       ├── mod.rs            # SQLite 门面(groups/sessions/ssh_keys CRUD + 迁移)
-│   │       └── model.rs          # 数据结构(Group/Session/SshKey/AuthKind)
+│   │       ├── mod.rs            # SQLite 门面(groups/sessions/ssh_keys/settings/quick_commands CRUD + 迁移)
+│   │       └── model.rs          # 数据结构(Group/Session/SshKey/AuthKind/QuickCommand)
 │   ├── tauri.conf.json
 │   └── Cargo.toml
 ├── pnpm-workspace.yaml           # pnpm 11 allowBuilds
@@ -250,11 +252,12 @@ cargo check                # 后端编译检查
 - 通过 `ssh_exec` 在远端调用 docker CLI,前端 `api/docker.ts` 按 `--format '{{json .}}'` 归一化为 camelCase
 - `stores/docker.ts` 每 5 秒轮询容器/镜像/卷/网络/stack,stats 独立采集避免阻塞主列表
 - 五个子面板(容器 / 镜像 / 卷 / 网络 / Compose stack)以子 tab 切换,计数 Badge 实时更新
-- **容器**:启停 / 重启 / 删除 / 进入终端(docker exec -it sh)/ 日志流(跟随 / 过滤 / 时间戳 / 文件定位)/ 详情 / 重建(pull + stop + rm + run 原配置)/ 编辑(改名 / 内存 / CPU / 重启策略)
+- **容器**:启停 / 重启 / 删除 / 进入终端(docker exec -it sh)/ 日志流(跟随 / 过滤 / 时间戳 / 文件定位)/ 详情 / 重建(pull + stop + rm + run 原配置)/ 编辑(改名 / 内存 / CPU / 重启策略)/ 克隆(可选拉取最新镜像 / 停止原容器)
 - **镜像**:删除 / 拉取 / 更新 / 详情(配置 + 构建层历史)
 - **卷 / 网络**:删除 / 清理未使用 / 原始 JSON 详情
 - **Compose stack**:up / down / restart / deploy,按 stack 名分组管理
-- **新建容器向导**:`DockerRunDialog` 支持端口映射 / 卷绑定 / 环境变量 / 资源限制 / 网络 / 重启策略
+- **新建容器向导**:`DockerRunDialog` 支持端口映射 / 卷绑定 / 环境变量 / 资源限制 / 网络 / 重启策略;克隆模式复用同一向导
+- **Docker 安装**:远端未安装 docker 时显示「安装 Docker」入口,调用 get.docker.com 官方脚本(支持 Aliyun / Azure 镜像源)
 - **系统清理**:`docker system df` 汇总 + 一键 prune(含 / 不含卷)
 
 ## 偏好与主题
@@ -262,7 +265,8 @@ cargo check                # 后端编译检查
 - `stores/preferences.ts` 管理主题模式(明亮 / 暗黑 / 跟随系统)、主题色(7 种,通过 `--primary-hue` 参数化)、界面字体大小(10–18px)
 - 字号通过 `--font-size-ui` 基准 + 语义化字号/尺寸变量级联缩放,全局 UI 高度同步适配
 - 终端 xterm 字号接入偏好设置,并支持 Ctrl+滚轮 独立缩放当前终端(8–32px)
-- 偏好持久化于 localStorage(`kshell-preferences`)
+- 偏好持久化于 SQLite(`settings` KV 表),首次启动自动从 localStorage 一次性迁移
+- 快捷指令(`quick_commands` 表)含 5 条内置预设,支持增删改,通过终端悬浮按钮一键发送
 
 ## UI 设计
 
@@ -273,7 +277,7 @@ cargo check                # 后端编译检查
 
 ## 已知限制
 
-- Docker 面板依赖远端 docker CLI,需当前用户具有 docker 组权限;无 docker 或无权限时会断开并提示
+- Docker 面板依赖远端 docker CLI,需当前用户具有 docker 组权限;未安装时面板提供一键安装入口(get.docker.com 脚本),安装后需手动刷新
 - Docker 子面板(容器/镜像/卷/网络/stack)各表头/行高在极端字体缩放下可能略有错位
 
 ## License

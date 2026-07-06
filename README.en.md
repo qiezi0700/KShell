@@ -17,7 +17,7 @@ A cross-platform SSH desktop client, inspired by FinalShell, with original UI de
 | Session Management | Group tree, SQLite persistence, credential AES-256-GCM encryption, session action toolbar + context menu |
 | SFTP | Dual-pane file manager, drag/copy/cut, recursive directory transfer, progress queue |
 | Server Monitoring | CPU / memory / network / disk / load real-time charts (ECharts) |
-| Docker Dashboard | Containers / images / volumes / networks / Compose stacks, log streaming, container create / edit / recreate, system prune |
+| Docker Dashboard | Containers / images / volumes / networks / Compose stacks, log streaming, container create / edit / recreate / clone, Docker install, system prune |
 | Port Tunneling | Local + remote forwarding, per-session management |
 | SSH Key Manager | Generate / import / manage keypairs, deploy public key to remote |
 | Command Palette | Ctrl+K to search and run commands |
@@ -39,25 +39,25 @@ A cross-platform SSH desktop client, inspired by FinalShell, with original UI de
 ## Tech Stack
 
 **Frontend**
-- Vue 3.5 + TypeScript + Vite 6
+- Vue 3.5 + TypeScript 6 + Vite 8
 - Tailwind CSS 4 (`@tailwindcss/vite` plugin, OKLCH theme, `--primary-hue` parameterized theme color)
 - shadcn-vue (new-york style, based on reka-ui): alert / badge / card / collapsible / context-menu / dialog / dropdown-menu / input / label / progress / scroll-area / select / separator / sheet / sidebar / skeleton / slider / status-dot / switch / table / tabs / textarea / toggle / toggle-group / tooltip and more
-- xterm.js 5.5 + fit / web-links plugins
+- xterm.js 6 + fit / web-links plugins
 - ECharts 6 (monitoring charts, dynamically loaded to avoid main chunk bloat)
-- lucide-vue-next icons
+- @lucide/vue icons
 - @vueuse/core (keyboard shortcuts / reactivity utilities)
 - @tanstack/vue-table (reserved for Docker list virtualization)
 - highlight.js (reserved for Docker log highlighting)
 - uuid (tab id generation)
-- Preferences persisted in localStorage (`kshell-preferences`)
+- Preferences persisted in SQLite (`settings` KV table + `quick_commands` table)
 
 **Backend**
 - Tauri 2 (Rust)
-- russh 0.61 (pure Rust SSH client, ring backend)
+- russh 0.62 (pure Rust SSH client, ring backend)
 - russh-sftp 2.3 (SFTP protocol)
 - ssh-key 0.7 (keypair generation and serialization)
 - tokio + DashMap (session/channel state)
-- rusqlite 0.32 (session/group/key persistence, bundled)
+- rusqlite 0.40 (session/group/key/preferences/quick-commands persistence, bundled)
 - aes-gcm 0.10 + keyring 3 (credential & passphrase AES-256-GCM encryption, KEK stored in OS keychain)
 - tauri-plugin-dialog / tauri-plugin-shell
 
@@ -90,7 +90,8 @@ KShell/
 │   │   ├── keys.ts               #   SSH key manager
 │   │   ├── monitor.ts            #   Monitor collection script + parser
 │   │   ├── docker.ts             #   Docker CLI wrapper + normalization
-│   │   └── tunnel.ts             #   Port tunnel/forwarding
+│   │   ├── tunnel.ts             #   Port tunnel/forwarding
+│   │   └── settings.ts           #   Preferences/quick-commands SQLite CRUD
 │   ├── components/
 │   │   ├── ui/                   # shadcn-vue base components
 │   │   ├── layout/               # TitleBar / ActivityBar / SessionSidebar / WorkArea / StatusBar
@@ -99,7 +100,7 @@ KShell/
 │   │   ├── terminal/             # xterm integration + split panes (TerminalSplit)
 │   │   ├── sftp/                 # SFTP dual-pane (SftpView / FilePane / TransferPanel)
 │   │   ├── monitor/              # Monitor sidebar summary card (MonitorSummary)
-│   │   ├── docker/               # Docker dashboard (containers/images/volumes/networks/Compose + logs/inspect/create/edit/system prune)
+│   │   ├── docker/               # Docker dashboard (containers/images/volumes/networks/Compose + logs/inspect/create/edit/clone/install/system prune)
 │   │   └── tunnels/              # Port tunnel panel (TunnelPanel)
 │   ├── stores/                   # Reactive global state
 │   │   ├── tabs.ts               #   Tabs + close related tabs by storedSession
@@ -120,9 +121,10 @@ KShell/
 │   │   ├── prompt.ts             #   Interactive input
 │   │   ├── toast.ts              #   Toast notifications
 │   │   ├── ui.ts                 #   Sidebar/statusbar visibility + clear
-│   │   └── preferences.ts        #   Theme/font preferences (localStorage)
+│   │   └── preferences.ts        #   Theme/font preferences (SQLite)
 │   ├── styles/global.css         # Tailwind 4 + OKLCH theme vars (font-size/dimensions/theme colors/sidebar semantic colors)
 │   ├── lib/utils.ts              # cn() and utilities
+│   ├── lib/migrate-localStorage.ts # One-time localStorage → SQLite migration
 │   ├── App.vue
 │   └── main.ts
 ├── src-tauri/                    # Backend (Rust)
@@ -145,8 +147,8 @@ KShell/
 │   │   │   ├── commands.rs       # Key manager Tauri commands
 │   │   │   └── mod.rs            # Module entry
 │   │   └── store/
-│   │       ├── mod.rs            # SQLite facade (groups/sessions/ssh_keys CRUD + migrations)
-│   │       └── model.rs          # Data structures (Group/Session/SshKey/AuthKind)
+│   │       ├── mod.rs            # SQLite facade (groups/sessions/ssh_keys/settings/quick_commands CRUD + migrations)
+│   │       └── model.rs          # Data structures (Group/Session/SshKey/AuthKind/QuickCommand)
 │   ├── tauri.conf.json
 │   └── Cargo.toml
 ├── pnpm-workspace.yaml           # pnpm 11 allowBuilds
@@ -250,11 +252,12 @@ cargo check                # Backend compile check
 - Calls docker CLI on the remote host via `ssh_exec`; `api/docker.ts` normalizes `--format '{{json .}}'` output to camelCase
 - `stores/docker.ts` polls containers/images/volumes/networks/stacks every 5s; stats collected independently to avoid blocking the main list
 - Five sub-panels (containers / images / volumes / networks / Compose stacks) switch via sub-tabs with live count badges
-- **Containers**: start/stop / restart / remove / exec terminal (docker exec -it sh) / log streaming (follow / filter / timestamps / file locator) / inspect / recreate (pull + stop + rm + run with original config) / edit (rename / memory / CPU / restart policy)
+- **Containers**: start/stop / restart / remove / exec terminal (docker exec -it sh) / log streaming (follow / filter / timestamps / file locator) / inspect / recreate (pull + stop + rm + run with original config) / edit (rename / memory / CPU / restart policy) / clone (optional pull latest image / stop original)
 - **Images**: remove / pull / update / inspect (config + build-layer history)
 - **Volumes / Networks**: remove / prune unused / raw JSON inspect
 - **Compose stacks**: up / down / restart / deploy, grouped by stack name
-- **New container wizard**: `DockerRunDialog` supports port mappings / volume binds / env vars / resource limits / network / restart policy
+- **New container wizard**: `DockerRunDialog` supports port mappings / volume binds / env vars / resource limits / network / restart policy; clone mode reuses the same wizard
+- **Docker install**: when docker is not installed on the remote host, an "Install Docker" entry invokes the official get.docker.com script (supports Aliyun / Azure mirror)
 - **System prune**: `docker system df` summary + one-click prune (with / without volumes)
 
 ## Preferences & Theme
@@ -262,7 +265,8 @@ cargo check                # Backend compile check
 - `stores/preferences.ts` manages theme mode (light / dark / system), theme color (7 presets via `--primary-hue`), UI font size (10–18px)
 - Font size cascades via `--font-size-ui` base + semantic size/dimension variables, global UI height adapts accordingly
 - Terminal xterm font size is tied to preferences, with Ctrl+scroll to independently zoom the current terminal (8–32px)
-- Preferences persisted in localStorage (`kshell-preferences`)
+- Preferences persisted in SQLite (`settings` KV table); first launch auto-migrates from localStorage in one pass
+- Quick commands (`quick_commands` table) include 5 built-in presets, support CRUD, one-click send via terminal floating button
 
 ## UI Design
 
@@ -273,7 +277,7 @@ cargo check                # Backend compile check
 
 ## Known Limitations
 
-- The Docker dashboard depends on the remote docker CLI; the current user must be in the docker group. When docker is absent or permission denied, the session disconnects with a prompt
+- The Docker dashboard depends on the remote docker CLI; the current user must be in the docker group. When docker is not installed, the panel provides a one-click install entry (get.docker.com script); manual refresh required after install
 - Docker sub-panel (containers/images/volumes/networks/stacks) header/row heights may slightly misalign under extreme font scaling
 
 ## License

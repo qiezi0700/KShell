@@ -27,6 +27,7 @@ src-tauri/gen
 # AI 协作工具
 .claude
 .opencode
+.playwright-mcp
 
 # 日志与缓存
 *.log
