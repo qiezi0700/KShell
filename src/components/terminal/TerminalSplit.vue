@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import { useStorage } from '@vueuse/core'
 import { PanelBottomClose, PanelBottomOpen } from '@lucide/vue'
 import Terminal from '@/components/terminal/Terminal.vue'
 import SftpView from '@/components/sftp/SftpView.vue'
 import QuickCommandFab from '@/components/terminal/QuickCommandFab.vue'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
+import { settingsGet, settingsSet } from '@/api/settings'
 
 const props = defineProps<{
   tabId: string
@@ -23,8 +23,10 @@ const props = defineProps<{
 const hasSftp = props.withSftp ?? true
 // SFTP 面板可见性。默认打开。
 const sftpVisible = ref(hasSftp)
-// SFTP 占容器高度百分比(10-80)。默认 40。持久化到 localStorage
-const sftpHeightPct = useStorage('terminal-sftp-height-pct', 40)
+// SFTP 占容器高度百分比(10-80)。默认 40。持久化到 SQLite settings
+// ref 先用默认值,onMounted 异步从 SQLite 加载真实值
+const sftpHeightPct = ref(40)
+let sftpHeightReady = false
 
 // 拖拽中
 const dragging = ref(false)
@@ -58,7 +60,9 @@ function onDrag(e: MouseEvent) {
   const rect = containerEl.value.getBoundingClientRect()
   const fromBottom = rect.bottom - e.clientY
   const pct = (fromBottom / rect.height) * 100
-  sftpHeightPct.value = Math.max(10, Math.min(80, Math.round(pct)))
+  const clamped = Math.max(10, Math.min(80, Math.round(pct)))
+  sftpHeightPct.value = clamped
+  if (sftpHeightReady) void settingsSet('terminal-sftp-height-pct', String(clamped))
 }
 
 function onUp() {
@@ -70,6 +74,16 @@ function onUp() {
 }
 
 onMounted(() => {
+  // 异步从 SQLite 加载 SFTP 高度百分比,加载完才允许回写,避免默认值覆盖
+  if (hasSftp) {
+    void settingsGet('terminal-sftp-height-pct').then((raw) => {
+      if (raw != null) {
+        const n = Number(raw)
+        if (Number.isFinite(n)) sftpHeightPct.value = Math.min(Math.max(Math.round(n), 10), 80)
+      }
+      sftpHeightReady = true
+    })
+  }
   // 等布局完成后触发一次 resize,让 xterm 的 FitAddon 正确计算首屏尺寸
   nextTick(() => {
     window.dispatchEvent(new Event('resize'))

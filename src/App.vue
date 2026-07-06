@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import TitleBar from './components/layout/TitleBar.vue'
 import SessionSidebar from './components/layout/SessionSidebar.vue'
 import WorkArea from './components/layout/WorkArea.vue'
@@ -11,13 +11,30 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { initHostKeyGuard, destroyHostKeyGuard } from '@/stores/host-key'
 import { initKiGuard, destroyKiGuard } from '@/stores/ki-prompt'
-import { initTheme, destroyTheme } from '@/stores/preferences'
+import { initPreferences, initTheme, destroyTheme } from '@/stores/preferences'
 import { sidebarVisible, statusBarVisible } from '@/stores/ui'
-import { sidebarWidth, sidebarResizing } from '@/stores/sidebar-panels'
+import { sidebarWidth, sidebarResizing, initSidebarWidth } from '@/stores/sidebar-panels'
 import { activeMonitorSessionId, startMonitor, stopMonitor } from '@/stores/monitor'
+import { initQuickCommands } from '@/stores/quick-commands'
+import { migrateLocalStorage } from '@/lib/migrate-localStorage'
 
-onMounted(() => {
+// SQLite 设置加载完毕前不渲染主 UI,避免偏好/布局闪烁
+const settingsReady = ref(false)
+
+onMounted(async () => {
+  // 1) 一次性迁移老 localStorage 数据到 SQLite(新用户为空操作)
+  await migrateLocalStorage()
+  // 2) 并行加载全局设置:偏好 / 快捷指令 / 侧栏宽度
+  await Promise.all([
+    initPreferences(),
+    initQuickCommands(),
+    initSidebarWidth(),
+  ])
+  // 3) 偏好就位后再应用主题,确保用真实值生效
   initTheme()
+  // 4) 放行主 UI 渲染
+  settingsReady.value = true
+  // 5) 不依赖设置的后台守护,放行后异步启动
   initHostKeyGuard().catch(() => {})
   initKiGuard().catch(() => {})
 })
@@ -37,7 +54,7 @@ onBeforeUnmount(() => {
 
 <template>
   <TooltipProvider>
-    <div class="flex h-full flex-col bg-background">
+    <div v-if="settingsReady" class="flex h-full flex-col bg-background">
       <TitleBar />
       <SidebarProvider
         :open="sidebarVisible"
@@ -55,7 +72,7 @@ onBeforeUnmount(() => {
     </div>
     <component v-for="(o, i) in overlays" :key="i" :is="o" />
     <!-- 右上角浮动区:传输队列 -->
-    <div class="pointer-events-none fixed right-3 top-[38px] z-40 flex w-[340px] flex-col gap-2">
+    <div v-if="settingsReady" class="pointer-events-none fixed right-3 top-[38px] z-40 flex w-[340px] flex-col gap-2">
       <TransferPanel />
     </div>
     <!-- 消息提示:必须在弹窗之上,参照 --reka-dialog-z -->

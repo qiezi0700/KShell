@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
-import { useStorage } from '@vueuse/core'
+import { settingsGet, settingsSet } from '@/api/settings'
 import {
   Loader2,
   Save,
@@ -57,8 +57,10 @@ const props = defineProps<{
 // SFTP 会话
 const sftpId = ref<string | null>(props.sftpId)
 
-// 左右栏宽度比(本地栏百分比,默认 50)。持久化到 localStorage
-const localWidthPct = useStorage('sftp-local-width-pct', 50)
+// 左右栏宽度比(本地栏百分比,默认 50)。持久化到 SQLite settings
+// ref 先用默认值,onMounted 异步从 SQLite 加载真实值
+const localWidthPct = ref(50)
+let localWidthReady = false
 const hDragging = ref(false)
 const splitEl = ref<HTMLDivElement | null>(null)
 
@@ -93,6 +95,15 @@ const dragOver = ref<'local' | 'remote' | null>(null)
 let unlistenDragDrop: UnlistenFn | null = null
 
 onMounted(async () => {
+  // 异步从 SQLite 加载左右栏宽度比,加载完才允许回写
+  void settingsGet('sftp-local-width-pct').then((raw) => {
+    if (raw != null) {
+      const n = Number(raw)
+      if (Number.isFinite(n)) localWidthPct.value = Math.min(Math.max(Math.round(n), 15), 85)
+    }
+    localWidthReady = true
+  })
+
   if (!sftpId.value) {
     try {
       sftpId.value = await sftpOpen(props.sessionId)
@@ -320,7 +331,9 @@ function onHDrag(e: MouseEvent) {
   const rect = splitEl.value.getBoundingClientRect()
   const pct = ((e.clientX - rect.left) / rect.width) * 100
   // 限制 15%-85%
-  localWidthPct.value = Math.max(15, Math.min(85, Math.round(pct)))
+  const clamped = Math.max(15, Math.min(85, Math.round(pct)))
+  localWidthPct.value = clamped
+  if (localWidthReady) void settingsSet('sftp-local-width-pct', String(clamped))
 }
 
 function onHUp() {

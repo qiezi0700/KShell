@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::ssh::{self, ChannelCommand, SshConfig};
 use crate::state::{AppState, ChannelId, HostConfirmResult, SessionId};
-use crate::store::{Group, Session};
+use crate::store::{Group, QuickCommand, Session};
 
 fn err<E: std::fmt::Display>(e: E) -> String {
     format!("{e:#}")
@@ -95,6 +95,38 @@ pub struct CredentialsOut {
 #[tauri::command]
 pub fn session_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.store()?.delete_session(&id).map_err(err)
+}
+
+// ============================================================
+// 设置 & 快捷指令(原 localStorage 迁移至 SQLite)
+// ============================================================
+
+#[tauri::command]
+pub fn settings_get(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
+    state.store()?.get_setting(&key).map_err(err)
+}
+
+#[tauri::command]
+pub fn settings_set(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
+    state.store()?.set_setting(&key, &value).map_err(err)
+}
+
+#[tauri::command]
+pub fn quick_commands_list(state: State<'_, AppState>) -> Result<Vec<QuickCommand>, String> {
+    state.store()?.list_quick_commands().map_err(err)
+}
+
+#[tauri::command]
+pub fn quick_command_upsert(
+    state: State<'_, AppState>,
+    item: QuickCommand,
+) -> Result<QuickCommand, String> {
+    state.store()?.upsert_quick_command(item).map_err(err)
+}
+
+#[tauri::command]
+pub fn quick_command_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.store()?.delete_quick_command(&id).map_err(err)
 }
 
 #[tauri::command]

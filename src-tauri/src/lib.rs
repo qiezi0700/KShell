@@ -53,6 +53,12 @@ pub fn run() {
             commands::session_upsert,
             commands::session_delete,
             commands::session_get_credentials,
+            // 设置 & 快捷指令
+            commands::settings_get,
+            commands::settings_set,
+            commands::quick_commands_list,
+            commands::quick_command_upsert,
+            commands::quick_command_delete,
             // 主机公钥校验
             commands::ssh_confirm_host,
             commands::ssh_remove_known_host,

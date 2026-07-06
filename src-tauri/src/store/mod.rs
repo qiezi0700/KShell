@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
 use crate::crypto::CryptoKey;
-pub use model::{Group, Session, SshKey};
+pub use model::{Group, QuickCommand, Session, SshKey};
 
 /// 存储门面,持有 SQLite 连接。
 pub struct Store {
@@ -130,10 +130,58 @@ impl Store {
             }
         }
 
+        // v6:通用设置 KV 表(settings)+ 快捷指令表(quick_commands)
+        // 原 localStorage 中的 preferences / sidebar-width / 布局数值迁到 settings;
+        // 快捷指令从 localStorage 迁到 quick_commands 独立表,便于 CRUD 与后续扩展。
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS quick_commands (
+                id          TEXT PRIMARY KEY,
+                label       TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                command     TEXT NOT NULL,
+                sort        INTEGER NOT NULL DEFAULT 0,
+                builtin     INTEGER NOT NULL DEFAULT 0
+            );
+            "#,
+        )
+        .context("创建 settings / quick_commands 表失败")?;
+
+        // seed 内置快捷指令(仅首次建库时写入,后续升级不覆盖用户改动)
+        let builtin_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM quick_commands WHERE builtin=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        if builtin_count == 0 {
+            let builtins: &[(&str, &str, &str, &str)] = &[
+                ("kshell-builtin-ls", "ls", "", "ls"),
+                ("kshell-builtin-lsl", "ls -la", "", "ls -la"),
+                ("kshell-builtin-cdup", "cd ..", "", "cd .."),
+                ("kshell-builtin-cdhome", "cd ~", "", "cd ~"),
+                ("kshell-builtin-pwd", "pwd", "", "pwd"),
+            ];
+            for (i, (id, label, desc, cmd)) in builtins.iter().enumerate() {
+                conn.execute(
+                    "INSERT INTO quick_commands(id, label, description, command, sort, builtin)
+                     VALUES(?1, ?2, ?3, ?4, ?5, 1)",
+                    params![id, label, desc, cmd, i as i64],
+                )
+                .context("写入内置快捷指令失败")?;
+            }
+        }
+
         // 记录当前 schema 版本
         conn.execute(
             "INSERT OR IGNORE INTO schema_version(version) VALUES(?1)",
-            params![5i64],
+            params![6i64],
         )
         .ok();
         Ok(())
@@ -377,6 +425,91 @@ impl Store {
             SshKey::from_row,
         )?;
         Ok(key)
+    }
+
+    // ---- Settings(KV) ----
+
+    /// 读取一个设置项;不存在返回 None。
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let result = conn.query_row(
+            "SELECT value FROM settings WHERE key=?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        );
+        match result {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(anyhow::Error::from(e)),
+        }
+    }
+
+    /// 写入一个设置项(已存在则覆盖)。
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![key, value],
+        )
+        .with_context(|| format!("写入设置项失败: {key}"))?;
+        Ok(())
+    }
+
+    // ---- QuickCommand ----
+
+    pub fn list_quick_commands(&self) -> Result<Vec<QuickCommand>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, label, description, command, sort, builtin
+             FROM quick_commands ORDER BY sort, id",
+        )?;
+        let rows = stmt.query_map([], QuickCommand::from_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// upsert 快捷指令。id 为空则新建,否则按 id 更新。
+    /// 内置项(builtin=1)禁止修改,只允许用户自定义项(builtin=0)走 upsert。
+    pub fn upsert_quick_command(&self, mut q: QuickCommand) -> Result<QuickCommand> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        if q.id.is_empty() {
+            q.id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO quick_commands(id, label, description, command, sort, builtin)
+                 VALUES(?1, ?2, ?3, ?4, ?5, 0)",
+                params![q.id, q.label, q.description, q.command, q.sort],
+            )
+            .context("新增快捷指令失败")?;
+        } else {
+            let affected = conn.execute(
+                "UPDATE quick_commands SET label=?2, description=?3, command=?4, sort=?5
+                 WHERE id=?1 AND builtin=0",
+                params![q.id, q.label, q.description, q.command, q.sort],
+            )
+            .context("更新快捷指令失败")?;
+            if affected == 0 {
+                anyhow::bail!("快捷指令不存在或为内置项: {}", q.id);
+            }
+        }
+        Ok(q)
+    }
+
+    /// 删除快捷指令;内置项不可删。
+    pub fn delete_quick_command(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let affected = conn.execute(
+            "DELETE FROM quick_commands WHERE id=?1 AND builtin=0",
+            params![id],
+        )
+        .context("删除快捷指令失败")?;
+        if affected == 0 {
+            anyhow::bail!("快捷指令不存在或为内置项: {id}");
+        }
+        Ok(())
     }
 }
 

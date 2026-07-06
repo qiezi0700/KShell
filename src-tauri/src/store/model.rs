@@ -191,3 +191,34 @@ impl SshKey {
         })
     }
 }
+
+/// 快捷指令项。所有 SSH 终端共享同一份列表。
+/// builtin=1 为系统内置(首次启动 seed,不可删除/编辑),builtin=0 为用户自定义。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuickCommand {
+    /// 空串代表"待插入",upsert 时后端补 uuid
+    #[serde(default)]
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    pub command: String,
+    #[serde(default)]
+    pub sort: i64,
+    #[serde(default)]
+    pub builtin: i64,
+}
+
+impl QuickCommand {
+    pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            label: row.get(1)?,
+            description: row.get(2)?,
+            command: row.get(3)?,
+            sort: row.get(4)?,
+            builtin: row.get(5)?,
+        })
+    }
+}

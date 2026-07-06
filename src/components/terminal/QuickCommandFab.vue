@@ -12,6 +12,7 @@ import {
   removeQuickCommand,
   updateQuickCommand,
 } from '@/stores/quick-commands'
+import { toast } from '@/stores/toast'
 
 /**
  * offsetRight:FAB 距右边缘的偏移量。默认 3.5rem,给右侧的 SFTP 圆钮让位;
@@ -78,19 +79,31 @@ async function openEdit(id: string) {
   cmdInputEl.value?.$el?.focus()
 }
 
-function submitForm() {
+async function submitForm() {
   const cmd = draftCmd.value.trim()
   if (!cmd) return
-  if (editingId.value) {
-    updateQuickCommand(editingId.value, {
-      label: draftLabel.value,
-      description: draftDesc.value,
-      command: cmd,
-    })
-  } else {
-    addQuickCommand(cmd, draftLabel.value, draftDesc.value)
+  try {
+    if (editingId.value) {
+      await updateQuickCommand(editingId.value, {
+        label: draftLabel.value,
+        description: draftDesc.value,
+        command: cmd,
+      })
+    } else {
+      await addQuickCommand(cmd, draftLabel.value, draftDesc.value)
+    }
+    resetForm()
+  } catch (e) {
+    toast.error(typeof e === 'string' ? e : (e as Error)?.message ?? String(e), '保存快捷指令失败')
   }
-  resetForm()
+}
+
+async function handleRemove(id: string) {
+  try {
+    await removeQuickCommand(id)
+  } catch (e) {
+    toast.error(typeof e === 'string' ? e : (e as Error)?.message ?? String(e), '删除快捷指令失败')
+  }
 }
 
 function runCommand(cmd: string) {
@@ -235,7 +248,7 @@ function runCommand(cmd: string) {
                   variant="ghost"
                   size="icon-sm"
                   class="hover:bg-destructive/20 hover:text-destructive"
-                  @click.stop="removeQuickCommand(c.id)"
+                  @click.stop="handleRemove(c.id)"
                 >
                   <Trash2 class="size-3.5" />
                 </Button>

@@ -1,4 +1,5 @@
 import { ref, watch } from 'vue'
+import { settingsGet, settingsSet } from '@/api/settings'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
@@ -72,8 +73,8 @@ interface StoredPrefs {
   terminalPadding: number
 }
 
-function loadPrefs(): StoredPrefs {
-  const defaults: StoredPrefs = {
+function defaultPrefs(): StoredPrefs {
+  return {
     themeMode: 'dark',
     themeColorId: 'blue',
     fontSize: 13,
@@ -83,45 +84,54 @@ function loadPrefs(): StoredPrefs {
     terminalScrollback: DEFAULT_TERMINAL_SCROLLBACK,
     terminalPadding: DEFAULT_TERMINAL_PADDING,
   }
+}
+
+// 初始化完成前为 false,watch 回调跳过保存,避免用默认值覆盖 SQLite 数据
+let prefsReady = false
+
+/**
+ * 从 SQLite 加载偏好并覆盖 ref 默认值。App.vue 在渲染主 UI 前调用,
+ * 调完后再 initTheme(),保证主题用真实值生效。
+ */
+export async function initPreferences(): Promise<void> {
+  if (prefsReady) return
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = await settingsGet(STORAGE_KEY)
     if (raw) {
-      const p = JSON.parse(raw)
-      return {
-        themeMode: p.themeMode ?? defaults.themeMode,
-        themeColorId: p.themeColorId ?? defaults.themeColorId,
-        fontSize: normalizeFontSize(p.fontSize ?? defaults.fontSize),
-        syncKnownHostsToSystem: p.syncKnownHostsToSystem ?? defaults.syncKnownHostsToSystem,
-        terminalFontFamily: p.terminalFontFamily ?? defaults.terminalFontFamily,
-        terminalLineHeight: p.terminalLineHeight ?? defaults.terminalLineHeight,
-        terminalScrollback: p.terminalScrollback ?? defaults.terminalScrollback,
-        terminalPadding: p.terminalPadding ?? defaults.terminalPadding,
-      }
+      const p = JSON.parse(raw) as Partial<StoredPrefs>
+      const d = defaultPrefs()
+      themeMode.value = p.themeMode ?? d.themeMode
+      themeColorId.value = p.themeColorId ?? d.themeColorId
+      fontSize.value = normalizeFontSize(p.fontSize ?? d.fontSize)
+      syncKnownHostsToSystem.value = p.syncKnownHostsToSystem ?? d.syncKnownHostsToSystem
+      terminalFontFamily.value = p.terminalFontFamily ?? d.terminalFontFamily
+      terminalLineHeight.value = p.terminalLineHeight ?? d.terminalLineHeight
+      terminalScrollback.value = p.terminalScrollback ?? d.terminalScrollback
+      terminalPadding.value = p.terminalPadding ?? d.terminalPadding
     }
-  } catch {}
-  return defaults
+  } catch {
+    // 读取失败保持默认值
+  }
+  prefsReady = true
 }
 
 function savePrefs(prefs: StoredPrefs) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs))
-  } catch {}
+  void settingsSet(STORAGE_KEY, JSON.stringify(prefs))
 }
 
-const stored = loadPrefs()
-
-export const themeMode = ref<ThemeMode>(stored.themeMode)
-export const themeColorId = ref<string>(stored.themeColorId)
+// ref 先用默认值,initPreferences() 异步覆盖
+export const themeMode = ref<ThemeMode>('dark')
+export const themeColorId = ref<string>('blue')
 // 界面字体大小(10-18),默认 13px
-export const fontSize = ref<number>(stored.fontSize)
+export const fontSize = ref<number>(13)
 // 是否把 KShell 信任的主机公钥同步写入系统 ~/.ssh/known_hosts
-export const syncKnownHostsToSystem = ref<boolean>(stored.syncKnownHostsToSystem)
+export const syncKnownHostsToSystem = ref<boolean>(false)
 
 // 终端配置
-export const terminalFontFamily = ref<string>(stored.terminalFontFamily)
-export const terminalLineHeight = ref<number>(stored.terminalLineHeight)
-export const terminalScrollback = ref<number>(stored.terminalScrollback)
-export const terminalPadding = ref<number>(stored.terminalPadding)
+export const terminalFontFamily = ref<string>(DEFAULT_TERMINAL_FONT_FAMILY)
+export const terminalLineHeight = ref<number>(DEFAULT_TERMINAL_LINE_HEIGHT)
+export const terminalScrollback = ref<number>(DEFAULT_TERMINAL_SCROLLBACK)
+export const terminalPadding = ref<number>(DEFAULT_TERMINAL_PADDING)
 
 // 当前生效的明暗模式(themeMode 为 system 时跟随系统,供终端等需要响应主题切换的组件 watch)
 export const effectiveMode = ref<'light' | 'dark'>('dark')
@@ -170,6 +180,8 @@ watch(
   [themeMode, themeColorId, fontSize, syncKnownHostsToSystem, terminalFontFamily, terminalLineHeight, terminalScrollback, terminalPadding],
   () => {
     applyTheme()
+    // 初始化覆盖期间不回写,避免用默认值覆盖 SQLite 真实值
+    if (!prefsReady) return
     savePrefs({
       themeMode: themeMode.value,
       themeColorId: themeColorId.value,

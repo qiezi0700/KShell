@@ -1,11 +1,11 @@
 import { computed, markRaw, ref, shallowRef } from 'vue'
 import type { Component } from 'vue'
-import { useStorage } from '@vueuse/core'
 import { Server, KeyRound, Network, Activity } from '@lucide/vue'
 import SessionsPanel from '@/components/sidebar/SessionsPanel.vue'
 import KeysPanel from '@/components/sidebar/KeysPanel.vue'
 import TunnelPanel from '@/components/tunnels/TunnelPanel.vue'
 import MonitorSummary from '@/components/monitor/MonitorSummary.vue'
+import { settingsGet, settingsSet } from '@/api/settings'
 
 export interface SidebarPanelDef {
   key: string
@@ -25,12 +25,33 @@ export function registerSidebarPanel(def: SidebarPanelDef) {
 
 export const activePanel = ref<string>('sessions')
 
-// 侧栏宽度可拖拽调整,持久化到 localStorage;范围 180–480px
-export const sidebarWidth = useStorage('sidebar-width', 220)
+// 侧栏宽度可拖拽调整,持久化到 SQLite settings;范围 180–480px
+// ref 先用默认值,initSidebarWidth() 异步覆盖
+export const sidebarWidth = ref(220)
 export const sidebarResizing = ref(false)
 
+let sidebarWidthReady = false
+
+/** 从 SQLite 加载侧栏宽度;重复调用安全 */
+export async function initSidebarWidth(): Promise<void> {
+  if (sidebarWidthReady) return
+  try {
+    const raw = await settingsGet('sidebar-width')
+    if (raw != null) {
+      // useStorage 存数值时序列化为字符串,直接解析
+      const n = Number(raw)
+      if (Number.isFinite(n)) sidebarWidth.value = Math.min(Math.max(Math.round(n), 180), 480)
+    }
+  } catch {
+    // 读取失败保持默认
+  }
+  sidebarWidthReady = true
+}
+
 export function setSidebarWidth(px: number) {
-  sidebarWidth.value = Math.min(Math.max(Math.round(px), 180), 480)
+  const clamped = Math.min(Math.max(Math.round(px), 180), 480)
+  sidebarWidth.value = clamped
+  if (sidebarWidthReady) void settingsSet('sidebar-width', String(clamped))
 }
 
 const sorted = computed(() =>
