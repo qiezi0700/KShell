@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Plus, X } from 'lucide-vue-next'
+import { Plus, X } from '@lucide/vue'
 import { useMagicKeys, whenever } from '@vueuse/core'
 import { onMounted } from 'vue'
 import { Button } from '@/components/ui/button'

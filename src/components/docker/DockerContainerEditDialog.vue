@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { reactive, ref, watch, computed } from 'vue'
-import { SquarePen, Network, X, ChevronDown, Plus } from 'lucide-vue-next'
+import { SquarePen, Network, X, ChevronDown, Plus } from '@lucide/vue'
 import {
   Dialog,
   DialogContent,

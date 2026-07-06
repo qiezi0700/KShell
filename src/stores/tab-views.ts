@@ -1,6 +1,6 @@
 import { computed, markRaw, shallowRef } from 'vue'
 import type { Component } from 'vue'
-import { TerminalSquare, FolderOpen, Boxes } from 'lucide-vue-next'
+import { TerminalSquare, FolderOpen, Boxes } from '@lucide/vue'
 import type { TabType } from '@/stores/tabs'
 import TerminalTabView from '@/components/terminal/TerminalTabView.vue'
 import SftpTabView from '@/components/sftp/SftpTabView.vue'

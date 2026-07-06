@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { Loader2, KeyRound, Lock, Eye, EyeOff, FolderOpen, Cpu, MessageSquareText } from 'lucide-vue-next'
+import { Loader2, KeyRound, Lock, Eye, EyeOff, FolderOpen, Cpu, MessageSquareText } from '@lucide/vue'
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
 import {
   Dialog,
@@ -28,7 +28,7 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { ChevronDown, Network } from 'lucide-vue-next'
+import { ChevronDown, Network } from '@lucide/vue'
 import { newConnectionPrefill, showNewConnection } from '@/stores/dialogs'
 import { addTab, nextTabId, closeTabsByStoredSession } from '@/stores/tabs'
 import { sshConnect, type SshConfig } from '@/api/ssh'

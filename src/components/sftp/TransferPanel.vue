@@ -12,7 +12,7 @@ import {
   ChevronDown,
   X,
   Ban,
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible'
 import { Progress } from '@/components/ui/progress'

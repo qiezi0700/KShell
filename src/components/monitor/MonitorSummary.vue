@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Cpu, MemoryStick, Activity, AlertCircle } from 'lucide-vue-next'
+import { Cpu, MemoryStick, Activity, AlertCircle } from '@lucide/vue'
 import { Progress } from '@/components/ui/progress'
 import Sparkline from '@/components/monitor/Sparkline.vue'
 import {

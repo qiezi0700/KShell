@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { RefreshCw, Box, Package, HardDrive, Network, Layers } from 'lucide-vue-next'
+import { RefreshCw, Box, Package, HardDrive, Network, Layers } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'

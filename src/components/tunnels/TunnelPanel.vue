@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import { Plus, Trash2, Globe, Laptop, RefreshCw } from 'lucide-vue-next'
+import { Plus, Trash2, Globe, Laptop, RefreshCw } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { Input } from '@/components/ui/input'

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useStorage } from '@vueuse/core'
-import { PanelBottomClose, PanelBottomOpen } from 'lucide-vue-next'
+import { PanelBottomClose, PanelBottomOpen } from '@lucide/vue'
 import Terminal from '@/components/terminal/Terminal.vue'
 import SftpView from '@/components/sftp/SftpView.vue'
 import QuickCommandFab from '@/components/terminal/QuickCommandFab.vue'

@@ -206,6 +206,8 @@ impl client::Handler for ClientHandler {
         connected_port: u32,
         _originator_address: &str,
         _originator_port: u32,
+        // russh 0.62 起新增 channel handle 参数,隧道转发靠 channel 即够用,此处忽略
+        _handle: russh::client::ChannelOpenHandle,
         _session: &mut russh::client::Session,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         let app = self.app.clone();

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { Search, HardDrive, Trash2, AlertCircle, Info } from 'lucide-vue-next'
+import { Search, HardDrive, Trash2, AlertCircle, Info } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'

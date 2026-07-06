@@ -1,7 +1,7 @@
 import { computed, markRaw, ref, shallowRef } from 'vue'
 import type { Component } from 'vue'
 import { useStorage } from '@vueuse/core'
-import { Server, KeyRound, Network, Activity } from 'lucide-vue-next'
+import { Server, KeyRound, Network, Activity } from '@lucide/vue'
 import SessionsPanel from '@/components/sidebar/SessionsPanel.vue'
 import KeysPanel from '@/components/sidebar/KeysPanel.vue'
 import TunnelPanel from '@/components/tunnels/TunnelPanel.vue'

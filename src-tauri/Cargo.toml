@@ -20,7 +20,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # SSH(用 ring 后端避免 aws-lc-rs 在 Windows 上需要 NASM)
-russh = { version = "0.61", default-features = false, features = ["flate2", "ring", "rsa"] }
+russh = { version = "0.62", default-features = false, features = ["flate2", "ring", "rsa"] }
 russh-sftp = "2.3"
 
 # async / concurrent
@@ -42,12 +42,12 @@ rand = "0.10"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 # SSH 密钥生成(与 russh 0.61 同版本的 ssh-key,需直接依赖以访问 RsaKeypair 等)
-ssh-key = { version = "0.7.0-rc.10", default-features = false, features = ["ed25519", "ecdsa", "p256", "p384", "p521", "rsa", "rand_core", "std"] }
+ssh-key = { version = "0.7.0-rc.11", default-features = false, features = ["ed25519", "ecdsa", "p256", "p384", "p521", "rsa", "rand_core", "std"] }
 
 # known_hosts hashed hostname 校验(HMAC-SHA1,与 russh 传递依赖共用同一版本)
 hmac = "0.12"
 sha1 = "0.10"
 
 # 持久化
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }

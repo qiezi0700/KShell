@@ -5,7 +5,7 @@ import {
   AlertCircle,
   Info,
   AlertTriangle,
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import { toastItems, toast } from '@/stores/toast'
 
 const iconMap = {

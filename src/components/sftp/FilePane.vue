@@ -15,7 +15,7 @@ import {
   Eye,
   Pencil,
   Trash2,
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'

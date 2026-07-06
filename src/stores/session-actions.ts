@@ -1,6 +1,6 @@
 import { markRaw, shallowRef } from 'vue'
 import type { Component } from 'vue'
-import { TerminalSquare, FolderOpen, Boxes } from 'lucide-vue-next'
+import { TerminalSquare, FolderOpen, Boxes } from '@lucide/vue'
 import type { StoredSession } from '@/api/sessions'
 import { connectSession, quickConnect } from '@/stores/sessions'
 import { addTab, nextTabId } from '@/stores/tabs'

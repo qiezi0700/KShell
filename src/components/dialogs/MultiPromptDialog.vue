@@ -11,7 +11,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Eye, EyeOff } from 'lucide-vue-next'
+import { Eye, EyeOff } from '@lucide/vue'
 import { multiPromptOpen, multiPromptState, resolveMultiPrompt } from '@/stores/prompt'
 
 const values = ref<string[]>([])

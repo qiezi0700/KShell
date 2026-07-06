@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
-import { ScrollText, Copy, RefreshCw, FileText, Play, Pause, Filter, Clock, FileSearch } from 'lucide-vue-next'
+import { ScrollText, Copy, RefreshCw, FileText, Play, Pause, Filter, Clock, FileSearch } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'

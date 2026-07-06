@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
-import { KeyRound, LogIn, LogOut, Eye, EyeOff, Info } from 'lucide-vue-next'
+import { KeyRound, LogIn, LogOut, Eye, EyeOff, Info } from '@lucide/vue'
 import {
   Dialog,
   DialogContent,

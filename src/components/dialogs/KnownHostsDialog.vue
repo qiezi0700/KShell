@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Server, Trash2, Copy, Check, RefreshCw, ShieldCheck, ShieldQuestion } from 'lucide-vue-next'
+import { Server, Trash2, Copy, Check, RefreshCw, ShieldCheck, ShieldQuestion } from '@lucide/vue'
 import {
   Dialog,
   DialogContent,

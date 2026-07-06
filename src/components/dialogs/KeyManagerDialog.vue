@@ -11,7 +11,7 @@ import {
   Eye,
   Loader2,
   Check,
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
 import {
   Dialog,

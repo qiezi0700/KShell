@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Plus, FolderPlus, Download, Upload, ChevronRight, Folder, Server, Trash2, Pencil } from 'lucide-vue-next'
+import { Plus, FolderPlus, Download, Upload, ChevronRight, Folder, Server, Trash2, Pencil } from '@lucide/vue'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import {

@@ -17,7 +17,7 @@ import {
   Settings,
   HelpCircle,
   RotateCw,
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import {
   Dialog,
   DialogContent,

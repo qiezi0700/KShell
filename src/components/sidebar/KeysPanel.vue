@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import { KeyRound, Plus, FolderOpen, RefreshCw, Eye, Pencil, Trash2 } from 'lucide-vue-next'
+import { KeyRound, Plus, FolderOpen, RefreshCw, Eye, Pencil, Trash2 } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import {

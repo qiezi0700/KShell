@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, nextTick, computed } from 'vue'
 import { onClickOutside } from '@vueuse/core'
-import { Zap, Plus, Trash2, Send, X, Pencil } from 'lucide-vue-next'
+import { Zap, Plus, Trash2, Send, X, Pencil } from '@lucide/vue'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'

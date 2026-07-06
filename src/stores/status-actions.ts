@@ -1,6 +1,6 @@
 import { markRaw, shallowRef } from 'vue'
 import type { Component } from 'vue'
-import { Activity } from 'lucide-vue-next'
+import { Activity } from '@lucide/vue'
 import type { Tab } from '@/stores/tabs'
 import { monitorDialogOpen } from '@/stores/monitor'
 

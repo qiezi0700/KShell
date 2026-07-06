@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { reactive, ref, watch, computed } from 'vue'
-import { PlusCircle, Plus, X, Package, ChevronDown, PackageCheck, Network as NetworkIcon } from 'lucide-vue-next'
+import { PlusCircle, Plus, X, Package, ChevronDown, PackageCheck, Network as NetworkIcon } from '@lucide/vue'
 import {
   Dialog,
   DialogContent,

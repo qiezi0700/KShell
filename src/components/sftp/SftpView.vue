@@ -4,7 +4,7 @@ import { useStorage } from '@vueuse/core'
 import {
   Loader2,
   Save,
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,

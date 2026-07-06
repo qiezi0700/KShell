@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { Minus, Square, X, Github } from 'lucide-vue-next'
+import { Minus, Square, X } from '@lucide/vue'
+import GithubIcon from '@/components/ui/GithubIcon.vue'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import {
   DropdownMenu,
@@ -205,7 +206,7 @@ async function quitApp() {
             关于 KShell
           </DropdownMenuItem>
           <DropdownMenuItem @select="openGithub()">
-            <Github class="size-3.5" />
+            <GithubIcon class="size-3.5" />
             GitHub 仓库
           </DropdownMenuItem>
           <DropdownMenuSeparator />

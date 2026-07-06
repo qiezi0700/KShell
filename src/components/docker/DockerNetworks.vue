@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { Search, Network, Trash2, AlertCircle, Info } from 'lucide-vue-next'
+import { Search, Network, Trash2, AlertCircle, Info } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
