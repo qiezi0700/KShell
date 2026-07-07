@@ -179,37 +179,75 @@ export async function dockerAvailable(sessionId: string): Promise<boolean> {
 // Docker 安装(远端主机未装时使用)
 // ============================================================
 
-export type DockerInstallMirror = 'official' | 'aliyun' | 'azure'
+export type DockerInstallMirror = 'official' | 'aliyun' | 'azure' | 'tuna' | 'ustc'
 
 export interface DockerInstallOptions {
-  /** 镜像源:official 走 get.docker.com 默认;aliyun/azure 走官方脚本 --mirror 参数 */
+  /** 镜像源:official 走 get.docker.com 默认;aliyun/azure 走官方脚本 --mirror 参数;
+   * tuna/ustc 走 DOWNLOAD_URL 环境变量覆盖 get.docker.com 下载脚本内的 apt/yum 源。 */
   mirror: DockerInstallMirror
   /** 是否同时把当前用户加入 docker 组(需要 sudo;生效需重新登录会话) */
   addUserToDockerGroup: boolean
+  /** sudo 密码(可选);非 root 用户无免密 sudo 时传入,经 env + printf | sudo -S 走 stdin,
+   *  不进 argv / shell 历史。空串表示远端已配免密 sudo 或当前为 root。 */
+  sudoPassword?: string
+}
+
+/** get.docker.com 脚本支持两种镜像覆盖方式:
+ *  --mirror Aliyun / AzureChinaCloud:脚本内置,替换 apt/yum 源;
+ *  DOWNLOAD_URL 环境变量:覆盖下载 apt/yum 仓库元数据与 deb/rpm 包的根地址,
+ *  清华/中科大镜像站用此方式(它们没有 --mirror 内置支持)。 */
+function mirrorEnvPart(mirror: DockerInstallMirror): string {
+  if (mirror === 'tuna') return 'DOWNLOAD_URL=https://mirrors.tuna.tsinghua.edu.cn/docker-ce '
+  if (mirror === 'ustc') return 'DOWNLOAD_URL=https://mirrors.ustc.edu.cn/docker-ce '
+  return ''
+}
+
+function mirrorArg(mirror: DockerInstallMirror): string {
+  if (mirror === 'aliyun') return ' --mirror Aliyun'
+  if (mirror === 'azure') return ' --mirror AzureChinaCloud'
+  return ''
 }
 
 /**
  * 生成 Docker 安装命令字符串。
  * 用 docker 官方一键脚本 get.docker.com,跨 CentOS/Ubuntu/Debian/RHEL 等主流发行版。
- * --mirror 参数由官方脚本支持,Aliyun/AzureChinaCloud 为内置可选项。
- * 脚本内部会自动调用 sudo(非 root 用户需配置免密 sudo 或在执行时被提示输密)。
+ * --mirror 参数由官方脚本支持,Aliyun/AzureChinaCloud 为内置可选项;
+ * 清华/中科大走 DOWNLOAD_URL 环境变量覆盖下载源。
+ * sudo 密码(若提供)经 env 注入 + printf | sudo -S 从 stdin 读取,不进 argv / shell 历史。
  */
 export function dockerInstallCommand(opts: DockerInstallOptions): string {
-  const mirrorArg = opts.mirror === 'aliyun'
-    ? ' --mirror Aliyun'
-    : opts.mirror === 'azure'
-      ? ' --mirror AzureChinaCloud'
-      : ''
+  const envPrefix = mirrorEnvPart(opts.mirror)
+  const mArg = mirrorArg(opts.mirror)
   // 脚本输出到 stdout,失败时 stderr 会包含 Error 信息
-  const install = `curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && sh /tmp/get-docker.sh${mirrorArg}`
-  if (!opts.addUserToDockerGroup) return install
-  // 加入 docker 组:usermod -aG 需 sudo;失败不阻断安装(组可能已存在或无 sudo 权限)
-  return `${install} && (sudo usermod -aG docker \\$USER 2>/dev/null || true)`
+  const install = `curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && sh /tmp/get-docker.sh${mArg}`
+
+  // 无 sudo 密码:维持原行为(脚本内部自行 sudo,需远端免密 sudo 或 root)
+  if (!opts.sudoPassword) {
+    if (!opts.addUserToDockerGroup) return `${envPrefix}${install}`
+    // 加入 docker 组:usermod -aG 需 sudo;失败不阻断安装
+    return `${envPrefix}${install} && (sudo usermod -aG docker \\$USER 2>/dev/null || true)`
+  }
+
+  // 有 sudo 密码:用 env 注入密码 + printf | sudo -S 从 stdin 喂密码;
+  // 整条安装命令包进 sh -c,再经 sudo -S 执行,这样脚本内的所有 sudo 调用都免密
+  // -p "" 抑制 sudo 的密码提示符输出,避免污染日志
+  const inner = `printf '%s\\n' "$KSHELL_SUDO_PW" | sudo -S -p '' ${envPrefix}sh /tmp/get-docker.sh${mArg}`
+  // 外层 env 赋值走进程环境(短生命周期),不进 argv 也不进 shell 历史
+  let wrapped = `env KSHELL_SUDO_PW=${shq(opts.sudoPassword)} sh -c ${shq(inner)}`
+
+  if (opts.addUserToDockerGroup) {
+    // 加组也用同一密码注入;失败不阻断
+    const grp = `printf '%s\\n' "$KSHELL_SUDO_PW" | sudo -S -p '' usermod -aG docker \\$USER 2>/dev/null || true`
+    wrapped = `${wrapped} && env KSHELL_SUDO_PW=${shq(opts.sudoPassword)} sh -c ${shq(grp)}`
+  }
+  // curl 下载脚本不需要 sudo,放 sudo 包裹外层
+  return `curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && ${wrapped}`
 }
 
-/** 在远端执行 Docker 安装命令。安装耗时 1-3 分钟,调用方需提示进行中。 */
+/** 在远端执行 Docker 安装命令。安装耗时 1-3 分钟,超时 5 分钟避免永久挂起。
+ *  调用方需提示进行中,并处理失败时显示完整日志。 */
 export async function dockerInstall(sessionId: string, opts: DockerInstallOptions): Promise<string> {
-  return sshExec(sessionId, `${dockerInstallCommand(opts)} 2>&1`)
+  return sshExec(sessionId, `${dockerInstallCommand(opts)} 2>&1`, 5 * 60 * 1000)
 }
 
 /** 获取 Docker 服务端版本信息 */

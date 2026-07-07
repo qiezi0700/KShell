@@ -54,9 +54,14 @@ export async function sshResize(channelId: string, cols: number, rows: number): 
   await invoke('ssh_resize', { channelId, cols, rows })
 }
 
-/** 在已有 SSH 会话上一次性执行命令,返回合并的 stdout+stderr 文本。 */
-export async function sshExec(sessionId: string, command: string): Promise<string> {
-  return await invoke<string>('ssh_exec', { sessionId, command })
+/** 在已有 SSH 会话上一次性执行命令,返回合并的 stdout+stderr 文本。
+ * timeoutMs 为 undefined 时无超时(默认);Docker 安装等可能卡住的命令应传超时。 */
+export async function sshExec(
+  sessionId: string,
+  command: string,
+  timeoutMs?: number,
+): Promise<string> {
+  return await invoke<string>('ssh_exec', { sessionId, command, timeoutMs })
 }
 
 export async function sshCloseChannel(channelId: string): Promise<void> {

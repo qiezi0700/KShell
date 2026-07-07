@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use russh::ChannelMsg;
 use serde::Serialize;
@@ -266,11 +267,14 @@ pub async fn ssh_open_exec(
 
 /// 在已有 SSH 会话上一次性执行命令(request_exec),收集 stdout+stderr 后关闭 channel。
 /// 供 M4 监控采集与 M5 Docker 数据获取复用。
+/// timeout_ms 为 None 时无超时(默认,兼容监控等长轮询场景);Docker 安装等
+/// 可能卡住的命令应传超时(如 300_000),避免远端 sudo 提示或网络问题导致永久挂起。
 #[tauri::command]
 pub async fn ssh_exec(
     state: State<'_, AppState>,
     session_id: SessionId,
     command: String,
+    timeout_ms: Option<u64>,
 ) -> Result<String, String> {
     let session = state
         .sessions
@@ -293,13 +297,27 @@ pub async fn ssh_exec(
 
     // 收集全部输出直到 EOF/Close;监控脚本输出较小,直接拼接
     let mut out = Vec::new();
-    loop {
-        match channel.wait().await {
-            Some(ChannelMsg::Data { data }) => out.extend_from_slice(&data[..]),
-            Some(ChannelMsg::ExtendedData { data, .. }) => out.extend_from_slice(&data[..]),
-            Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
-            Some(_) => {}
+    let wait_loop = async {
+        loop {
+            match channel.wait().await {
+                Some(ChannelMsg::Data { data }) => out.extend_from_slice(&data[..]),
+                Some(ChannelMsg::ExtendedData { data, .. }) => out.extend_from_slice(&data[..]),
+                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+                Some(_) => {}
+            }
         }
+    };
+
+    if let Some(ms) = timeout_ms {
+        if tokio::time::timeout(Duration::from_millis(ms), wait_loop)
+            .await
+            .is_err()
+        {
+            let _ = channel.close().await;
+            return Err(format!("命令执行超时({ms}毫秒),可能是远端 sudo 等待密码或网络卡住"));
+        }
+    } else {
+        wait_loop.await;
     }
     let _ = channel.close().await;
     Ok(String::from_utf8_lossy(&out).to_string())
