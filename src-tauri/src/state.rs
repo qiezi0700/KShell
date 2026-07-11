@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use tokio::sync::{Mutex, RwLock};
+use tokio::task::AbortHandle;
 
 use crate::crypto::CryptoKey;
 use crate::sftp::SftpHandle;
@@ -13,6 +14,13 @@ use crate::store::Store;
 pub type SessionId = String;
 pub type ChannelId = String;
 pub type TunnelId = String;
+
+pub struct TransferControl {
+    pub sftp_id: String,
+    pub cancel: Arc<AtomicBool>,
+    pub abort_handle: AbortHandle,
+    pub completed: Arc<AtomicBool>,
+}
 
 /// 用户在前端确认主机公钥时的完整结果,包含是否接受以及是否同步到系统 known_hosts。
 pub struct HostConfirmResult {
@@ -28,7 +36,7 @@ pub struct HostConfirmResult {
 /// - `pending_host_confirms`:check_server_key 等待用户确认首次连接的 oneshot 发送端
 /// - `crypto`:凭据加密用的机器绑定 key
 /// - `sftp_sessions`:SFTP 会话池,复用 SSH 连接
-/// - `transfer_cancels`:进行中的传输任务对应的取消标志(前端调 sftp_cancel_transfer 时置位)
+/// - `transfers`:进行中的传输任务控制项,用于取消以及会话关闭时立即终止
 /// - `tunnels`:M6 端口转发规则,按 tunnel_id 索引;按 session_id 分组清理
 pub struct AppState {
     pub sessions: DashMap<SessionId, Arc<Mutex<SshSession>>>,
@@ -40,7 +48,7 @@ pub struct AppState {
     pub pending_ki_prompts: DashMap<String, tokio::sync::oneshot::Sender<Vec<String>>>,
     pub crypto: CryptoKey,
     pub sftp_sessions: DashMap<String, SftpHandle>,
-    pub transfer_cancels: DashMap<String, Arc<AtomicBool>>,
+    pub transfers: DashMap<String, TransferControl>,
     pub tunnels: DashMap<TunnelId, TunnelEntry>,
 }
 
@@ -55,7 +63,7 @@ impl AppState {
             pending_ki_prompts: DashMap::new(),
             crypto,
             sftp_sessions: DashMap::new(),
-            transfer_cancels: DashMap::new(),
+            transfers: DashMap::new(),
             tunnels: DashMap::new(),
         }
     }

@@ -86,18 +86,22 @@ pub struct TunnelEntry {
 
 impl TunnelEntry {
     async fn set_state(&self, app: &AppHandle, state: TunnelState) {
-        let mut t = self.tunnel.lock().await;
-        t.state = state;
-        let _ = app.emit(
-            &format!("ssh://tunnel/{}/update", t.id),
-            TunnelInfo {
-                id: t.id.clone(),
-                session_id: t.session_id.clone(),
-                kind: t.kind.clone(),
-                state: t.state.clone(),
-            },
-        );
+        set_tunnel_state(&self.tunnel, app, state).await;
     }
+}
+
+async fn set_tunnel_state(tunnel: &Arc<Mutex<Tunnel>>, app: &AppHandle, state: TunnelState) {
+    let mut tunnel = tunnel.lock().await;
+    tunnel.state = state;
+    let _ = app.emit(
+        &format!("ssh://tunnel/{}/update", tunnel.id),
+        TunnelInfo {
+            id: tunnel.id.clone(),
+            session_id: tunnel.session_id.clone(),
+            kind: tunnel.kind.clone(),
+            state: tunnel.state.clone(),
+        },
+    );
 }
 
 // ============================================================
@@ -110,9 +114,14 @@ pub async fn tunnel_list(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<TunnelInfo>, String> {
+    let tunnels: Vec<_> = state
+        .tunnels
+        .iter()
+        .map(|entry| entry.tunnel.clone())
+        .collect();
     let mut out = Vec::new();
-    for entry in state.tunnels.iter() {
-        let t = entry.tunnel.lock().await;
+    for tunnel in tunnels {
+        let t = tunnel.lock().await;
         if t.session_id == session_id {
             out.push(TunnelInfo {
                 id: t.id.clone(),
@@ -173,12 +182,16 @@ pub async fn tunnel_add(
                 };
             }
 
+            let ssh_handle = {
+                let session = session.lock().await;
+                session.handle.clone()
+            };
             let app_clone = app.clone();
             let cancel = tunnel.lock().await.cancel.clone();
             let id_for_task = id.clone();
             let handle = tokio::spawn(async move {
                 let result = run_local_forward(
-                    &session,
+                    ssh_handle,
                     listener,
                     remote_host,
                     remote_port,
@@ -187,12 +200,17 @@ pub async fn tunnel_add(
                     &cancel,
                 )
                 .await;
-                if let Some(entry) = app_clone.state::<AppState>().tunnels.get(&id_for_task) {
+                let tunnel = app_clone
+                    .state::<AppState>()
+                    .tunnels
+                    .get(&id_for_task)
+                    .map(|entry| entry.tunnel.clone());
+                if let Some(tunnel) = tunnel {
                     let state = match result {
                         Ok(()) => TunnelState::Closed,
                         Err(e) => TunnelState::Error(format!("{e:#}")),
                     };
-                    entry.set_state(&app_clone, state).await;
+                    set_tunnel_state(&tunnel, &app_clone, state).await;
                 }
             });
 
@@ -212,13 +230,14 @@ pub async fn tunnel_add(
             local_port,
         } => {
             // 远程转发只需向服务端注册;实际连接在 ClientHandler 回调中处理
-            let guard = session.lock().await;
-            let actual_port = guard
-                .handle
+            let ssh_handle = {
+                let session = session.lock().await;
+                session.handle.clone()
+            };
+            let actual_port = ssh_handle
                 .tcpip_forward(bind_addr.clone(), bind_port as u32)
                 .await
                 .map_err(|e| format!("注册远程转发失败: {e}"))?;
-            drop(guard);
 
             // 端口为 0 时返回服务端实际分配的端口
             if bind_port == 0 {
@@ -279,7 +298,7 @@ pub async fn tunnel_close_session(app: &AppHandle, state: &AppState, session_id:
 
 /// 本地转发监听循环
 async fn run_local_forward(
-    session: &Arc<Mutex<crate::ssh::SshSession>>,
+    ssh_handle: Arc<russh::client::Handle<crate::ssh::client::ClientHandler>>,
     listener: TcpListener,
     remote_host: String,
     remote_port: u16,
@@ -297,14 +316,12 @@ async fn run_local_forward(
             r = listener.accept() => r.context("监听 accept 失败")?,
         };
 
-        let session = session.clone();
+        let ssh_handle = ssh_handle.clone();
         let remote_host = remote_host.clone();
         let app_clone = app.clone();
         let tunnel_id = tunnel_id.to_string();
         tokio::spawn(async move {
-            let guard = session.lock().await;
-            let channel = match guard
-                .handle
+            let channel = match ssh_handle
                 .channel_open_direct_tcpip(
                     remote_host.clone(),
                     remote_port as u32,
@@ -322,7 +339,6 @@ async fn run_local_forward(
                     return;
                 }
             };
-            drop(guard);
             if let Err(e) = pipe_channel_stream(channel, stream).await {
                 let _ = app_clone.emit(
                     "ssh://tunnel/error",
@@ -381,38 +397,38 @@ async fn find_remote_tunnel(
     connected_address: &str,
     connected_port: u32,
 ) -> Option<(String, u16)> {
-    let port = connected_port as u16;
-    // 精确匹配
-    for entry in state.tunnels.iter() {
-        let t = entry.tunnel.lock().await;
+    let tunnels: Vec<_> = state
+        .tunnels
+        .iter()
+        .map(|entry| entry.tunnel.clone())
+        .collect();
+    let mut rules = Vec::new();
+    for tunnel in tunnels {
+        let tunnel = tunnel.lock().await;
         if let TunnelKind::Remote {
             bind_addr,
             bind_port,
             local_host,
             local_port,
-        } = &t.kind
+        } = &tunnel.kind
         {
-            if *bind_port == port && addr_matches(bind_addr, connected_address) {
-                return Some((local_host.clone(), *local_port));
-            }
+            rules.push((
+                bind_addr.clone(),
+                *bind_port,
+                local_host.clone(),
+                *local_port,
+            ));
         }
     }
-    // 端口通配匹配(常用于 bind_addr 为 0.0.0.0 或空)
-    for entry in state.tunnels.iter() {
-        let t = entry.tunnel.lock().await;
-        if let TunnelKind::Remote {
-            bind_port,
-            local_host,
-            local_port,
-            ..
-        } = &t.kind
-        {
-            if *bind_port == port {
-                return Some((local_host.clone(), *local_port));
-            }
-        }
-    }
-    None
+
+    let port = connected_port as u16;
+    rules
+        .iter()
+        .find(|(bind_addr, bind_port, _, _)| {
+            *bind_port == port && addr_matches(bind_addr, connected_address)
+        })
+        .or_else(|| rules.iter().find(|(_, bind_port, _, _)| *bind_port == port))
+        .map(|(_, _, local_host, local_port)| (local_host.clone(), *local_port))
 }
 
 fn addr_matches(rule: &str, actual: &str) -> bool {
@@ -427,37 +443,38 @@ async fn stop_tunnel(app: &AppHandle, state: &AppState, tunnel_id: &str) -> Resu
         return Ok(());
     };
 
-    {
-        let t = entry.tunnel.lock().await;
-        t.cancel.store(true, Ordering::Relaxed);
-    }
+    let remote_forward = {
+        let tunnel = entry.tunnel.lock().await;
+        tunnel.cancel.store(true, Ordering::Relaxed);
+        match &tunnel.kind {
+            TunnelKind::Remote {
+                bind_addr,
+                bind_port,
+                ..
+            } => Some((tunnel.session_id.clone(), bind_addr.clone(), *bind_port)),
+            TunnelKind::Local { .. } => None,
+        }
+    };
 
-    // 远程转发需要通知服务端取消监听
-    {
-        let t = entry.tunnel.lock().await;
-        if let TunnelKind::Remote {
-            bind_addr,
-            bind_port,
-            ..
-        } = &t.kind
+    if let Some((session_id, bind_addr, bind_port)) = remote_forward {
+        if let Some(session) = state
+            .sessions
+            .get(&session_id)
+            .map(|session| session.clone())
         {
-            let session = state
-                .sessions
-                .get(&t.session_id)
-                .context("会话已不存在")?
-                .clone();
-            let guard = session.lock().await;
-            let _ = guard
-                .handle
-                .cancel_tcpip_forward(bind_addr.clone(), *bind_port as u32)
+            let ssh_handle = {
+                let session = session.lock().await;
+                session.handle.clone()
+            };
+            let _ = ssh_handle
+                .cancel_tcpip_forward(bind_addr, bind_port as u32)
                 .await;
         }
     }
 
-    // 停止本地监听任务。用 take() 避免部分移动导致后续无法使用 entry
     let handle = entry.task_handle.take();
-    if let Some(h) = handle {
-        let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), h).await;
+    if let Some(handle) = handle {
+        let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), handle).await;
     }
 
     entry.set_state(app, TunnelState::Closed).await;

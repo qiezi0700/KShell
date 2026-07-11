@@ -39,14 +39,14 @@ pub async fn deploy_public_key(
          fi"
     );
 
-    let mut channel = {
-        let guard = session.lock().await;
-        guard
-            .handle
-            .channel_open_session()
-            .await
-            .map_err(|e| anyhow!("打开 exec channel 失败: {e}"))?
+    let ssh_handle = {
+        let session = session.lock().await;
+        session.handle.clone()
     };
+    let mut channel = ssh_handle
+        .channel_open_session()
+        .await
+        .map_err(|e| anyhow!("打开 exec channel 失败: {e}"))?;
     channel
         .exec(true, cmd.as_bytes())
         .await

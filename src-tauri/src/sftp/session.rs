@@ -17,7 +17,7 @@ pub struct SftpHandle {
 
 /// 在已有 SSH 会话上打开 SFTP subsystem channel 并初始化 SftpSession。
 pub async fn open_sftp(
-    ssh_handle: &mut russh::client::Handle<crate::ssh::client::ClientHandler>,
+    ssh_handle: &russh::client::Handle<crate::ssh::client::ClientHandler>,
     ssh_session_id: SessionId,
 ) -> Result<SftpHandle> {
     let channel = ssh_handle

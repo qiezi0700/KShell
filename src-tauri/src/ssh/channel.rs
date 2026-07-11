@@ -100,7 +100,7 @@ pub async fn run_channel(
 
 /// 打开一个交互式 shell channel 并 spawn 事件循环任务。
 pub async fn open_shell(
-    session_handle: &mut russh::client::Handle<super::client::ClientHandler>,
+    session_handle: &russh::client::Handle<super::client::ClientHandler>,
     app: AppHandle,
     id: ChannelId,
     session_id: SessionId,
@@ -122,7 +122,7 @@ pub async fn open_shell(
 /// 在 PTY 上执行指定命令(如 `docker exec -it <c> sh`),命令退出后 channel 自动收尾。
 /// 与 open_shell 的区别:用 `channel.exec` 代替 `request_shell`,前端复用同一套数据事件。
 pub async fn open_exec(
-    session_handle: &mut russh::client::Handle<super::client::ClientHandler>,
+    session_handle: &russh::client::Handle<super::client::ClientHandler>,
     app: AppHandle,
     id: ChannelId,
     session_id: SessionId,

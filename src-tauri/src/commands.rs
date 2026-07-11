@@ -217,9 +217,12 @@ pub async fn ssh_open_shell(
         .ok_or_else(|| format!("会话不存在: {session_id}"))?
         .clone();
     let ch_id = channel_id;
-    let mut guard = session.lock().await;
+    let ssh_handle = {
+        let session = session.lock().await;
+        session.handle.clone()
+    };
     let handle = ssh::channel::open_shell(
-        &mut guard.handle,
+        &ssh_handle,
         app,
         ch_id.clone(),
         session_id.clone(),
@@ -228,7 +231,6 @@ pub async fn ssh_open_shell(
     )
     .await
     .map_err(err)?;
-    drop(guard);
     state.channels.insert(ch_id.clone(), handle);
     start_channel(state.inner(), &ch_id)?;
     Ok(ch_id)
@@ -253,9 +255,12 @@ pub async fn ssh_open_exec(
         .ok_or_else(|| format!("会话不存在: {session_id}"))?
         .clone();
     let ch_id = channel_id;
-    let mut guard = session.lock().await;
+    let ssh_handle = {
+        let session = session.lock().await;
+        session.handle.clone()
+    };
     let handle = ssh::channel::open_exec(
-        &mut guard.handle,
+        &ssh_handle,
         app,
         ch_id.clone(),
         session_id.clone(),
@@ -265,7 +270,6 @@ pub async fn ssh_open_exec(
     )
     .await
     .map_err(err)?;
-    drop(guard);
     state.channels.insert(ch_id.clone(), handle);
     start_channel(state.inner(), &ch_id)?;
     Ok(ch_id)
@@ -308,15 +312,14 @@ pub async fn ssh_exec(
         .get(&session_id)
         .ok_or_else(|| format!("会话不存在: {session_id}"))?
         .clone();
-    // 只在开 channel 时持锁,exec/wait 期间释放,避免阻塞同会话的终端写入/SFTP
-    let mut channel = {
-        let guard = session.lock().await;
-        guard
-            .handle
-            .channel_open_session()
-            .await
-            .map_err(|e| format!("打开 exec channel 失败: {e}"))?
+    let ssh_handle = {
+        let session = session.lock().await;
+        session.handle.clone()
     };
+    let mut channel = ssh_handle
+        .channel_open_session()
+        .await
+        .map_err(|e| format!("打开 exec channel 失败: {e}"))?;
     channel
         .exec(true, command.as_bytes())
         .await
@@ -434,6 +437,7 @@ pub async fn ssh_disconnect(
         .map(|entry| entry.key().clone())
         .collect();
     for id in sftp_ids {
+        crate::sftp::commands::abort_transfers_for_sftp(&app, state.inner(), &id);
         if let Some((_, handle)) = state.sftp_sessions.remove(&id) {
             let _ = handle.session.close().await;
         }
@@ -452,9 +456,11 @@ pub async fn ssh_disconnect(
         }
     }
     if let Some((_, session)) = state.sessions.remove(&session_id) {
-        let guard = session.lock().await;
-        let _ = guard
-            .handle
+        let ssh_handle = {
+            let session = session.lock().await;
+            session.handle.clone()
+        };
+        let _ = ssh_handle
             .disconnect(russh::Disconnect::ByApplication, "", "")
             .await;
     }

@@ -216,7 +216,12 @@ impl KnownHosts {
 
         // 系统层:一条 SystemEntry 的 Plain 可能匹配多个 pattern,拆成多行显示
         for entry in &self.system {
-            let key_type = entry.key.split_whitespace().next().unwrap_or("").to_string();
+            let key_type = entry
+                .key
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string();
             let fingerprint = fingerprint_of_openssh_key(&entry.key).unwrap_or_default();
             match &entry.matcher {
                 HostMatcher::Plain(patterns) => {
@@ -312,20 +317,22 @@ fn append_system_known_hosts(path: &Path, host: &str, port: u16, pubkey: &Public
 
 impl HostMatcher {
     fn matches(&self, host: &str, port: u16) -> bool {
+        let hostspec = if port == 22 {
+            host.to_string()
+        } else {
+            format!("[{host}]:{port}")
+        };
+
         match self {
-            HostMatcher::Plain(patterns) => {
-                let plain_key = host.to_string();
-                let bracketed = format!("[{host}]:{port}");
-                patterns
-                    .iter()
-                    .any(|p| p.eq_ignore_ascii_case(&plain_key) || p == &bracketed)
-            }
+            HostMatcher::Plain(patterns) => patterns
+                .iter()
+                .any(|pattern| pattern.eq_ignore_ascii_case(&hostspec)),
             HostMatcher::Hashed { salt, hash } => {
-                // OpenSSH: HMAC-SHA1(key=salt, msg=hostname) == hash
+                // OpenSSH 的哈希输入是完整 hostspec，非默认端口必须包含方括号和端口。
                 let Ok(mut mac) = HmacSha1::new_from_slice(salt) else {
                     return false;
                 };
-                mac.update(host.as_bytes());
+                mac.update(hostspec.as_bytes());
                 mac.verify_slice(hash).is_ok()
             }
         }
@@ -427,4 +434,56 @@ fn split_system_hostspec(spec: &str) -> (String, u16) {
         }
     }
     (spec.to_string(), 22)
+}
+
+#[cfg(test)]
+mod tests {
+    use hmac::{Hmac, Mac};
+    use sha1::Sha1;
+
+    use super::HostMatcher;
+
+    type HmacSha1 = Hmac<Sha1>;
+
+    fn hashed_matcher(hostspec: &str) -> HostMatcher {
+        let salt = b"known-hosts-test-salt".to_vec();
+        let mut mac = HmacSha1::new_from_slice(&salt).expect("测试盐值应当有效");
+        mac.update(hostspec.as_bytes());
+        HostMatcher::Hashed {
+            salt,
+            hash: mac.finalize().into_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn plain_host_only_matches_default_port() {
+        let matcher = HostMatcher::Plain(vec!["example.com".to_string()]);
+
+        assert!(matcher.matches("example.com", 22));
+        assert!(!matcher.matches("example.com", 2222));
+    }
+
+    #[test]
+    fn bracketed_host_only_matches_declared_port() {
+        let matcher = HostMatcher::Plain(vec!["[example.com]:2222".to_string()]);
+
+        assert!(matcher.matches("example.com", 2222));
+        assert!(!matcher.matches("example.com", 22));
+    }
+
+    #[test]
+    fn hashed_default_host_does_not_match_other_ports() {
+        let matcher = hashed_matcher("example.com");
+
+        assert!(matcher.matches("example.com", 22));
+        assert!(!matcher.matches("example.com", 2222));
+    }
+
+    #[test]
+    fn hashed_non_default_host_uses_bracketed_hostspec() {
+        let matcher = hashed_matcher("[example.com]:2222");
+
+        assert!(matcher.matches("example.com", 2222));
+        assert!(!matcher.matches("example.com", 22));
+    }
 }

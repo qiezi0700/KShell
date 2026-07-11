@@ -3,6 +3,7 @@
 //! upload/download 在后台 tokio 任务中分块传输,通过 emit 事件推送进度。
 //! 断点续传:调用方传 offset,后端 seek 到该位置继续。
 
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -14,7 +15,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-use crate::state::AppState;
+use crate::state::{AppState, TransferControl};
 
 use super::session;
 
@@ -77,18 +78,18 @@ const CHUNK_SIZE: usize = 256 * 1024;
 // ============================================================
 
 #[tauri::command]
-pub async fn sftp_open(
-    state: State<'_, AppState>,
-    session_id: String,
-) -> Result<String, String> {
+pub async fn sftp_open(state: State<'_, AppState>, session_id: String) -> Result<String, String> {
     let ssh = state
         .sessions
         .get(&session_id)
         .ok_or_else(|| format!("SSH 会话不存在: {session_id}"))?
         .clone();
-    let mut guard = ssh.lock().await;
+    let ssh_handle = {
+        let ssh = ssh.lock().await;
+        ssh.handle.clone()
+    };
     let sftp_id = uuid::Uuid::new_v4().to_string();
-    let handle = session::open_sftp(&mut guard.handle, session_id.clone())
+    let handle = session::open_sftp(&ssh_handle, session_id.clone())
         .await
         .map_err(err)?;
     state.sftp_sessions.insert(sftp_id.clone(), handle);
@@ -96,7 +97,12 @@ pub async fn sftp_open(
 }
 
 #[tauri::command]
-pub async fn sftp_close(state: State<'_, AppState>, sftp_id: String) -> Result<(), String> {
+pub async fn sftp_close(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    sftp_id: String,
+) -> Result<(), String> {
+    abort_transfers_for_sftp(&app, state.inner(), &sftp_id);
     if let Some((_, h)) = state.sftp_sessions.remove(&sftp_id) {
         let _ = h.session.close().await;
     }
@@ -198,9 +204,10 @@ pub async fn sftp_rename(
     new_path: String,
 ) -> Result<(), String> {
     let sftp = get_sftp(&state, &sftp_id)?;
-    sftp.rename(&old_path, &new_path)
-        .await
-        .map_err(err)
+    if old_path != new_path && sftp.try_exists(&new_path).await.map_err(err)? {
+        return Err(format!("远端目标已存在: {new_path}"));
+    }
+    sftp.rename(&old_path, &new_path).await.map_err(err)
 }
 
 #[tauri::command]
@@ -246,9 +253,7 @@ pub async fn sftp_read_file(
     path: String,
 ) -> Result<Vec<u8>, String> {
     let sftp = get_sftp(&state, &sftp_id)?;
-    sftp.read(&path)
-        .await
-        .map_err(err)
+    sftp.read(&path).await.map_err(err)
 }
 
 /// 写入远端文件(保存编辑)
@@ -260,9 +265,79 @@ pub async fn sftp_write_file(
     content: Vec<u8>,
 ) -> Result<(), String> {
     let sftp = get_sftp(&state, &sftp_id)?;
-    let mut file = sftp.create(&path).await.map_err(err)?;
-    file.write_all(&content).await.map_err(err)?;
-    file.flush().await.map_err(err)?;
+    let temp_path = remote_staging_path(&path, "tmp");
+    let write_result = async {
+        let mut file = sftp
+            .create(&temp_path)
+            .await
+            .with_context(|| format!("创建远端临时文件失败: {temp_path}"))?;
+        file.write_all(&content)
+            .await
+            .context("写入远端临时文件失败")?;
+        file.flush().await.context("刷新远端临时文件失败")?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    if let Err(error) = write_result {
+        let _ = sftp.remove_file(&temp_path).await;
+        return Err(err(error));
+    }
+    if let Err(error) = commit_remote_temp(&sftp, &temp_path, &path).await {
+        let _ = sftp.remove_file(&temp_path).await;
+        return Err(err(error));
+    }
+    Ok(())
+}
+
+fn remote_staging_path(path: &str, label: &str) -> String {
+    format!("{path}.kshell-{label}-{}", uuid::Uuid::new_v4())
+}
+
+async fn commit_remote_temp(sftp: &SftpSession, temp_path: &str, target_path: &str) -> Result<()> {
+    let target_exists = sftp
+        .try_exists(target_path)
+        .await
+        .with_context(|| format!("检查远端目标文件失败: {target_path}"))?;
+    if !target_exists {
+        return sftp
+            .rename(temp_path, target_path)
+            .await
+            .with_context(|| format!("替换远端文件失败: {target_path}"));
+    }
+
+    let metadata = sftp
+        .metadata(target_path)
+        .await
+        .with_context(|| format!("读取远端原文件信息失败: {target_path}"))?;
+    if let Some(permissions) = metadata.permissions {
+        let attributes = Metadata {
+            permissions: Some(permissions),
+            ..Metadata::default()
+        };
+        sftp.set_metadata(temp_path, attributes)
+            .await
+            .with_context(|| format!("保留远端文件权限失败: {target_path}"))?;
+    }
+
+    let backup_path = remote_staging_path(target_path, "bak");
+    sftp.rename(target_path, &backup_path)
+        .await
+        .with_context(|| format!("备份远端原文件失败: {target_path}"))?;
+    if let Err(replace_error) = sftp.rename(temp_path, target_path).await {
+        let restore_result = sftp.rename(&backup_path, target_path).await;
+        let _ = sftp.remove_file(temp_path).await;
+        return match restore_result {
+            Ok(()) => Err(anyhow::anyhow!("替换远端文件失败: {replace_error}")),
+            Err(restore_error) => Err(anyhow::anyhow!(
+                "替换远端文件失败: {replace_error}; 恢复原文件失败: {restore_error}; 原文件保留在 {backup_path}"
+            )),
+        };
+    }
+
+    if let Err(error) = sftp.remove_file(&backup_path).await {
+        tracing::warn!(path = %backup_path, error = %error, "清理远端备份文件失败");
+    }
     Ok(())
 }
 
@@ -275,7 +350,9 @@ pub async fn sftp_copy_file(
     new_path: String,
 ) -> Result<(), String> {
     let sftp = get_sftp(&state, &sftp_id)?;
-    copy_remote_file(&sftp, &old_path, &new_path).await.map_err(err)
+    copy_remote_file(&sftp, &old_path, &new_path)
+        .await
+        .map_err(err)
 }
 
 async fn copy_remote_file(sftp: &SftpSession, src: &str, dst: &str) -> Result<()> {
@@ -293,7 +370,9 @@ async fn copy_remote_file(sftp: &SftpSession, src: &str, dst: &str) -> Result<()
         if n == 0 {
             break;
         }
-        d.write_all(&buf[..n]).await.context("写入远端目标文件失败")?;
+        d.write_all(&buf[..n])
+            .await
+            .context("写入远端目标文件失败")?;
     }
     d.flush().await.ok();
     Ok(())
@@ -311,14 +390,22 @@ pub async fn sftp_copy_dir(
     transfer_id: String,
 ) -> Result<(), String> {
     let sftp = get_sftp(&state, &sftp_id)?;
-    let cancel = register_cancel(&state, &transfer_id);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let task_cancel = cancel.clone();
     let app_clone = app.clone();
-    let tid = transfer_id.clone();
-    tokio::spawn(async move {
-        let result = do_copy_remote_dir(&sftp, &src_path, &dst_path, &app_clone, &tid, &cancel).await;
-        finish_transfer(&app_clone, &tid, result);
-    });
-    Ok(())
+    let task_transfer_id = transfer_id.clone();
+    let future = async move {
+        do_copy_remote_dir(
+            &sftp,
+            &src_path,
+            &dst_path,
+            &app_clone,
+            &task_transfer_id,
+            &task_cancel,
+        )
+        .await
+    };
+    spawn_transfer(&app, state.inner(), &sftp_id, &transfer_id, cancel, future)
 }
 
 async fn do_copy_remote_dir(
@@ -329,6 +416,14 @@ async fn do_copy_remote_dir(
     transfer_id: &str,
     cancel: &AtomicBool,
 ) -> Result<()> {
+    if sftp
+        .try_exists(dst_path)
+        .await
+        .with_context(|| format!("检查远端目标目录失败: {dst_path}"))?
+    {
+        anyhow::bail!("远端目标目录已存在: {dst_path}");
+    }
+
     // 1. 预扫描源目录
     let (files, mut dirs) = walk_remote_dir(sftp, src_path).await?;
     let total: u64 = files.iter().map(|f| f.2).sum();
@@ -380,7 +475,9 @@ async fn do_copy_remote_dir(
             if n == 0 {
                 break;
             }
-            d.write_all(&buf[..n]).await.context("写入远端目标文件失败")?;
+            d.write_all(&buf[..n])
+                .await
+                .context("写入远端目标文件失败")?;
             transferred += n as u64;
 
             let now = std::time::Instant::now();
@@ -416,14 +513,9 @@ async fn do_copy_remote_dir(
 
 /// 获取远端家目录(canonicalize ".")
 #[tauri::command]
-pub async fn sftp_home(
-    state: State<'_, AppState>,
-    sftp_id: String,
-) -> Result<String, String> {
+pub async fn sftp_home(state: State<'_, AppState>, sftp_id: String) -> Result<String, String> {
     let sftp = get_sftp(&state, &sftp_id)?;
-    sftp.canonicalize(".")
-        .await
-        .map_err(err)
+    sftp.canonicalize(".").await.map_err(err)
 }
 
 // ============================================================
@@ -650,31 +742,26 @@ pub async fn sftp_upload(
     let sftp = get_sftp(&state, &sftp_id)?;
     let total = tokio::fs::metadata(&local_path)
         .await
-        .map(|metadata| metadata.len())
-        .unwrap_or(0);
-    let cancel = register_cancel(&state, &transfer_id);
+        .map_err(|e| format!("读取本地文件信息失败: {e}"))?
+        .len();
+    if offset > total {
+        return Err("续传偏移超过本地文件大小".to_string());
+    }
 
+    let cancel = Arc::new(AtomicBool::new(false));
+    let task_cancel = cancel.clone();
     let app_clone = app.clone();
-    let transfer_id_clone = transfer_id.clone();
-    tokio::spawn(async move {
+    let task_transfer_id = transfer_id.clone();
+    let future = async move {
         let context = TransferContext {
             app: &app_clone,
-            transfer_id: &transfer_id_clone,
-            cancel: &cancel,
+            transfer_id: &task_transfer_id,
+            cancel: &task_cancel,
             total,
         };
-        let result = do_upload(
-            &sftp,
-            &local_path,
-            &remote_path,
-            offset,
-            &context,
-        )
-        .await;
-        finish_transfer(&app_clone, &transfer_id_clone, result);
-    });
-
-    Ok(())
+        do_upload(&sftp, &local_path, &remote_path, offset, &context).await
+    };
+    spawn_transfer(&app, state.inner(), &sftp_id, &transfer_id, cancel, future)
 }
 
 /// 下载:远端 → 本地。offset>0 时从远端文件 offset 位置续读,本地文件追加写。
@@ -689,32 +776,26 @@ pub async fn sftp_download(
     offset: u64,
 ) -> Result<(), String> {
     let sftp = get_sftp(&state, &sftp_id)?;
-
     let meta = sftp.metadata(&remote_path).await.map_err(err)?;
     let total = meta.len();
-    let cancel = register_cancel(&state, &transfer_id);
+    if offset > total {
+        return Err("续传偏移超过远端文件大小".to_string());
+    }
 
+    let cancel = Arc::new(AtomicBool::new(false));
+    let task_cancel = cancel.clone();
     let app_clone = app.clone();
-    let transfer_id_clone = transfer_id.clone();
-    tokio::spawn(async move {
+    let task_transfer_id = transfer_id.clone();
+    let future = async move {
         let context = TransferContext {
             app: &app_clone,
-            transfer_id: &transfer_id_clone,
-            cancel: &cancel,
+            transfer_id: &task_transfer_id,
+            cancel: &task_cancel,
             total,
         };
-        let result = do_download(
-            &sftp,
-            &remote_path,
-            &local_path,
-            offset,
-            &context,
-        )
-        .await;
-        finish_transfer(&app_clone, &transfer_id_clone, result);
-    });
-
-    Ok(())
+        do_download(&sftp, &remote_path, &local_path, offset, &context).await
+    };
+    spawn_transfer(&app, state.inner(), &sftp_id, &transfer_id, cancel, future)
 }
 
 /// 取消进行中的传输:置位取消标志,do_upload/do_download 在下一次分块循环时返回。
@@ -723,8 +804,8 @@ pub async fn sftp_cancel_transfer(
     state: State<'_, AppState>,
     transfer_id: String,
 ) -> Result<(), String> {
-    if let Some(flag) = state.transfer_cancels.get(&transfer_id) {
-        flag.store(true, Ordering::Relaxed);
+    if let Some(control) = state.transfers.get(&transfer_id) {
+        control.cancel.store(true, Ordering::Release);
     }
     Ok(())
 }
@@ -747,61 +828,99 @@ async fn do_upload(
     offset: u64,
     context: &TransferContext<'_>,
 ) -> Result<()> {
-    let mut local = tokio::fs::File::open(local_path)
-        .await
-        .with_context(|| format!("打开本地文件失败: {local_path}"))?;
-
     if offset > 0 {
-        local.seek(std::io::SeekFrom::Start(offset)).await?;
+        let remote_size = sftp
+            .metadata(remote_path)
+            .await
+            .context("读取远端文件信息失败")?
+            .len();
+        if remote_size != offset {
+            anyhow::bail!("远端文件大小 {remote_size} 与续传偏移 {offset} 不一致,请重新上传");
+        }
     }
 
-    let mut remote = if offset > 0 {
-        let f = sftp
-            .open_with_flags(remote_path, OpenFlags::WRITE)
+    let temp_path = (offset == 0).then(|| remote_staging_path(remote_path, "upload"));
+    let write_path = temp_path.as_deref().unwrap_or(remote_path);
+    let write_result = async {
+        let mut local = tokio::fs::File::open(local_path)
             .await
-            .context("打开远端文件失败")?;
-        let mut f = f;
-        f.seek(std::io::SeekFrom::Start(offset)).await?;
-        f
-    } else {
-        sftp.create(remote_path).await.context("创建远端文件失败")?
+            .with_context(|| format!("打开本地文件失败: {local_path}"))?;
+        if offset > 0 {
+            local.seek(std::io::SeekFrom::Start(offset)).await?;
+        }
+
+        let mut remote = if offset > 0 {
+            let mut file = sftp
+                .open_with_flags(write_path, OpenFlags::WRITE)
+                .await
+                .context("打开远端文件失败")?;
+            file.seek(std::io::SeekFrom::Start(offset)).await?;
+            file
+        } else {
+            sftp.create(write_path)
+                .await
+                .context("创建远端临时文件失败")?
+        };
+
+        let mut buf = vec![0u8; CHUNK_SIZE];
+        let mut transferred = offset;
+        let mut last_emit = std::time::Instant::now();
+        let mut last_bytes = offset;
+        let event = format!("sftp://transfer/{}/progress", context.transfer_id);
+
+        loop {
+            if context.cancel.load(Ordering::Relaxed) {
+                return Err(anyhow::anyhow!(CANCEL_MSG));
+            }
+            let n = local.read(&mut buf).await.context("读取本地文件失败")?;
+            if n == 0 {
+                break;
+            }
+            remote
+                .write_all(&buf[..n])
+                .await
+                .context("写入远端文件失败")?;
+            transferred += n as u64;
+
+            let now = std::time::Instant::now();
+            if now.duration_since(last_emit).as_millis() >= 200 {
+                let elapsed = now.duration_since(last_emit).as_secs_f64().max(0.001);
+                let speed = ((transferred - last_bytes) as f64 / elapsed) / 1024.0;
+                let _ = context.app.emit(
+                    &event,
+                    TransferProgress {
+                        transfer_id: context.transfer_id.to_string(),
+                        transferred,
+                        total: context.total,
+                        speed,
+                    },
+                );
+                last_emit = now;
+                last_bytes = transferred;
+            }
+        }
+        remote.flush().await.context("刷新远端文件失败")?;
+        Ok::<_, anyhow::Error>((transferred, event))
+    }
+    .await;
+
+    let (transferred, event) = match write_result {
+        Ok(result) => result,
+        Err(error) => {
+            if let Some(temp_path) = &temp_path {
+                let _ = sftp.remove_file(temp_path).await;
+            }
+            return Err(error);
+        }
     };
 
-    let mut buf = vec![0u8; CHUNK_SIZE];
-    let mut transferred = offset;
-    let mut last_emit = std::time::Instant::now();
-    let mut last_bytes = offset;
-    let event = format!("sftp://transfer/{}/progress", context.transfer_id);
-
-    loop {
-        if context.cancel.load(Ordering::Relaxed) {
-            return Err(anyhow::anyhow!(CANCEL_MSG));
-        }
-        let n = local.read(&mut buf).await.context("读取本地文件失败")?;
-        if n == 0 {
-            break;
-        }
-        remote.write_all(&buf[..n]).await.context("写入远端文件失败")?;
-        transferred += n as u64;
-
-        let now = std::time::Instant::now();
-        if now.duration_since(last_emit).as_millis() >= 200 {
-            let elapsed = now.duration_since(last_emit).as_secs_f64().max(0.001);
-            let speed = ((transferred - last_bytes) as f64 / elapsed) / 1024.0;
-            let _ = context.app.emit(
-                &event,
-                TransferProgress {
-                    transfer_id: context.transfer_id.to_string(),
-                    transferred,
-                    total: context.total,
-                    speed,
-                },
-            );
-            last_emit = now;
-            last_bytes = transferred;
+    if let Some(temp_path) = &temp_path {
+        if let Err(error) = commit_remote_temp(sftp, temp_path, remote_path).await {
+            let _ = sftp.remove_file(temp_path).await;
+            return Err(error);
         }
     }
-    remote.flush().await.ok();
+
     let _ = context.app.emit(
         &event,
         TransferProgress {
@@ -854,7 +973,10 @@ async fn do_download(
         if n == 0 {
             break;
         }
-        local.write_all(&buf[..n]).await.context("写入本地文件失败")?;
+        local
+            .write_all(&buf[..n])
+            .await
+            .context("写入本地文件失败")?;
         transferred += n as u64;
 
         let now = std::time::Instant::now();
@@ -887,12 +1009,14 @@ async fn do_download(
     Ok(())
 }
 
-/// 传输结束统一收尾:摘掉 cancel token,给前端发 done 事件。
+/// 传输结束统一收尾:摘掉任务控制项,并且只发送一次 done 事件。
 fn finish_transfer(app: &AppHandle, transfer_id: &str, result: Result<()>) {
-    // 无论成功/失败/取消,都清理 cancel token 防内存泄漏
-    app.state::<AppState>()
-        .transfer_cancels
-        .remove(transfer_id);
+    let Some((_, control)) = app.state::<AppState>().transfers.remove(transfer_id) else {
+        return;
+    };
+    if control.completed.swap(true, Ordering::AcqRel) {
+        return;
+    }
     emit_done(app, transfer_id, result);
 }
 
@@ -917,13 +1041,67 @@ fn emit_done(app: &AppHandle, transfer_id: &str, result: Result<()>) {
     );
 }
 
-/// 在 state 里登记一个取消标志,返回 Arc 供传输任务在循环中查询
-fn register_cancel(state: &State<'_, AppState>, transfer_id: &str) -> Arc<AtomicBool> {
-    let flag = Arc::new(AtomicBool::new(false));
-    state
-        .transfer_cancels
-        .insert(transfer_id.to_string(), flag.clone());
-    flag
+fn spawn_transfer<F>(
+    app: &AppHandle,
+    state: &AppState,
+    sftp_id: &str,
+    transfer_id: &str,
+    cancel: Arc<AtomicBool>,
+    future: F,
+) -> Result<(), String>
+where
+    F: Future<Output = Result<()>> + Send + 'static,
+{
+    let completed = Arc::new(AtomicBool::new(false));
+    let (start_tx, start_rx) = tokio::sync::oneshot::channel();
+    let task_app = app.clone();
+    let task_transfer_id = transfer_id.to_string();
+    let task = tokio::spawn(async move {
+        if start_rx.await.is_err() {
+            return;
+        }
+        let result = future.await;
+        finish_transfer(&task_app, &task_transfer_id, result);
+    });
+    let control = TransferControl {
+        sftp_id: sftp_id.to_string(),
+        cancel,
+        abort_handle: task.abort_handle(),
+        completed,
+    };
+
+    match state.transfers.entry(transfer_id.to_string()) {
+        dashmap::mapref::entry::Entry::Vacant(entry) => {
+            entry.insert(control);
+        }
+        dashmap::mapref::entry::Entry::Occupied(_) => {
+            task.abort();
+            return Err(format!("传输任务已存在: {transfer_id}"));
+        }
+    }
+    let _ = start_tx.send(());
+    Ok(())
+}
+
+pub(crate) fn abort_transfers_for_sftp(app: &AppHandle, state: &AppState, sftp_id: &str) {
+    let transfer_ids: Vec<_> = state
+        .transfers
+        .iter()
+        .filter(|entry| entry.sftp_id == sftp_id)
+        .map(|entry| entry.key().clone())
+        .collect();
+
+    for transfer_id in transfer_ids {
+        let Some((_, control)) = state.transfers.remove(&transfer_id) else {
+            continue;
+        };
+        control.cancel.store(true, Ordering::Release);
+        if control.completed.swap(true, Ordering::AcqRel) {
+            continue;
+        }
+        control.abort_handle.abort();
+        emit_done(app, &transfer_id, Err(anyhow::anyhow!(CANCEL_MSG)));
+    }
 }
 
 // ============================================================
@@ -931,7 +1109,10 @@ fn register_cancel(state: &State<'_, AppState>, transfer_id: &str) -> Arc<Atomic
 // ============================================================
 
 /// 借出 SFTP session 的 Arc 引用(避免持有 DashMap 的 entry 锁)
-fn get_sftp(state: &State<'_, AppState>, sftp_id: &str) -> Result<std::sync::Arc<SftpSession>, String> {
+fn get_sftp(
+    state: &State<'_, AppState>,
+    sftp_id: &str,
+) -> Result<std::sync::Arc<SftpSession>, String> {
     state
         .sftp_sessions
         .get(sftp_id)
@@ -968,14 +1149,22 @@ pub async fn sftp_upload_dir(
     transfer_id: String,
 ) -> Result<(), String> {
     let sftp = get_sftp(&state, &sftp_id)?;
-    let cancel = register_cancel(&state, &transfer_id);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let task_cancel = cancel.clone();
     let app_clone = app.clone();
-    let tid = transfer_id.clone();
-    tokio::spawn(async move {
-        let result = do_upload_dir(&sftp, &local_dir, &remote_dir, &app_clone, &tid, &cancel).await;
-        finish_transfer(&app_clone, &tid, result);
-    });
-    Ok(())
+    let task_transfer_id = transfer_id.clone();
+    let future = async move {
+        do_upload_dir(
+            &sftp,
+            &local_dir,
+            &remote_dir,
+            &app_clone,
+            &task_transfer_id,
+            &task_cancel,
+        )
+        .await
+    };
+    spawn_transfer(&app, state.inner(), &sftp_id, &transfer_id, cancel, future)
 }
 
 /// 下载远端目录到本地。走后台 tokio 任务,支持取消,聚合字节进度。
@@ -989,14 +1178,22 @@ pub async fn sftp_download_dir(
     transfer_id: String,
 ) -> Result<(), String> {
     let sftp = get_sftp(&state, &sftp_id)?;
-    let cancel = register_cancel(&state, &transfer_id);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let task_cancel = cancel.clone();
     let app_clone = app.clone();
-    let tid = transfer_id.clone();
-    tokio::spawn(async move {
-        let result = do_download_dir(&sftp, &remote_dir, &local_dir, &app_clone, &tid, &cancel).await;
-        finish_transfer(&app_clone, &tid, result);
-    });
-    Ok(())
+    let task_transfer_id = transfer_id.clone();
+    let future = async move {
+        do_download_dir(
+            &sftp,
+            &remote_dir,
+            &local_dir,
+            &app_clone,
+            &task_transfer_id,
+            &task_cancel,
+        )
+        .await
+    };
+    spawn_transfer(&app, state.inner(), &sftp_id, &transfer_id, cancel, future)
 }
 
 async fn do_upload_dir(
@@ -1065,7 +1262,10 @@ async fn do_upload_dir(
             if n == 0 {
                 break;
             }
-            remote.write_all(&buf[..n]).await.context("写入远端文件失败")?;
+            remote
+                .write_all(&buf[..n])
+                .await
+                .context("写入远端文件失败")?;
             transferred += n as u64;
 
             let now = std::time::Instant::now();
@@ -1118,7 +1318,8 @@ async fn do_download_dir(
     let mut dirs = dirs;
     dirs.sort_by_key(|path| path.matches('/').count());
     for rel in &dirs {
-        let full = std::path::Path::new(local_dir).join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let full =
+            std::path::Path::new(local_dir).join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
         tokio::fs::create_dir_all(&full)
             .await
             .with_context(|| format!("创建本地子目录失败: {}", full.display()))?;
@@ -1144,8 +1345,8 @@ async fn do_download_dir(
         if cancel.load(Ordering::Relaxed) {
             return Err(anyhow::anyhow!(CANCEL_MSG));
         }
-        let local_path = std::path::Path::new(local_dir)
-            .join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let local_path =
+            std::path::Path::new(local_dir).join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
         let mut remote = sftp
             .open(&remote_path)
             .await
@@ -1161,7 +1362,10 @@ async fn do_download_dir(
             if n == 0 {
                 break;
             }
-            local.write_all(&buf[..n]).await.context("写入本地文件失败")?;
+            local
+                .write_all(&buf[..n])
+                .await
+                .context("写入本地文件失败")?;
             transferred += n as u64;
             let now = std::time::Instant::now();
             if now.duration_since(last_emit).as_millis() >= 200 {
@@ -1201,8 +1405,8 @@ fn scan_local_dir(
     files: &mut Vec<(std::path::PathBuf, String, u64)>,
     dirs: &mut std::collections::BTreeSet<String>,
 ) -> Result<()> {
-    for entry in std::fs::read_dir(cur)
-        .with_context(|| format!("读取目录失败: {}", cur.display()))?
+    for entry in
+        std::fs::read_dir(cur).with_context(|| format!("读取目录失败: {}", cur.display()))?
     {
         let entry = entry.context("读取条目失败")?;
         let ft = entry.file_type().context("读取类型失败")?;
@@ -1274,4 +1478,19 @@ async fn walk_remote_dir(
         }
     }
     Ok((files, dirs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remote_staging_path;
+
+    #[test]
+    fn staging_path_stays_next_to_target_and_is_unique() {
+        let first = remote_staging_path("/etc/ssh/sshd_config", "tmp");
+        let second = remote_staging_path("/etc/ssh/sshd_config", "tmp");
+
+        assert!(first.starts_with("/etc/ssh/sshd_config.kshell-tmp-"));
+        assert!(second.starts_with("/etc/ssh/sshd_config.kshell-tmp-"));
+        assert_ne!(first, second);
+    }
 }

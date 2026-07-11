@@ -21,7 +21,7 @@ pub const HOST_KEY_REJECTED: &str = "主机公钥校验未通过,连接已拒绝
 const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 15_000;
 
 pub struct SshSession {
-    pub handle: Handle<ClientHandler>,
+    pub handle: Arc<Handle<ClientHandler>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -379,7 +379,9 @@ async fn finish_connect(
         return Err(anyhow!("认证被拒绝"));
     }
 
-    Ok(SshSession { handle })
+    Ok(SshSession {
+        handle: Arc::new(handle),
+    })
 }
 async fn authenticate(
     app: AppHandle,

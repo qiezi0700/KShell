@@ -136,6 +136,7 @@ onMounted(async () => {
 
   t.writeln(`\x1b[90m正在连接 ${props.sessionId.slice(0, 8)}… \x1b[0m`)
 
+  let hasOpenedChannel = false
   try {
     const { cols, rows } = t
     const chId = props.channelId ?? uuidv4()
@@ -162,6 +163,7 @@ onMounted(async () => {
       } else {
         await sshOpenShell(props.sessionId, cols, rows, chId)
       }
+      hasOpenedChannel = true
       if (isUnmounted) {
         await sshCloseChannel(chId)
         return
@@ -201,6 +203,7 @@ onMounted(async () => {
     })
     resizeObserver.observe(container.value!)
   } catch (e: unknown) {
+    const failedChannelId = currentChannelId
     unlistenData?.()
     unlistenExit?.()
     unlistenError?.()
@@ -208,6 +211,13 @@ onMounted(async () => {
     unlistenExit = null
     unlistenError = null
     currentChannelId = null
+    if (hasOpenedChannel && failedChannelId) {
+      try {
+        await sshCloseChannel(failedChannelId)
+      } catch {
+        // 清理失败不能覆盖最初的连接错误。
+      }
+    }
     status.value = 'error'
     errMsg.value = e instanceof Error ? e.message : String(e)
     t.writeln(`\r\n\x1b[31m连接失败: ${errMsg.value}\x1b[0m`)
