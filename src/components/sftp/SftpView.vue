@@ -11,6 +11,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
 } from '@/components/ui/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Textarea } from '@/components/ui/textarea'
@@ -867,6 +868,7 @@ function joinPath(dir: string, name: string): string {
             <span class="truncate">{{ preview.name }}</span>
             <span v-if="preview.dirty" class="text-caption font-normal tracking-normal normal-case text-warning">● 未保存</span>
           </DialogTitle>
+          <DialogDescription class="sr-only">预览或编辑所选文件内容</DialogDescription>
         </DialogHeader>
         <ScrollArea v-if="previewMode === 'view'" class="h-[60vh] w-full rounded-md border border-border bg-panel-2 p-3">
           <pre class="m-0 whitespace-pre-wrap"><code class="hljs text-body font-mono leading-5" v-html="previewHtml" /></pre>

@@ -43,8 +43,8 @@ function toggleVisibility(idx: number) {
     <DialogContent class="max-w-[420px]">
       <DialogHeader>
         <DialogTitle>{{ multiPromptState?.title }}</DialogTitle>
-        <DialogDescription v-if="multiPromptState?.message" class="whitespace-pre-line">
-          {{ multiPromptState.message }}
+        <DialogDescription :class="multiPromptState?.message ? 'whitespace-pre-line' : 'sr-only'">
+          {{ multiPromptState?.message || '填写服务器要求的认证信息' }}
         </DialogDescription>
       </DialogHeader>
 

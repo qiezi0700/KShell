@@ -3,7 +3,7 @@ import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { ScrollText, Copy, RefreshCw, FileText, Play, Pause, Filter, Clock, FileSearch } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import {
   DropdownMenu,
@@ -317,6 +317,7 @@ onBeforeUnmount(() => {
             <Copy class="size-3.5" />
           </Button>
         </DialogTitle>
+        <DialogDescription class="sr-only">查看、筛选和持续跟随容器日志</DialogDescription>
       </DialogHeader>
 
       <!-- 路径 + 扫描 + tail 行数 -->

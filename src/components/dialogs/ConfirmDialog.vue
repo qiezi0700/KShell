@@ -21,8 +21,8 @@ function onOpenChange(open: boolean) {
     <DialogContent class="max-w-[400px]">
       <DialogHeader>
         <DialogTitle>{{ confirmState?.title }}</DialogTitle>
-        <DialogDescription v-if="confirmState?.message" class="whitespace-pre-line">
-          {{ confirmState.message }}
+        <DialogDescription :class="confirmState?.message ? 'whitespace-pre-line' : 'sr-only'">
+          {{ confirmState?.message || '确认是否继续执行此操作' }}
         </DialogDescription>
       </DialogHeader>
       <DialogFooter class="pt-2">

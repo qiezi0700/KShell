@@ -33,8 +33,8 @@ function onOpenChange(open: boolean) {
     <DialogContent class="max-w-[400px]">
       <DialogHeader>
         <DialogTitle>{{ promptState?.title }}</DialogTitle>
-        <DialogDescription v-if="promptState?.message">
-          {{ promptState.message }}
+        <DialogDescription :class="promptState?.message ? undefined : 'sr-only'">
+          {{ promptState?.message || '请输入操作所需的值' }}
         </DialogDescription>
       </DialogHeader>
 

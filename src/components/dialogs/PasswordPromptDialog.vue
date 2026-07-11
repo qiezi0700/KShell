@@ -38,8 +38,8 @@ function onOpenChange(open: boolean) {
     <DialogContent class="max-w-[400px]">
       <DialogHeader>
         <DialogTitle>{{ passwordPromptState?.title }}</DialogTitle>
-        <DialogDescription v-if="passwordPromptState?.message" class="whitespace-pre-line">
-          {{ passwordPromptState.message }}
+        <DialogDescription :class="passwordPromptState?.message ? 'whitespace-pre-line' : 'sr-only'">
+          {{ passwordPromptState?.message || '请输入本次操作需要的密码' }}
         </DialogDescription>
       </DialogHeader>
 

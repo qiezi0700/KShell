@@ -22,6 +22,7 @@ import {
   Dialog,
   DialogContent,
   DialogTitle,
+  DialogDescription,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { openNewConnection } from '@/stores/dialogs'
@@ -154,6 +155,7 @@ function executeSelected() {
       @pointer-down-outside="open = false"
     >
       <DialogTitle class="sr-only">命令面板</DialogTitle>
+      <DialogDescription class="sr-only">搜索并执行 KShell 命令</DialogDescription>
 
       <!-- 搜索框 -->
       <div class="flex items-center gap-2 border-b border-border px-3" :style="{ height: 'var(--size-row-lg)' }">
