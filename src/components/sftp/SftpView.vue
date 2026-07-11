@@ -1,23 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
-import { settingsGet, settingsSet } from '@/api/settings'
-import {
-  Loader2,
-  Save,
-} from '@lucide/vue'
-import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from '@/components/ui/dialog'
-import { ScrollArea } from '@/components/ui/scroll-area'
-import { Textarea } from '@/components/ui/textarea'
-import FilePane from './FilePane.vue'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { UnlistenFn } from '@tauri-apps/api/event'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+
+import { settingsGet, settingsSet } from '@/api/settings'
 import {
   sftpOpen,
   sftpClose,
@@ -27,25 +13,26 @@ import {
   sftpRename,
   sftpRmdir,
   sftpHome,
-  sftpReadFile,
-  sftpWriteFile,
   localList,
   localMkdir,
   localRm,
   localRename as apiLocalRename,
   localRmdir,
   localHome,
-  localReadFile,
-  localWriteFile,
   localCopy,
   localStat,
   sftpCopyFile,
   type RemoteEntry,
 } from '@/api/sftp'
+import { Button } from '@/components/ui/button'
 import { openConfirm, openPrompt } from '@/stores/prompt'
+import { activeTabId, closeTab } from '@/stores/tabs'
 import { toast } from '@/stores/toast'
 import { startUpload, startDownload, startUploadDir, startDownloadDir, startCopyRemoteDir } from '@/stores/transfers'
-import { closeTab } from '@/stores/tabs'
+
+import FilePane from './FilePane.vue'
+import FilePreviewDialog from './FilePreviewDialog.vue'
+import type { FilePreviewTarget } from './filePreview'
 
 const props = defineProps<{
   tabId: string
@@ -81,10 +68,7 @@ const remoteEntries = ref<RemoteEntry[]>([])
 const remoteLoading = ref(false)
 
 // 预览/编辑
-const preview = ref<{ name: string; path: string; side: 'local' | 'remote'; content: string; dirty: boolean } | null>(null)
-const saving = ref(false)
-const previewMode = ref<'view' | 'edit'>('view')
-const previewHtml = ref('')
+const preview = ref<FilePreviewTarget | null>(null)
 
 // 文件剪贴板(Ctrl+C/X/V)
 const clip = ref<{ from: 'local' | 'remote'; path: string; entry: RemoteEntry; mode: 'copy' | 'cut' } | null>(null)
@@ -557,65 +541,24 @@ async function handleExternalDrop(side: 'local' | 'remote', paths: string[]) {
 // 预览
 // ============================================================
 
-async function previewFile(side: 'local' | 'remote', e: RemoteEntry) {
-  if (e.isDir) return
-  try {
-    let bytes: number[]
-    if (side === 'remote') {
-      if (!sftpId.value) return
-      bytes = await sftpReadFile(sftpId.value, joinPath(remoteCwd.value, e.name))
-    } else {
-      bytes = await localReadFile(joinPath(localCwd.value, e.name))
-    }
-    const buf = new Uint8Array(bytes)
-    // 含 NUL 字节视为二进制,不预览
-    if (buf.includes(0)) {
-      toast.info('该文件是二进制文件,不支持文本预览。', '无法预览')
-      return
-    }
-    const content = new TextDecoder().decode(buf)
-    preview.value = { name: e.name, path: joinPath(side === 'remote' ? remoteCwd.value : localCwd.value, e.name), side, content, dirty: false }
-    previewMode.value = 'view'
-    await updateHighlight()
-  } catch (err: any) {
-    toast.error(String(err), '预览失败')
+function previewFile(side: 'local' | 'remote', entry: RemoteEntry) {
+  if (entry.isDir) return
+  const cwd = side === 'remote' ? remoteCwd.value : localCwd.value
+  preview.value = {
+    name: entry.name,
+    path: joinPath(cwd, entry.name),
+    side,
+    size: entry.size,
   }
 }
 
-async function savePreview() {
-  if (!preview.value || saving.value) return
-  saving.value = true
-  try {
-    const bytes = Array.from(new TextEncoder().encode(preview.value.content))
-    if (preview.value.side === 'remote') {
-      if (!sftpId.value) return
-      await sftpWriteFile(sftpId.value, preview.value.path, bytes)
-      await refreshRemote()
-    } else {
-      await localWriteFile(preview.value.path, bytes)
-      await refreshLocal()
-    }
-    preview.value.dirty = false
-  } catch (err: any) {
-    toast.error(String(err), '保存失败')
-  } finally {
-    saving.value = false
-  }
+async function onPreviewSaved(target: FilePreviewTarget) {
+  if (target.side === 'remote') await refreshRemote()
+  else await refreshLocal()
 }
 
-function onPreviewInput() {
-  if (preview.value) preview.value.dirty = true
-}
-
-async function updateHighlight() {
-  if (!preview.value) return
-  const { highlightCode } = await import('@/lib/highlight')
-  previewHtml.value = highlightCode(preview.value.content, preview.value.name)
-}
-
-function switchPreviewMode(mode: 'view' | 'edit') {
-  previewMode.value = mode
-  if (mode === 'view') void updateHighlight()
+function closePreview() {
+  preview.value = null
 }
 
 // ============================================================
@@ -623,6 +566,7 @@ function switchPreviewMode(mode: 'view' | 'edit') {
 // ============================================================
 
 function onKeydown(e: KeyboardEvent) {
+  if (activeTabId.value !== props.tabId || preview.value) return
   // 输入框/文本域中不拦截
   const tag = (e.target as HTMLElement)?.tagName
   if (tag === 'INPUT' || tag === 'TEXTAREA') return
@@ -675,7 +619,7 @@ async function doPaste() {
           toast.info('源与目标在同一目录,已忽略', '无需剪切')
           return
         }
-        // 同栏但跨目录的剪切:先复制到新位置再删除源
+        // 同栏跨目录剪切优先使用重命名,避免目录复制中途留下半成品
         const dstPath = joinPath(dir, entry.name)
         if (to === 'local') {
           await localCopy(srcPath, dstPath)
@@ -684,26 +628,8 @@ async function doPaste() {
           toast.success(`已移动:${entry.name}`, '剪切完成')
         } else {
           if (!sftpId.value) return
-          if (entry.isDir) {
-            // 远端目录复制走后台任务,完成后由 onDone 删源;不阻塞 UI
-            await startCopyRemoteDir(sftpId.value, srcPath, dstPath, entry.name, {
-              onDone: async d => {
-                if (!d.success) return
-                try {
-                  await sftpRmdir(sftpId.value!, srcPath)
-                  await refreshRemote()
-                  toast.success(`已移动:${entry.name}`, '剪切完成')
-                } catch (e: any) {
-                  toast.error(String(e), '删除源目录失败')
-                }
-              },
-            })
-            toast.info(`已开始移动:${entry.name}`, '剪切')
-          } else {
-            await sftpCopyFile(sftpId.value, srcPath, dstPath)
-            await sftpRm(sftpId.value, srcPath)
-            toast.success(`已移动:${entry.name}`, '剪切完成')
-          }
+          await sftpRename(sftpId.value, srcPath, dstPath)
+          toast.success(`已移动:${entry.name}`, '剪切完成')
         }
       } else {
         // 复制:同目录加"副本"后缀
@@ -743,7 +669,7 @@ async function doPaste() {
                   else await sftpRm(sftpId.value, srcPath)
                   await refreshRemote()
                 }
-              } catch (e: any) {
+              } catch (e: unknown) {
                 toast.error(String(e), '删除源失败')
               }
             },
@@ -763,7 +689,7 @@ async function doPaste() {
       else await refreshRemote()
     }
     if (mode === 'cut') clip.value = null
-  } catch (err: any) {
+  } catch (err: unknown) {
     toast.error(String(err), '粘贴失败')
   }
 }
@@ -861,48 +787,11 @@ function joinPath(dir: string, name: string): string {
     </Teleport>
 
     <!-- 预览/编辑对话框 -->
-    <Dialog :open="!!preview" @update:open="(v) => { if (!v) preview = null }">
-      <DialogContent v-if="preview" class="flex max-h-[85vh] flex-col gap-3 p-4 sm:max-w-[700px]">
-        <DialogHeader>
-          <DialogTitle class="flex items-center gap-2">
-            <span class="truncate">{{ preview.name }}</span>
-            <span v-if="preview.dirty" class="text-caption font-normal tracking-normal normal-case text-warning">● 未保存</span>
-          </DialogTitle>
-          <DialogDescription class="sr-only">预览或编辑所选文件内容</DialogDescription>
-        </DialogHeader>
-        <ScrollArea v-if="previewMode === 'view'" class="h-[60vh] w-full rounded-md border border-border bg-panel-2 p-3">
-          <pre class="m-0 whitespace-pre-wrap"><code class="hljs text-body font-mono leading-5" v-html="previewHtml" /></pre>
-        </ScrollArea>
-        <Textarea
-          v-else
-          v-model="preview.content"
-          spellcheck="false"
-          class="text-body h-[60vh] w-full [field-sizing:fixed] resize-none rounded-md border-border bg-panel-2 p-3 font-mono leading-5 focus-visible:border-primary focus-visible:ring-primary"
-          @input="onPreviewInput"
-        />
-        <div class="flex items-center justify-between">
-          <div class="flex gap-1">
-            <Button
-              size="sm"
-              :variant="previewMode === 'view' ? 'secondary' : 'ghost'"
-              @click="switchPreviewMode('view')"
-            >查看</Button>
-            <Button
-              size="sm"
-              :variant="previewMode === 'edit' ? 'secondary' : 'ghost'"
-              @click="switchPreviewMode('edit')"
-            >编辑</Button>
-          </div>
-          <div class="flex gap-2">
-            <Button variant="ghost" size="sm" @click="preview = null">关闭</Button>
-            <Button v-if="previewMode === 'edit'" size="sm" :disabled="!preview.dirty || saving" @click="savePreview">
-              <Loader2 v-if="saving" class="animate-spin" />
-              <Save v-else />
-              保存
-            </Button>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
+    <FilePreviewDialog
+      :target="preview"
+      :sftp-id="sftpId"
+      @close="closePreview"
+      @saved="onPreviewSaved"
+    />
   </div>
 </template>
