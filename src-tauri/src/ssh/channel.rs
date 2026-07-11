@@ -1,12 +1,13 @@
 use anyhow::Result;
 use russh::client::Msg;
 use russh::{Channel, ChannelMsg};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-use crate::state::{ChannelId, SessionId};
+use crate::state::{AppState, ChannelId, SessionId};
 
 pub enum ChannelCommand {
+    Start,
     Data(Vec<u8>),
     Resize { cols: u32, rows: u32 },
     Close,
@@ -29,6 +30,24 @@ pub async fn run_channel(
     let event_data = format!("ssh://{id}/data");
     let event_exit = format!("ssh://{id}/exit");
     let event_error = format!("ssh://{id}/error");
+    let mut exit_status = None;
+
+    // commands.rs 会先把句柄写入全局状态再发送 Start，避免短命令先退出后留下僵尸句柄。
+    match rx.recv().await {
+        Some(ChannelCommand::Start) => {}
+        Some(ChannelCommand::Close) | None => {
+            let _ = channel.close().await;
+            app.state::<AppState>().channels.remove(&id);
+            let _ = app.emit(&event_exit, serde_json::Value::Null);
+            return;
+        }
+        Some(ChannelCommand::Data(_)) | Some(ChannelCommand::Resize { .. }) => {
+            let _ = app.emit(&event_error, "通道尚未就绪".to_string());
+            app.state::<AppState>().channels.remove(&id);
+            let _ = app.emit(&event_exit, serde_json::Value::Null);
+            return;
+        }
+    }
 
     loop {
         tokio::select! {
@@ -37,13 +56,17 @@ pub async fn run_channel(
                 match cmd {
                     Some(ChannelCommand::Data(bytes)) => {
                         if let Err(e) = channel.data(&bytes[..]).await {
-                            let _ = app.emit(&event_error, format!("write: {e}"));
+                            let _ = app.emit(&event_error, format!("写入通道失败: {e}"));
                             break;
                         }
                     }
                     Some(ChannelCommand::Resize { cols, rows }) => {
-                        let _ = channel.window_change(cols, rows, 0, 0).await;
+                        if let Err(e) = channel.window_change(cols, rows, 0, 0).await {
+                            let _ = app.emit(&event_error, format!("调整终端尺寸失败: {e}"));
+                            break;
+                        }
                     }
+                    Some(ChannelCommand::Start) => {}
                     Some(ChannelCommand::Close) | None => {
                         let _ = channel.close().await;
                         break;
@@ -58,8 +81,8 @@ pub async fn run_channel(
                     Some(ChannelMsg::ExtendedData { data, .. }) => {
                         let _ = app.emit(&event_data, data.to_vec());
                     }
-                    Some(ChannelMsg::ExitStatus { exit_status }) => {
-                        let _ = app.emit(&event_exit, exit_status);
+                    Some(ChannelMsg::ExitStatus { exit_status: status }) => {
+                        exit_status = Some(status);
                     }
                     Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) => {
                         break;
@@ -71,7 +94,8 @@ pub async fn run_channel(
         }
     }
 
-    let _ = app.emit(&event_exit, serde_json::Value::Null);
+    app.state::<AppState>().channels.remove(&id);
+    let _ = app.emit(&event_exit, exit_status);
 }
 
 /// 打开一个交互式 shell channel 并 spawn 事件循环任务。

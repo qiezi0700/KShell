@@ -18,6 +18,7 @@ import {
   sshCloseChannel,
   onChannelData,
   onChannelExit,
+  onChannelError,
 } from '@/api/ssh'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { v4 as uuidv4 } from 'uuid'
@@ -51,6 +52,7 @@ const streaming = ref(false)            // 当前是否连着长通道
 const streamChannelId = ref<string | null>(null)
 let unlistenData: UnlistenFn | null = null
 let unlistenExit: UnlistenFn | null = null
+let unlistenError: UnlistenFn | null = null
 
 // 日志文件候选列表(点"查找日志文件"后填充)
 const logCandidates = ref<string[]>([])
@@ -164,12 +166,16 @@ async function startStream() {
   // 先监听再打开通道，避免短日志在 invoke 返回前已经输出完毕。
   const chId = uuidv4()
   try {
-    ;[unlistenData, unlistenExit] = await Promise.all([
+    ;[unlistenData, unlistenExit, unlistenError] = await Promise.all([
       onChannelData(chId, (bytes) => {
         const text = decoder.decode(bytes, { stream: true })
         appendChunk(text)
       }),
       onChannelExit(chId, () => {
+        void stopStream()
+      }),
+      onChannelError(chId, (message) => {
+        appendChunk(`\n[通道错误] ${message}\n`)
         void stopStream()
       }),
     ])
@@ -193,8 +199,10 @@ async function stopStream() {
   streamChannelId.value = null
   unlistenData?.()
   unlistenExit?.()
+  unlistenError?.()
   unlistenData = null
   unlistenExit = null
+  unlistenError = null
   if (chId) {
     try {
       await sshCloseChannel(chId)

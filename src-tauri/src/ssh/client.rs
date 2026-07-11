@@ -219,7 +219,7 @@ impl client::Handler for ClientHandler {
             let state = app.state::<AppState>();
             crate::ssh::tunnel::handle_remote_forwarded_connection(
                 app_for_tunnel,
-                &*state,
+                state.inner(),
                 channel,
                 &connected_address,
                 connected_port,

@@ -27,6 +27,7 @@ import {
   sshCloseChannel,
   onChannelData,
   onChannelExit,
+  onChannelError,
 } from '@/api/ssh'
 import { updateTab, closeTab } from '@/stores/tabs'
 
@@ -46,6 +47,7 @@ const errMsg = ref<string | null>(null)
 
 let unlistenData: UnlistenFn | null = null
 let unlistenExit: UnlistenFn | null = null
+let unlistenError: UnlistenFn | null = null
 let resizeObserver: ResizeObserver | null = null
 let wheelHandler: ((e: WheelEvent) => void) | null = null
 let currentChannelId: string | null = null
@@ -138,13 +140,18 @@ onMounted(async () => {
     const { cols, rows } = t
     const chId = props.channelId ?? uuidv4()
     currentChannelId = chId
-    ;[unlistenData, unlistenExit] = await Promise.all([
+    ;[unlistenData, unlistenExit, unlistenError] = await Promise.all([
       onChannelData(chId, bytes => {
         t.write(bytes)
       }),
       onChannelExit(chId, code => {
         status.value = 'closed'
         t.writeln(`\r\n\x1b[90m会话已结束(exit ${code ?? 'null'})\x1b[0m`)
+      }),
+      onChannelError(chId, message => {
+        status.value = 'error'
+        errMsg.value = message
+        t.writeln(`\r\n\x1b[31m通道错误: ${message}\x1b[0m`)
       }),
     ])
 
@@ -196,8 +203,10 @@ onMounted(async () => {
   } catch (e: unknown) {
     unlistenData?.()
     unlistenExit?.()
+    unlistenError?.()
     unlistenData = null
     unlistenExit = null
+    unlistenError = null
     currentChannelId = null
     status.value = 'error'
     errMsg.value = e instanceof Error ? e.message : String(e)
@@ -213,6 +222,7 @@ onBeforeUnmount(async () => {
   resizeObserver?.disconnect()
   unlistenData?.()
   unlistenExit?.()
+  unlistenError?.()
   if (currentChannelId) {
     try {
       await sshCloseChannel(currentChannelId)

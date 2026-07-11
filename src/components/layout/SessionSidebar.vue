@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { Sidebar, SidebarContent, SidebarFooter } from '@/components/ui/sidebar'
 import ActivityBar from '@/components/layout/ActivityBar.vue'
-import { currentPanel, footerPanels, sidebarWidth, sidebarResizing, setSidebarWidth } from '@/stores/sidebar-panels'
+import { currentPanel, footerPanels, sidebarWidth, sidebarResizing, setSidebarWidth, persistSidebarWidth } from '@/stores/sidebar-panels'
+import { toast } from '@/stores/toast'
 
 function startResize(e: MouseEvent) {
   e.preventDefault()
@@ -15,6 +16,9 @@ function startResize(e: MouseEvent) {
     sidebarResizing.value = false
     document.removeEventListener('mousemove', onMove)
     document.removeEventListener('mouseup', onUp)
+    void persistSidebarWidth().catch((error: unknown) => {
+      toast.error(error instanceof Error ? error.message : String(error), '侧栏宽度保存失败')
+    })
   }
   document.addEventListener('mousemove', onMove)
   document.addEventListener('mouseup', onUp)

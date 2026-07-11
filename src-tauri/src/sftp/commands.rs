@@ -167,7 +167,7 @@ async fn remove_remote_dir_recursive(sftp: &SftpSession, root: &str) -> Result<(
     }
     // 深度从大到小删空目录
     let mut dirs = dirs;
-    dirs.sort_by(|a, b| b.matches('/').count().cmp(&a.matches('/').count()));
+    dirs.sort_by_key(|path| std::cmp::Reverse(path.matches('/').count()));
     for rel in dirs {
         let full = format!("{}/{}", root.trim_end_matches('/'), rel);
         sftp.remove_dir(&full)
@@ -337,7 +337,7 @@ async fn do_copy_remote_dir(
     sftp.create_dir(dst_path)
         .await
         .with_context(|| format!("创建远端目标目录失败: {dst_path}"))?;
-    dirs.sort_by(|a, b| a.matches('/').count().cmp(&b.matches('/').count()));
+    dirs.sort_by_key(|path| path.matches('/').count());
     for rel in &dirs {
         let full = format!("{}/{}", dst_path.trim_end_matches('/'), rel);
         let _ = sftp.create_dir(&full).await;
@@ -648,14 +648,27 @@ pub async fn sftp_upload(
     offset: u64,
 ) -> Result<(), String> {
     let sftp = get_sftp(&state, &sftp_id)?;
-    let total = std::fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
+    let total = tokio::fs::metadata(&local_path)
+        .await
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
     let cancel = register_cancel(&state, &transfer_id);
 
     let app_clone = app.clone();
     let transfer_id_clone = transfer_id.clone();
     tokio::spawn(async move {
+        let context = TransferContext {
+            app: &app_clone,
+            transfer_id: &transfer_id_clone,
+            cancel: &cancel,
+            total,
+        };
         let result = do_upload(
-            &sftp, &local_path, &remote_path, offset, total, &app_clone, &transfer_id_clone, &cancel,
+            &sftp,
+            &local_path,
+            &remote_path,
+            offset,
+            &context,
         )
         .await;
         finish_transfer(&app_clone, &transfer_id_clone, result);
@@ -684,15 +697,18 @@ pub async fn sftp_download(
     let app_clone = app.clone();
     let transfer_id_clone = transfer_id.clone();
     tokio::spawn(async move {
+        let context = TransferContext {
+            app: &app_clone,
+            transfer_id: &transfer_id_clone,
+            cancel: &cancel,
+            total,
+        };
         let result = do_download(
             &sftp,
             &remote_path,
             &local_path,
             offset,
-            total,
-            &app_clone,
-            &transfer_id_clone,
-            &cancel,
+            &context,
         )
         .await;
         finish_transfer(&app_clone, &transfer_id_clone, result);
@@ -717,15 +733,19 @@ pub async fn sftp_cancel_transfer(
 // 传输内部实现
 // ============================================================
 
+struct TransferContext<'a> {
+    app: &'a AppHandle,
+    transfer_id: &'a str,
+    cancel: &'a AtomicBool,
+    total: u64,
+}
+
 async fn do_upload(
     sftp: &SftpSession,
     local_path: &str,
     remote_path: &str,
     offset: u64,
-    total: u64,
-    app: &AppHandle,
-    transfer_id: &str,
-    cancel: &AtomicBool,
+    context: &TransferContext<'_>,
 ) -> Result<()> {
     let mut local = tokio::fs::File::open(local_path)
         .await
@@ -751,10 +771,10 @@ async fn do_upload(
     let mut transferred = offset;
     let mut last_emit = std::time::Instant::now();
     let mut last_bytes = offset;
-    let event = format!("sftp://transfer/{transfer_id}/progress");
+    let event = format!("sftp://transfer/{}/progress", context.transfer_id);
 
     loop {
-        if cancel.load(Ordering::Relaxed) {
+        if context.cancel.load(Ordering::Relaxed) {
             return Err(anyhow::anyhow!(CANCEL_MSG));
         }
         let n = local.read(&mut buf).await.context("读取本地文件失败")?;
@@ -768,12 +788,12 @@ async fn do_upload(
         if now.duration_since(last_emit).as_millis() >= 200 {
             let elapsed = now.duration_since(last_emit).as_secs_f64().max(0.001);
             let speed = ((transferred - last_bytes) as f64 / elapsed) / 1024.0;
-            let _ = app.emit(
+            let _ = context.app.emit(
                 &event,
                 TransferProgress {
-                    transfer_id: transfer_id.to_string(),
+                    transfer_id: context.transfer_id.to_string(),
                     transferred,
-                    total,
+                    total: context.total,
                     speed,
                 },
             );
@@ -782,12 +802,12 @@ async fn do_upload(
         }
     }
     remote.flush().await.ok();
-    let _ = app.emit(
+    let _ = context.app.emit(
         &event,
         TransferProgress {
-            transfer_id: transfer_id.to_string(),
+            transfer_id: context.transfer_id.to_string(),
             transferred,
-            total,
+            total: context.total,
             speed: 0.0,
         },
     );
@@ -799,10 +819,7 @@ async fn do_download(
     remote_path: &str,
     local_path: &str,
     offset: u64,
-    total: u64,
-    app: &AppHandle,
-    transfer_id: &str,
-    cancel: &AtomicBool,
+    context: &TransferContext<'_>,
 ) -> Result<()> {
     let mut remote = sftp.open(remote_path).await.context("打开远端文件失败")?;
 
@@ -827,10 +844,10 @@ async fn do_download(
     let mut transferred = offset;
     let mut last_emit = std::time::Instant::now();
     let mut last_bytes = offset;
-    let event = format!("sftp://transfer/{transfer_id}/progress");
+    let event = format!("sftp://transfer/{}/progress", context.transfer_id);
 
     loop {
-        if cancel.load(Ordering::Relaxed) {
+        if context.cancel.load(Ordering::Relaxed) {
             return Err(anyhow::anyhow!(CANCEL_MSG));
         }
         let n = remote.read(&mut buf).await.context("读取远端文件失败")?;
@@ -844,12 +861,12 @@ async fn do_download(
         if now.duration_since(last_emit).as_millis() >= 200 {
             let elapsed = now.duration_since(last_emit).as_secs_f64().max(0.001);
             let speed = ((transferred - last_bytes) as f64 / elapsed) / 1024.0;
-            let _ = app.emit(
+            let _ = context.app.emit(
                 &event,
                 TransferProgress {
-                    transfer_id: transfer_id.to_string(),
+                    transfer_id: context.transfer_id.to_string(),
                     transferred,
-                    total,
+                    total: context.total,
                     speed,
                 },
             );
@@ -858,12 +875,12 @@ async fn do_download(
         }
     }
     local.flush().await.ok();
-    let _ = app.emit(
+    let _ = context.app.emit(
         &event,
         TransferProgress {
-            transfer_id: transfer_id.to_string(),
+            transfer_id: context.transfer_id.to_string(),
             transferred,
-            total,
+            total: context.total,
             speed: 0.0,
         },
     );
@@ -992,11 +1009,17 @@ async fn do_upload_dir(
 ) -> Result<()> {
     // 1. 预扫描本地
     let root = std::path::PathBuf::from(local_dir);
-    let mut files: Vec<(std::path::PathBuf, String, u64)> = Vec::new();
-    let mut dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    scan_local_dir(&root, &root, &mut files, &mut dirs)
-        .with_context(|| format!("扫描本地目录失败: {local_dir}"))?;
-    let total: u64 = files.iter().map(|f| f.2).sum();
+    let local_dir_label = local_dir.to_string();
+    let (files, dirs, total) = tokio::task::spawn_blocking(move || {
+        let mut files: Vec<(std::path::PathBuf, String, u64)> = Vec::new();
+        let mut dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        scan_local_dir(&root, &root, &mut files, &mut dirs)
+            .with_context(|| format!("扫描本地目录失败: {local_dir_label}"))?;
+        let total = files.iter().map(|file| file.2).sum();
+        Ok::<_, anyhow::Error>((files, dirs, total))
+    })
+    .await
+    .context("本地目录扫描任务异常结束")??;
 
     // 2. 建远端目录树(remote_dir 本身可能已存在,忽略错误)
     let _ = sftp.create_dir(remote_dir).await;
@@ -1089,13 +1112,15 @@ async fn do_download_dir(
     let total: u64 = files.iter().map(|f| f.2).sum();
 
     // 2. 建本地目录树
-    std::fs::create_dir_all(local_dir)
+    tokio::fs::create_dir_all(local_dir)
+        .await
         .with_context(|| format!("创建本地目录失败: {local_dir}"))?;
     let mut dirs = dirs;
-    dirs.sort_by(|a, b| a.matches('/').count().cmp(&b.matches('/').count()));
+    dirs.sort_by_key(|path| path.matches('/').count());
     for rel in &dirs {
         let full = std::path::Path::new(local_dir).join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-        std::fs::create_dir_all(&full)
+        tokio::fs::create_dir_all(&full)
+            .await
             .with_context(|| format!("创建本地子目录失败: {}", full.display()))?;
     }
 
@@ -1185,7 +1210,7 @@ fn scan_local_dir(
         if ft.is_dir() {
             let rel = path
                 .strip_prefix(root)
-                .unwrap()
+                .context("计算本地子目录相对路径失败")?
                 .to_string_lossy()
                 .replace('\\', "/");
             dirs.insert(rel);
@@ -1194,7 +1219,7 @@ fn scan_local_dir(
             let meta = entry.metadata().context("读取元数据失败")?;
             let rel = path
                 .strip_prefix(root)
-                .unwrap()
+                .context("计算本地文件相对路径失败")?
                 .to_string_lossy()
                 .replace('\\', "/");
             files.push((path, rel, meta.len()));

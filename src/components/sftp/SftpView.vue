@@ -101,13 +101,19 @@ let unlistenDragDrop: UnlistenFn | null = null
 
 onMounted(async () => {
   // 异步从 SQLite 加载左右栏宽度比,加载完才允许回写
-  void settingsGet('sftp-local-width-pct').then((raw) => {
-    if (raw != null) {
-      const n = Number(raw)
-      if (Number.isFinite(n)) localWidthPct.value = Math.min(Math.max(Math.round(n), 15), 85)
-    }
-    localWidthReady = true
-  })
+  void settingsGet('sftp-local-width-pct')
+    .then((raw) => {
+      if (raw != null) {
+        const n = Number(raw)
+        if (Number.isFinite(n)) localWidthPct.value = Math.min(Math.max(Math.round(n), 15), 85)
+      }
+    })
+    .catch((e: unknown) => {
+      toast.error(e instanceof Error ? e.message : String(e), '文件面板布局读取失败')
+    })
+    .finally(() => {
+      localWidthReady = true
+    })
 
   if (!sftpId.value) {
     try {
@@ -340,15 +346,20 @@ function onHDrag(e: MouseEvent) {
   // 限制 15%-85%
   const clamped = Math.max(15, Math.min(85, Math.round(pct)))
   localWidthPct.value = clamped
-  if (localWidthReady) void settingsSet('sftp-local-width-pct', String(clamped))
 }
 
 function onHUp() {
+  const shouldPersist = hDragging.value && localWidthReady
   hDragging.value = false
   document.removeEventListener('mousemove', onHDrag)
   document.removeEventListener('mouseup', onHUp)
   document.body.style.cursor = ''
   document.body.style.userSelect = ''
+  if (shouldPersist) {
+    void settingsSet('sftp-local-width-pct', String(localWidthPct.value)).catch((e: unknown) => {
+      toast.error(e instanceof Error ? e.message : String(e), '文件面板布局保存失败')
+    })
+  }
 }
 
 // ============================================================

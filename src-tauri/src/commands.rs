@@ -230,6 +230,7 @@ pub async fn ssh_open_shell(
     .map_err(err)?;
     drop(guard);
     state.channels.insert(ch_id.clone(), handle);
+    start_channel(state.inner(), &ch_id)?;
     Ok(ch_id)
 }
 
@@ -266,7 +267,21 @@ pub async fn ssh_open_exec(
     .map_err(err)?;
     drop(guard);
     state.channels.insert(ch_id.clone(), handle);
+    start_channel(state.inner(), &ch_id)?;
     Ok(ch_id)
+}
+
+fn start_channel(state: &AppState, channel_id: &str) -> Result<(), String> {
+    let channel = state
+        .channels
+        .get(channel_id)
+        .ok_or_else(|| "通道初始化失败".to_string())?;
+    if channel.tx.send(ChannelCommand::Start).is_err() {
+        drop(channel);
+        state.channels.remove(channel_id);
+        return Err("通道启动失败".to_string());
+    }
+    Ok(())
 }
 
 fn validate_channel_id(state: &AppState, channel_id: &str) -> Result<(), String> {

@@ -8,6 +8,7 @@ import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip
 import { settingsGet, settingsSet } from '@/api/settings'
 import { activeTabId } from '@/stores/tabs'
 import { clearActiveTerminalSender, setActiveTerminalSender } from '@/stores/active-terminal'
+import { toast } from '@/stores/toast'
 
 const props = defineProps<{
   tabId: string
@@ -77,27 +78,38 @@ function onDrag(e: MouseEvent) {
   const pct = (fromBottom / rect.height) * 100
   const clamped = Math.max(10, Math.min(80, Math.round(pct)))
   sftpHeightPct.value = clamped
-  if (sftpHeightReady) void settingsSet('terminal-sftp-height-pct', String(clamped))
 }
 
 function onUp() {
+  const shouldPersist = dragging.value && sftpHeightReady
   dragging.value = false
   document.removeEventListener('mousemove', onDrag)
   document.removeEventListener('mouseup', onUp)
   document.body.style.cursor = ''
   document.body.style.userSelect = ''
+  if (shouldPersist) {
+    void settingsSet('terminal-sftp-height-pct', String(sftpHeightPct.value)).catch((e: unknown) => {
+      toast.error(e instanceof Error ? e.message : String(e), '终端布局保存失败')
+    })
+  }
 }
 
 onMounted(() => {
   // 异步从 SQLite 加载 SFTP 高度百分比,加载完才允许回写,避免默认值覆盖
   if (hasSftp) {
-    void settingsGet('terminal-sftp-height-pct').then((raw) => {
-      if (raw != null) {
-        const n = Number(raw)
-        if (Number.isFinite(n)) sftpHeightPct.value = Math.min(Math.max(Math.round(n), 10), 80)
-      }
-      sftpHeightReady = true
-    })
+    void settingsGet('terminal-sftp-height-pct')
+      .then((raw) => {
+        if (raw != null) {
+          const n = Number(raw)
+          if (Number.isFinite(n)) sftpHeightPct.value = Math.min(Math.max(Math.round(n), 10), 80)
+        }
+      })
+      .catch((e: unknown) => {
+        toast.error(e instanceof Error ? e.message : String(e), '终端布局读取失败')
+      })
+      .finally(() => {
+        sftpHeightReady = true
+      })
   }
   // 等布局完成后触发一次 resize,让 xterm 的 FitAddon 正确计算首屏尺寸
   nextTick(() => {

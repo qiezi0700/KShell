@@ -52,7 +52,11 @@ export async function initSidebarWidth(): Promise<void> {
 export function setSidebarWidth(px: number) {
   const clamped = Math.min(Math.max(Math.round(px), 180), 480)
   sidebarWidth.value = clamped
-  if (sidebarWidthReady) void settingsSet('sidebar-width', String(clamped))
+}
+
+export async function persistSidebarWidth(): Promise<void> {
+  if (!sidebarWidthReady) return
+  await settingsSet('sidebar-width', String(sidebarWidth.value))
 }
 
 const sorted = computed(() =>

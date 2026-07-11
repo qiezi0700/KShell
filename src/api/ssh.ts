@@ -92,6 +92,15 @@ export async function onChannelExit(
   })
 }
 
+export async function onChannelError(
+  channelId: string,
+  handler: (message: string) => void,
+): Promise<UnlistenFn> {
+  return await listen<string>(`ssh://${channelId}/error`, e => {
+    handler(e.payload)
+  })
+}
+
 export interface KiPrompt {
   prompt: string
   echo: boolean
