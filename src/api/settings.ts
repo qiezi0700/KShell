@@ -1,5 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 
+const settingsWriteChains = new Map<string, Promise<void>>()
+
 /**
  * 快捷指令项,与后端 store::QuickCommand 对齐。
  * builtin 非 0 为系统内置(不可删除/编辑),0 为用户自定义。
@@ -22,7 +24,15 @@ export function settingsGet(key: string): Promise<string | null> {
 
 /** 写入一个设置项(已存在则覆盖) */
 export function settingsSet(key: string, value: string): Promise<void> {
-  return invoke('settings_set', { key, value })
+  const previous = settingsWriteChains.get(key) ?? Promise.resolve()
+  const current = previous
+    .catch(() => {})
+    .then(() => invoke<void>('settings_set', { key, value }))
+  settingsWriteChains.set(key, current)
+  void current.finally(() => {
+    if (settingsWriteChains.get(key) === current) settingsWriteChains.delete(key)
+  }).catch(() => {})
+  return current
 }
 
 // ---- 快捷指令 ----

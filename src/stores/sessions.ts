@@ -11,8 +11,9 @@ import {
   type Group,
   type StoredSession,
 } from '@/api/sessions'
-import { sshConnect, type SshConfig } from '@/api/ssh'
+import { sshConnect, type AuthMethod, type JumpConfig, type SshConfig } from '@/api/ssh'
 import { addTab, nextTabId } from '@/stores/tabs'
+import { openPasswordPrompt } from '@/stores/prompt'
 import { open as openFileDialog, save as saveFileDialog } from '@tauri-apps/plugin-dialog'
 import { localReadFile, localWriteFile } from '@/api/sftp'
 import { toast } from '@/stores/toast'
@@ -156,7 +157,7 @@ export async function saveGroup(name: string, id?: string): Promise<Group> {
 
 export async function removeGroup(id: string) {
   await apiDeleteGroup(id)
-  groups.value = groups.value.filter((g) => g.id !== g.id)
+  groups.value = groups.value.filter((g) => g.id !== id)
   // 后端 ON DELETE SET NULL,前端同步调整
   sessions.value = sessions.value.map((s) => (s.groupId === id ? { ...s, groupId: null } : s))
 }
@@ -184,6 +185,11 @@ export function exportData(): ImportData {
           username: s.username,
           authKind: s.authKind,
           keyPath: s.keyPath,
+          jumpHost: s.jumpHost,
+          jumpPort: s.jumpPort,
+          jumpUsername: s.jumpUsername,
+          jumpAuthKind: s.jumpAuthKind,
+          jumpKeyPath: s.jumpKeyPath,
         })),
       })),
   }
@@ -276,37 +282,88 @@ export async function exportSessions() {
   }
 }
 
-/** 读取凭据并建立 SSH 会话,返回 sessionId。供终端/SFTP 等会话级动作复用。 */
-export async function connectSession(s: StoredSession): Promise<string> {
-  // agent / keyboard-interactive 无凭据,不查库直接连
-  let cfg: SshConfig
+async function resolveMainAuth(s: StoredSession): Promise<AuthMethod | null> {
   if (s.authKind === 'agent' || s.authKind === 'keyboard_interactive') {
-    cfg = {
-      host: s.host,
-      port: s.port,
-      user: s.username,
-      auth: { kind: s.authKind },
+    return { kind: s.authKind }
+  }
+
+  const creds = await getSessionCredentials(s.id)
+  if (s.authKind === 'password') {
+    let password = creds.password
+    if (password == null) {
+      password = await openPasswordPrompt({
+        title: `连接 ${s.name}`,
+        message: `${s.username}@${s.host} 未保存密码,请输入本次连接密码。`,
+        placeholder: 'SSH 密码',
+        confirmText: '连接',
+      })
+    }
+    return password == null ? null : { kind: 'password', password }
+  }
+
+  if (!s.keyPath) throw new Error('私钥路径为空,请编辑会话并重新选择私钥')
+  return {
+    kind: 'private_key',
+    path: s.keyPath,
+    passphrase: creds.passphrase || null,
+  }
+}
+
+async function resolveJumpConfig(s: StoredSession): Promise<JumpConfig | null | undefined> {
+  if (!s.jumpHost) return undefined
+  if (!s.jumpUsername || !s.jumpAuthKind) {
+    throw new Error('跳板机配置不完整,请编辑会话后重试')
+  }
+
+  let auth: AuthMethod
+  if (s.jumpAuthKind === 'password') {
+    const password = await openPasswordPrompt({
+      title: `连接跳板机 ${s.jumpHost}`,
+      message: `${s.jumpUsername}@${s.jumpHost} 的凭据不会保存,仅用于本次连接。`,
+      placeholder: '跳板机密码',
+      confirmText: '继续连接',
+    })
+    if (password == null) return null
+    auth = { kind: 'password', password }
+  } else if (s.jumpAuthKind === 'private_key') {
+    if (!s.jumpKeyPath) throw new Error('跳板机私钥路径为空,请编辑会话后重试')
+    const passphrase = await openPasswordPrompt({
+      title: `解锁跳板机私钥`,
+      message: '私钥未加密时可留空后继续;凭据不会保存。',
+      placeholder: '私钥密码短语(可留空)',
+      confirmText: '继续连接',
+    })
+    if (passphrase == null) return null
+    auth = {
+      kind: 'private_key',
+      path: s.jumpKeyPath,
+      passphrase: passphrase || null,
     }
   } else {
-    const creds = await getSessionCredentials(s.id)
-    cfg =
-      s.authKind === 'password'
-        ? {
-            host: s.host,
-            port: s.port,
-            user: s.username,
-            auth: { kind: 'password', password: creds.password ?? '' },
-          }
-        : {
-            host: s.host,
-            port: s.port,
-            user: s.username,
-            auth: {
-              kind: 'private_key',
-              path: s.keyPath ?? '',
-              passphrase: creds.passphrase || null,
-            },
-          }
+    auth = { kind: s.jumpAuthKind }
+  }
+
+  return {
+    host: s.jumpHost,
+    port: s.jumpPort || 22,
+    user: s.jumpUsername,
+    auth,
+  }
+}
+
+/** 读取凭据并建立 SSH 会话。用户取消临时凭据输入时返回 null。 */
+export async function connectSession(s: StoredSession): Promise<string | null> {
+  const auth = await resolveMainAuth(s)
+  if (!auth) return null
+  const jump = await resolveJumpConfig(s)
+  if (jump === null) return null
+
+  const cfg: SshConfig = {
+    host: s.host,
+    port: s.port,
+    user: s.username,
+    auth,
+    jump,
   }
   return await sshConnect(cfg)
 }
@@ -317,6 +374,7 @@ export async function connectSession(s: StoredSession): Promise<string> {
  */
 export async function quickConnect(s: StoredSession): Promise<boolean> {
   const sessionId = await connectSession(s)
+  if (!sessionId) return false
   addTab({
     id: nextTabId('term'),
     type: 'terminal',

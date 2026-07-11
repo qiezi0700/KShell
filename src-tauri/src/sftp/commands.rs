@@ -430,8 +430,22 @@ pub async fn sftp_home(
 // 本地文件操作(供前端双栏的本地栏使用)
 // ============================================================
 
+async fn run_local_io<T, F>(operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|e| format!("本地文件任务异常结束: {e}"))?
+}
+
 #[tauri::command]
-pub fn local_list(path: String) -> Result<Vec<LocalEntry>, String> {
+pub async fn local_list(path: String) -> Result<Vec<LocalEntry>, String> {
+    run_local_io(move || local_list_blocking(path)).await
+}
+
+fn local_list_blocking(path: String) -> Result<Vec<LocalEntry>, String> {
     let mut entries = Vec::new();
     // 空路径:枚举所有盘符(此电脑级别)
     if path.is_empty() {
@@ -458,8 +472,12 @@ pub fn local_list(path: String) -> Result<Vec<LocalEntry>, String> {
         if name == "." || name == ".." {
             continue;
         }
-        let meta = entry.metadata().map_err(|e| format!("读取元数据失败: {e}"))?;
-        let ft = entry.file_type().map_err(|e| format!("读取类型失败: {e}"))?;
+        let meta = entry
+            .metadata()
+            .map_err(|e| format!("读取元数据失败: {e}"))?;
+        let ft = entry
+            .file_type()
+            .map_err(|e| format!("读取类型失败: {e}"))?;
         #[cfg(unix)]
         let perms = {
             use std::os::unix::fs::PermissionsExt;
@@ -490,29 +508,39 @@ pub fn local_list(path: String) -> Result<Vec<LocalEntry>, String> {
 }
 
 #[tauri::command]
-pub fn local_mkdir(path: String) -> Result<(), String> {
-    std::fs::create_dir_all(&path).map_err(|e| format!("创建目录失败: {e}"))
+pub async fn local_mkdir(path: String) -> Result<(), String> {
+    run_local_io(move || std::fs::create_dir_all(&path).map_err(|e| format!("创建目录失败: {e}")))
+        .await
 }
 
 /// 删除本地目录(递归)。前端确认弹窗必须提示"及其全部内容",避免误删。
 #[tauri::command]
-pub fn local_rmdir(path: String) -> Result<(), String> {
-    std::fs::remove_dir_all(&path).map_err(|e| format!("删除目录失败: {e}"))
+pub async fn local_rmdir(path: String) -> Result<(), String> {
+    run_local_io(move || std::fs::remove_dir_all(&path).map_err(|e| format!("删除目录失败: {e}")))
+        .await
 }
 
 #[tauri::command]
-pub fn local_rm(path: String) -> Result<(), String> {
-    std::fs::remove_file(&path).map_err(|e| format!("删除文件失败: {e}"))
+pub async fn local_rm(path: String) -> Result<(), String> {
+    run_local_io(move || std::fs::remove_file(&path).map_err(|e| format!("删除文件失败: {e}")))
+        .await
 }
 
 #[tauri::command]
-pub fn local_rename(old_path: String, new_path: String) -> Result<(), String> {
-    std::fs::rename(&old_path, &new_path).map_err(|e| format!("重命名失败: {e}"))
+pub async fn local_rename(old_path: String, new_path: String) -> Result<(), String> {
+    run_local_io(move || {
+        std::fs::rename(&old_path, &new_path).map_err(|e| format!("重命名失败: {e}"))
+    })
+    .await
 }
 
 /// 复制本地路径。文件走 std::fs::copy;目录递归复制。前端 paste 逻辑不用区分。
 #[tauri::command]
-pub fn local_copy(old_path: String, new_path: String) -> Result<(), String> {
+pub async fn local_copy(old_path: String, new_path: String) -> Result<(), String> {
+    run_local_io(move || local_copy_blocking(old_path, new_path)).await
+}
+
+fn local_copy_blocking(old_path: String, new_path: String) -> Result<(), String> {
     let src = std::path::Path::new(&old_path);
     let meta = std::fs::metadata(src).map_err(|e| format!("读取源信息失败: {e}"))?;
     if meta.is_dir() {
@@ -543,7 +571,11 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
 
 /// 读取本地路径元数据(供前端在拖拽落地前区分文件/目录、获取大小)
 #[tauri::command]
-pub fn local_stat(path: String) -> Result<LocalEntry, String> {
+pub async fn local_stat(path: String) -> Result<LocalEntry, String> {
+    run_local_io(move || local_stat_blocking(path)).await
+}
+
+fn local_stat_blocking(path: String) -> Result<LocalEntry, String> {
     let meta = std::fs::metadata(&path).map_err(|e| format!("读取元数据失败: {e}"))?;
     let name = std::path::Path::new(&path)
         .file_name()
@@ -589,14 +621,15 @@ pub fn local_home() -> Result<String, String> {
 
 /// 读取本地文件(预览用)
 #[tauri::command]
-pub fn local_read_file(path: String) -> Result<Vec<u8>, String> {
-    std::fs::read(&path).map_err(|e| format!("读取文件失败: {e}"))
+pub async fn local_read_file(path: String) -> Result<Vec<u8>, String> {
+    run_local_io(move || std::fs::read(&path).map_err(|e| format!("读取文件失败: {e}"))).await
 }
 
 /// 写入本地文件(保存编辑)
 #[tauri::command]
-pub fn local_write_file(path: String, content: Vec<u8>) -> Result<(), String> {
-    std::fs::write(&path, content).map_err(|e| format!("写入文件失败: {e}"))
+pub async fn local_write_file(path: String, content: Vec<u8>) -> Result<(), String> {
+    run_local_io(move || std::fs::write(&path, content).map_err(|e| format!("写入文件失败: {e}")))
+        .await
 }
 
 // ============================================================

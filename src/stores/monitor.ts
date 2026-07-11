@@ -11,6 +11,7 @@ interface SessionMonitor {
   history: MonitorSample[]
   timer: number | null
   error: string | null
+  isCollecting: boolean
 }
 
 const monitors = shallowRef<Record<string, SessionMonitor>>({})
@@ -21,7 +22,7 @@ const INTERVAL_MS = 2000
 function ensure(sessionId: string): SessionMonitor {
   let m = monitors.value[sessionId]
   if (!m) {
-    m = { latest: null, history: [], timer: null, error: null }
+    m = { latest: null, history: [], timer: null, error: null, isCollecting: false }
     monitors.value = { ...monitors.value, [sessionId]: m }
   }
   return m
@@ -29,8 +30,11 @@ function ensure(sessionId: string): SessionMonitor {
 
 async function tick(sessionId: string) {
   const m = ensure(sessionId)
+  if (m.isCollecting) return
+  m.isCollecting = true
   try {
     const sample = await collectMonitor(sessionId, m.latest)
+    if (monitors.value[sessionId] !== m) return
     m.latest = sample
     m.history.push(sample)
     if (m.history.length > HISTORY_MAX) m.history.shift()
@@ -38,8 +42,12 @@ async function tick(sessionId: string) {
     // 触发 shallowRef 更新(整体替换 record 引用)
     monitors.value = { ...monitors.value }
   } catch (e) {
+    if (monitors.value[sessionId] !== m) return
     m.error = typeof e === 'string' ? e : (e as Error)?.message ?? String(e)
+    monitors.value = { ...monitors.value }
     // 出错不停止轮询,下次重试
+  } finally {
+    m.isCollecting = false
   }
 }
 
@@ -49,8 +57,8 @@ export function startMonitor(sessionId: string) {
   const m = ensure(sessionId)
   if (m.timer != null) return
   // 立即采一次,再定时
-  tick(sessionId)
-  m.timer = window.setInterval(() => tick(sessionId), INTERVAL_MS)
+  void tick(sessionId)
+  m.timer = window.setInterval(() => void tick(sessionId), INTERVAL_MS)
 }
 
 /** 停止某会话的监控轮询 */

@@ -208,13 +208,15 @@ pub async fn ssh_open_shell(
     session_id: SessionId,
     cols: u32,
     rows: u32,
+    channel_id: ChannelId,
 ) -> Result<ChannelId, String> {
+    validate_channel_id(&state, &channel_id)?;
     let session = state
         .sessions
         .get(&session_id)
         .ok_or_else(|| format!("会话不存在: {session_id}"))?
         .clone();
-    let ch_id: ChannelId = Uuid::new_v4().to_string();
+    let ch_id = channel_id;
     let mut guard = session.lock().await;
     let handle = ssh::channel::open_shell(
         &mut guard.handle,
@@ -241,13 +243,15 @@ pub async fn ssh_open_exec(
     command: String,
     cols: u32,
     rows: u32,
+    channel_id: ChannelId,
 ) -> Result<ChannelId, String> {
+    validate_channel_id(&state, &channel_id)?;
     let session = state
         .sessions
         .get(&session_id)
         .ok_or_else(|| format!("会话不存在: {session_id}"))?
         .clone();
-    let ch_id: ChannelId = Uuid::new_v4().to_string();
+    let ch_id = channel_id;
     let mut guard = session.lock().await;
     let handle = ssh::channel::open_exec(
         &mut guard.handle,
@@ -263,6 +267,14 @@ pub async fn ssh_open_exec(
     drop(guard);
     state.channels.insert(ch_id.clone(), handle);
     Ok(ch_id)
+}
+
+fn validate_channel_id(state: &AppState, channel_id: &str) -> Result<(), String> {
+    Uuid::parse_str(channel_id).map_err(|_| "通道 ID 格式无效".to_string())?;
+    if state.channels.contains_key(channel_id) {
+        return Err("通道 ID 已存在".to_string());
+    }
+    Ok(())
 }
 
 /// 在已有 SSH 会话上一次性执行命令(request_exec),收集 stdout+stderr 后关闭 channel。
@@ -297,11 +309,17 @@ pub async fn ssh_exec(
 
     // 收集全部输出直到 EOF/Close;监控脚本输出较小,直接拼接
     let mut out = Vec::new();
+    let mut exit_status = None;
     let wait_loop = async {
         loop {
             match channel.wait().await {
                 Some(ChannelMsg::Data { data }) => out.extend_from_slice(&data[..]),
                 Some(ChannelMsg::ExtendedData { data, .. }) => out.extend_from_slice(&data[..]),
+                Some(ChannelMsg::ExitStatus {
+                    exit_status: status,
+                }) => {
+                    exit_status = Some(status);
+                }
                 Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
                 Some(_) => {}
             }
@@ -314,13 +332,30 @@ pub async fn ssh_exec(
             .is_err()
         {
             let _ = channel.close().await;
-            return Err(format!("命令执行超时({ms}毫秒),可能是远端 sudo 等待密码或网络卡住"));
+            return Err(format!(
+                "命令执行超时({ms}毫秒),可能是远端 sudo 等待密码或网络卡住"
+            ));
         }
     } else {
         wait_loop.await;
     }
     let _ = channel.close().await;
-    Ok(String::from_utf8_lossy(&out).to_string())
+    finish_exec_result(out, exit_status)
+}
+
+fn finish_exec_result(out: Vec<u8>, exit_status: Option<u32>) -> Result<String, String> {
+    let output = String::from_utf8_lossy(&out).to_string();
+    match exit_status {
+        Some(0) | None => Ok(output),
+        Some(code) => {
+            let detail = output.trim();
+            if detail.is_empty() {
+                Err(format!("远端命令执行失败(exit {code})"))
+            } else {
+                Err(format!("远端命令执行失败(exit {code}):\n{detail}"))
+            }
+        }
+    }
 }
 
 #[tauri::command]
@@ -376,6 +411,19 @@ pub async fn ssh_disconnect(
     // 先关闭该会话下的所有隧道,避免 session 移除后隧道回调无法路由
     crate::ssh::tunnel::tunnel_close_session(&app, &state, &session_id).await;
 
+    // SFTP 子会话持有独立 channel，必须在移除 SSH 主会话前显式关闭。
+    let sftp_ids: Vec<_> = state
+        .sftp_sessions
+        .iter()
+        .filter(|entry| entry.value().ssh_session_id == session_id)
+        .map(|entry| entry.key().clone())
+        .collect();
+    for id in sftp_ids {
+        if let Some((_, handle)) = state.sftp_sessions.remove(&id) {
+            let _ = handle.session.close().await;
+        }
+    }
+
     // 关闭该会话下所有通道
     let ch_ids: Vec<_> = state
         .channels
@@ -396,4 +444,29 @@ pub async fn ssh_disconnect(
             .await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::finish_exec_result;
+
+    #[test]
+    fn exec_result_rejects_non_zero_status() {
+        let error = finish_exec_result(b"permission denied\n".to_vec(), Some(1))
+            .expect_err("非零退出码必须返回错误");
+        assert!(error.contains("exit 1"));
+        assert!(error.contains("permission denied"));
+    }
+
+    #[test]
+    fn exec_result_accepts_success_and_missing_status() {
+        assert_eq!(
+            finish_exec_result(b"ok\n".to_vec(), Some(0)).expect("退出码 0 应成功"),
+            "ok\n"
+        );
+        assert_eq!(
+            finish_exec_result(b"legacy\n".to_vec(), None).expect("缺少退出码时保持兼容"),
+            "legacy\n"
+        );
+    }
 }

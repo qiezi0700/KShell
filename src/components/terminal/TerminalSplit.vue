@@ -7,7 +7,7 @@ import QuickCommandFab from '@/components/terminal/QuickCommandFab.vue'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { settingsGet, settingsSet } from '@/api/settings'
 import { activeTabId } from '@/stores/tabs'
-import { setActiveTerminalSender, canSendToTerminal } from '@/stores/active-terminal'
+import { clearActiveTerminalSender, setActiveTerminalSender } from '@/stores/active-terminal'
 
 const props = defineProps<{
   tabId: string
@@ -23,8 +23,8 @@ const props = defineProps<{
 
 // 是否附带 SFTP 面板;exec 终端(进容器)不附带
 const hasSftp = props.withSftp ?? true
-// SFTP 面板可见性。默认打开。
-const sftpVisible = ref(hasSftp)
+// SFTP 握手失败不应影响终端建立，因此文件面板改为按需打开。
+const sftpVisible = ref(false)
 // SFTP 占容器高度百分比(10-80)。默认 40。持久化到 SQLite settings
 // ref 先用默认值,onMounted 异步从 SQLite 加载真实值
 const sftpHeightPct = ref(40)
@@ -45,12 +45,9 @@ watch(
   activeTabId,
   (cur) => {
     if (cur === props.tabId) {
-      canSendToTerminal.value = true
-      setActiveTerminalSender((cmd: string) => terminalRef.value?.sendCommand(cmd))
-    } else if (canSendToTerminal.value) {
-      // 切走时清空发送权
-      canSendToTerminal.value = false
-      setActiveTerminalSender(null)
+      setActiveTerminalSender(props.tabId, (cmd: string) => terminalRef.value?.sendCommand(cmd))
+    } else {
+      clearActiveTerminalSender(props.tabId)
     }
   },
   { immediate: true },
@@ -110,11 +107,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (dragging.value) onUp()
-  // 卸载时若是当前活跃终端,清空发送权
-  if (canSendToTerminal.value) {
-    canSendToTerminal.value = false
-    setActiveTerminalSender(null)
-  }
+  clearActiveTerminalSender(props.tabId)
 })
 </script>
 
@@ -177,6 +170,8 @@ onBeforeUnmount(() => {
         :sftp-id="null"
         :host="host"
         :user="user"
+        :close-tab-on-open-error="false"
+        @open-error="sftpVisible = false"
       />
     </div>
   </div>

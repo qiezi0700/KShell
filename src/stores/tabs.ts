@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { sshDisconnect } from '@/api/ssh'
 
 export type TabType = 'terminal' | 'sftp' | 'monitor' | 'docker'
@@ -45,6 +45,8 @@ export type Tab = TerminalTab | SftpTab | DockerTab
 export const tabs = ref<Tab[]>([])
 export const activeTabId = ref<string | null>(null)
 
+const disconnectingSessions = new Map<string, Promise<void>>()
+
 let counter = 0
 export function nextTabId(prefix = 't') {
   counter += 1
@@ -56,13 +58,43 @@ export function addTab(tab: Tab) {
   activeTabId.value = tab.id
 }
 
-export function closeTab(id: string) {
+function detachTab(id: string): Tab | null {
   const idx = tabs.value.findIndex(t => t.id === id)
-  if (idx < 0) return
-  tabs.value.splice(idx, 1)
+  if (idx < 0) return null
+  const [tab] = tabs.value.splice(idx, 1)
   if (activeTabId.value === id) {
     activeTabId.value = tabs.value[Math.max(0, idx - 1)]?.id ?? null
   }
+  return tab ?? null
+}
+
+async function disconnectSessionIfUnused(sessionId: string): Promise<void> {
+  if (tabs.value.some((tab) => tab.sessionId === sessionId)) return
+
+  const existing = disconnectingSessions.get(sessionId)
+  if (existing) return existing
+
+  const task = (async () => {
+    // 给同一操作中即将创建的复用标签一次挂载机会，避免先关父标签时误断连接。
+    await nextTick()
+    if (tabs.value.some((tab) => tab.sessionId === sessionId)) return
+    try {
+      await sshDisconnect(sessionId)
+    } catch {
+      // 标签关闭不能被清理失败阻塞；后端连接失效后再次断开也是幂等的。
+    }
+  })()
+
+  disconnectingSessions.set(sessionId, task)
+  await task
+  if (disconnectingSessions.get(sessionId) === task) {
+    disconnectingSessions.delete(sessionId)
+  }
+}
+
+export function closeTab(id: string) {
+  const tab = detachTab(id)
+  if (tab) void disconnectSessionIfUnused(tab.sessionId)
 }
 
 export function updateTab(id: string, patch: Partial<Tab>) {
@@ -86,9 +118,7 @@ export const activeStoredSessionIds = computed<Set<string>>(() => {
 export async function closeTabsByStoredSession(storedSessionId: string) {
   const related = tabs.value.filter((t) => t.storedSessionId === storedSessionId)
   if (related.length === 0) return
-  // 先断开各自 SSH 会话,再移除 tab(组件 onBeforeUnmount 会关 channel/sftp,容错)
-  await Promise.all(
-    related.map((t) => sshDisconnect(t.sessionId).catch(() => {})),
-  )
-  for (const t of related) closeTab(t.id)
+  const sessionIds = new Set(related.map((tab) => tab.sessionId))
+  for (const tab of related) detachTab(tab.id)
+  await Promise.all(Array.from(sessionIds, disconnectSessionIfUnused))
 }

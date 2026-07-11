@@ -92,46 +92,47 @@ async function tick(sessionId: string, showLoading: boolean) {
   inFlight.add(sessionId)
   ensure(sessionId)
   if (showLoading) patch(sessionId, { loading: true })
-  // 容器与镜像并行采集,各自独立成败:任一失败不影响另一类展示,
-  // 也可让 UI 各自给出重试入口,而不是整体坍塌成空。
-  const [cRes, iRes, vRes, nRes, sRes] = await Promise.allSettled([
-    dockerListContainers(sessionId),
-    dockerListImages(sessionId),
-    dockerListVolumes(sessionId),
-    dockerListNetworks(sessionId),
-    dockerListStacks(sessionId),
-  ])
-  let anyOk = false
-  const wasAvailable = sessions.value[sessionId]?.available === true
-  const applyList = <T,>(
-    r: PromiseSettledResult<T>,
-    okKey: keyof SessionDocker,
-    errKey: keyof SessionDocker,
-    label: string,
-  ) => {
-    if (r.status === 'fulfilled') {
-      patch(sessionId, { [okKey]: r.value, [errKey]: null } as Partial<SessionDocker>)
-      anyOk = true
-    } else {
-      patch(sessionId, {
-        [errKey]: wasAvailable
-          ? errMsg(r.reason, `${label}刷新失败`)
-          : 'Docker 不可用: ' + errMsg(r.reason, label),
-      } as Partial<SessionDocker>)
+  try {
+    // 容器与镜像并行采集,各自独立成败:任一失败不影响另一类展示,
+    // 也可让 UI 各自给出重试入口,而不是整体坍塌成空。
+    const [cRes, iRes, vRes, nRes, sRes] = await Promise.allSettled([
+      dockerListContainers(sessionId),
+      dockerListImages(sessionId),
+      dockerListVolumes(sessionId),
+      dockerListNetworks(sessionId),
+      dockerListStacks(sessionId),
+    ])
+    let anyOk = false
+    const wasAvailable = sessions.value[sessionId]?.available === true
+    const applyList = <T,>(
+      r: PromiseSettledResult<T>,
+      okKey: keyof SessionDocker,
+      errKey: keyof SessionDocker,
+      label: string,
+    ) => {
+      if (r.status === 'fulfilled') {
+        patch(sessionId, { [okKey]: r.value, [errKey]: null } as Partial<SessionDocker>)
+        anyOk = true
+      } else {
+        patch(sessionId, {
+          [errKey]: wasAvailable
+            ? errMsg(r.reason, `${label}刷新失败`)
+            : 'Docker 不可用: ' + errMsg(r.reason, label),
+        } as Partial<SessionDocker>)
+      }
     }
+    applyList(cRes, 'containers', 'containersError', '容器列表')
+    applyList(iRes, 'images', 'imagesError', '镜像列表')
+    applyList(vRes, 'volumes', 'volumesError', '卷列表')
+    applyList(nRes, 'networks', 'networksError', '网络列表')
+    applyList(sRes, 'stacks', 'stacksError', 'Compose 列表')
+    if (anyOk) patch(sessionId, { available: true, loading: false })
+    else patch(sessionId, { loading: false })
+    // stats 采集较慢(--no-stream 仍需秒级),不阻塞主列表 loading,独立异步刷新
+    void refreshStats(sessionId)
+  } finally {
+    inFlight.delete(sessionId)
   }
-  applyList(cRes, 'containers', 'containersError', '容器列表')
-  applyList(iRes, 'images', 'imagesError', '镜像列表')
-  applyList(vRes, 'volumes', 'volumesError', '卷列表')
-  applyList(nRes, 'networks', 'networksError', '网络列表')
-  // compose 不装的话 sRes 会 fulfilled 拿到空数组(dockerListStacks 内部 catch 了),
-  // 极少数场景下才会 rejected(命令本身超时/权限异常),给同样的错误处理
-  applyList(sRes, 'stacks', 'stacksError', 'Compose 列表')
-  if (anyOk) patch(sessionId, { available: true, loading: false })
-  else patch(sessionId, { loading: false })
-  inFlight.delete(sessionId)
-  // stats 采集较慢(--no-stream 仍需秒级),不阻塞主列表 loading,独立异步刷新
-  void refreshStats(sessionId)
 }
 
 /** 采集运行中容器的资源占用,按容器短 ID 建索引后写回状态 */
@@ -159,8 +160,8 @@ export function startDocker(sessionId: string) {
   void dockerVersion(sessionId).then((v) => {
     if (v) patch(sessionId, { version: v })
   })
-  tick(sessionId, true)
-  timers.set(sessionId, window.setInterval(() => tick(sessionId, false), INTERVAL_MS))
+  void tick(sessionId, true)
+  timers.set(sessionId, window.setInterval(() => void tick(sessionId, false), INTERVAL_MS))
 }
 
 /** 停止轮询(保留已采集数据) */
@@ -185,7 +186,7 @@ export function clearDocker(sessionId: string) {
 
 /** 手动刷新某会话数据(显示 loading) */
 export function refreshDocker(sessionId: string) {
-  tick(sessionId, true)
+  void tick(sessionId, true)
 }
 
 /** 取某会话 Docker 状态(响应式) */

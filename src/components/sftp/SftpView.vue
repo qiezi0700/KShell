@@ -52,6 +52,11 @@ const props = defineProps<{
   sftpId: string | null
   host: string
   user: string
+  closeTabOnOpenError?: boolean
+}>()
+
+const emit = defineEmits<{
+  openError: [message: string]
 }>()
 
 // SFTP 会话
@@ -107,9 +112,11 @@ onMounted(async () => {
   if (!sftpId.value) {
     try {
       sftpId.value = await sftpOpen(props.sessionId)
-    } catch (e: any) {
-      toast.error(typeof e === 'string' ? e : e?.message ?? String(e), 'SFTP 打开失败')
-      closeTab(props.tabId)
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e)
+      toast.error(message, 'SFTP 打开失败')
+      emit('openError', message)
+      if (props.closeTabOnOpenError !== false) closeTab(props.tabId)
       return
     }
   }

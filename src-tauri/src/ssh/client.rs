@@ -10,6 +10,7 @@ use russh::keys::agent::AgentIdentity;
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::net::TcpStream;
 use uuid::Uuid;
 
 use crate::ssh::known_hosts::HostCheckResult;
@@ -17,6 +18,7 @@ use crate::state::{AppState, HostConfirmResult};
 
 /// 公钥校验未通过时的错误标识,前端据此抑制冗余错误提示(host-key 弹框已自解释)
 pub const HOST_KEY_REJECTED: &str = "主机公钥校验未通过,连接已拒绝";
+const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 15_000;
 
 pub struct SshSession {
     pub handle: Handle<ClientHandler>,
@@ -245,11 +247,18 @@ pub async fn connect(app: AppHandle, cfg: SshConfig) -> Result<SshSession> {
             jump: None,
         };
         let jump_session = connect_no_jump(app.clone(), config.clone(), jump_cfg).await?;
-        let channel = jump_session
-            .handle
-            .channel_open_direct_tcpip(&cfg.host, cfg.port as u32, "127.0.0.1", 0)
-            .await
-            .context("在跳板机上建立到目标主机的隧道失败")?;
+        let channel = tokio::time::timeout(
+            connect_timeout(cfg.timeout_ms),
+            jump_session.handle.channel_open_direct_tcpip(
+                &cfg.host,
+                cfg.port as u32,
+                "127.0.0.1",
+                0,
+            ),
+        )
+        .await
+        .map_err(|_| anyhow!("通过跳板机连接 {}:{} 超时", cfg.host, cfg.port))?
+        .context("在跳板机上建立到目标主机的隧道失败")?;
         let stream = channel.into_stream();
         connect_stream_target(
             app, config, &cfg.host, cfg.port, &cfg.user, &cfg.auth, stream,
@@ -266,7 +275,16 @@ async fn connect_no_jump(
     config: Arc<client::Config>,
     cfg: SshConfig,
 ) -> Result<SshSession> {
-    connect_direct(app, config, &cfg.host, cfg.port, &cfg.user, &cfg.auth).await
+    connect_direct(
+        app,
+        config,
+        &cfg.host,
+        cfg.port,
+        &cfg.user,
+        &cfg.auth,
+        cfg.timeout_ms,
+    )
+    .await
 }
 
 /// 直接 TCP 连接目标主机。
@@ -277,20 +295,38 @@ async fn connect_direct(
     port: u16,
     user: &str,
     auth: &AuthMethod,
+    timeout_ms: Option<u64>,
 ) -> Result<SshSession> {
+    let stream = tokio::time::timeout(
+        connect_timeout(timeout_ms),
+        TcpStream::connect((host, port)),
+    )
+    .await
+    .map_err(|_| anyhow!("连接 {host}:{port} 超时"))?
+    .with_context(|| format!("连接 {host}:{port} 失败"))?;
+    let _ = stream.set_nodelay(true);
+
     let (handler, confirm_tx, confirm_id, rejected) =
         ClientHandler::new(app.clone(), host.to_string(), port);
     app.state::<AppState>()
         .pending_host_confirms
         .insert(confirm_id.clone(), confirm_tx);
 
-    let result = client::connect(config, (host, port), handler).await;
+    let result = client::connect_stream(config, stream, handler).await;
 
     app.state::<AppState>()
         .pending_host_confirms
         .remove(&confirm_id);
 
     finish_connect(result, rejected, app, host, port, user, auth).await
+}
+
+fn connect_timeout(timeout_ms: Option<u64>) -> Duration {
+    Duration::from_millis(
+        timeout_ms
+            .unwrap_or(DEFAULT_CONNECT_TIMEOUT_MS)
+            .clamp(1_000, 120_000),
+    )
 }
 
 /// 在已有 IO 流上(ProxyJump 隧道)连接目标主机。
@@ -507,5 +543,22 @@ async fn authenticate_keyboard_interactive(
                     .context("keyboard-interactive 响应失败")?;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::connect_timeout;
+
+    #[test]
+    fn connect_timeout_uses_default_and_bounds() {
+        assert_eq!(connect_timeout(None), Duration::from_millis(15_000));
+        assert_eq!(connect_timeout(Some(10)), Duration::from_millis(1_000));
+        assert_eq!(
+            connect_timeout(Some(300_000)),
+            Duration::from_millis(120_000)
+        );
     }
 }

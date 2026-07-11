@@ -54,6 +54,7 @@ registerSessionAction({
   run: async (s) => {
     try {
       const sessionId = await connectSession(s)
+      if (!sessionId) return
       const sftpId = await sftpOpen(sessionId)
       addTab({
         id: nextTabId('sftp'),
@@ -76,9 +77,10 @@ registerSessionAction({
   label: '打开 Docker',
   icon: Boxes,
   run: async (s) => {
-    let sessionId: string
+    let sessionId: string | null
     try {
       sessionId = await connectSession(s)
+      if (!sessionId) return
     } catch (e) {
       silentHostKeyError(e)
       return

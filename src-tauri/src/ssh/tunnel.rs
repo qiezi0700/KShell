@@ -26,7 +26,11 @@ use crate::state::{AppState, SessionId, TunnelId};
 
 /// 隧道类型
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum TunnelKind {
     /// 本地转发:监听 local_addr:local_port,转发到 remote_host:remote_port
     Local {
@@ -253,12 +257,17 @@ pub async fn tunnel_remove(
 
 /// 关闭某会话的所有隧道(在 ssh_disconnect 前调用)
 pub async fn tunnel_close_session(app: &AppHandle, state: &AppState, session_id: &str) {
-    let ids: Vec<TunnelId> = state
+    let tunnels: Vec<(TunnelId, Arc<Mutex<Tunnel>>)> = state
         .tunnels
         .iter()
-        .filter(|e| e.tunnel.blocking_lock().session_id == session_id)
-        .map(|e| e.key().clone())
+        .map(|entry| (entry.key().clone(), entry.tunnel.clone()))
         .collect();
+    let mut ids = Vec::new();
+    for (id, tunnel) in tunnels {
+        if tunnel.lock().await.session_id == session_id {
+            ids.push(id);
+        }
+    }
     for id in ids {
         let _ = stop_tunnel(app, state, &id).await;
     }
@@ -307,8 +316,8 @@ async fn run_local_forward(
                 Ok(ch) => ch,
                 Err(e) => {
                     let _ = app_clone.emit(
-                        &format!("ssh://tunnel/{}/error", tunnel_id),
-                        format!("打开直连通道失败: {e}"),
+                        "ssh://tunnel/error",
+                        format!("隧道 {tunnel_id} 打开直连通道失败: {e}"),
                     );
                     return;
                 }
@@ -316,8 +325,8 @@ async fn run_local_forward(
             drop(guard);
             if let Err(e) = pipe_channel_stream(channel, stream).await {
                 let _ = app_clone.emit(
-                    &format!("ssh://tunnel/{}/error", tunnel_id),
-                    format!("转发连接异常: {e}"),
+                    "ssh://tunnel/error",
+                    format!("隧道 {tunnel_id} 转发连接异常: {e}"),
                 );
             }
         });
@@ -426,7 +435,12 @@ async fn stop_tunnel(app: &AppHandle, state: &AppState, tunnel_id: &str) -> Resu
     // 远程转发需要通知服务端取消监听
     {
         let t = entry.tunnel.lock().await;
-        if let TunnelKind::Remote { bind_addr, bind_port, .. } = &t.kind {
+        if let TunnelKind::Remote {
+            bind_addr,
+            bind_port,
+            ..
+        } = &t.kind
+        {
             let session = state
                 .sessions
                 .get(&t.session_id)
@@ -462,4 +476,46 @@ async fn pipe_channel_stream(channel: Channel<Msg>, stream: TcpStream) -> Result
     let _ = local.shutdown().await;
     let _ = remote.shutdown().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::TunnelKind;
+
+    #[test]
+    fn tunnel_kind_uses_camel_case_fields() {
+        let kind: TunnelKind = serde_json::from_value(json!({
+            "kind": "local",
+            "localAddr": "127.0.0.1",
+            "localPort": 8080,
+            "remoteHost": "127.0.0.1",
+            "remotePort": 80
+        }))
+        .expect("应能解析前端发送的 camelCase 字段");
+
+        let value = serde_json::to_value(kind).expect("应能序列化隧道类型");
+        assert_eq!(value["localAddr"], "127.0.0.1");
+        assert_eq!(value["localPort"], 8080);
+        assert_eq!(value["remoteHost"], "127.0.0.1");
+        assert_eq!(value["remotePort"], 80);
+        assert!(value.get("local_addr").is_none());
+
+        let remote: TunnelKind = serde_json::from_value(json!({
+            "kind": "remote",
+            "bindAddr": "0.0.0.0",
+            "bindPort": 9000,
+            "localHost": "127.0.0.1",
+            "localPort": 3000
+        }))
+        .expect("应能解析远程转发的 camelCase 字段");
+
+        let value = serde_json::to_value(remote).expect("应能序列化远程转发类型");
+        assert_eq!(value["bindAddr"], "0.0.0.0");
+        assert_eq!(value["bindPort"], 9000);
+        assert_eq!(value["localHost"], "127.0.0.1");
+        assert_eq!(value["localPort"], 3000);
+        assert!(value.get("bind_addr").is_none());
+    }
 }

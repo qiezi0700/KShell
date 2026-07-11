@@ -1,5 +1,7 @@
 import { sshExec } from './ssh'
 
+const DOCKER_QUERY_TIMEOUT_MS = 15_000
+
 // ============================================================
 // 类型定义
 // docker CLI 的 `--format '{{json .}}'` 输出键为 PascalCase(ID / Names / Image…),
@@ -168,7 +170,7 @@ export interface DockerStats {
 /** 检测远端是否安装 docker 且当前用户有权限(docker info 成功即算可用) */
 export async function dockerAvailable(sessionId: string): Promise<boolean> {
   try {
-    const out = await sshExec(sessionId, 'command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && echo ok')
+    const out = await sshExec(sessionId, 'command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && echo ok', DOCKER_QUERY_TIMEOUT_MS)
     return out.trim() === 'ok'
   } catch {
     return false
@@ -253,7 +255,7 @@ export async function dockerInstall(sessionId: string, opts: DockerInstallOption
 /** 获取 Docker 服务端版本信息 */
 export async function dockerVersion(sessionId: string): Promise<DockerVersion | null> {
   try {
-    const out = await sshExec(sessionId, 'docker version --format "{{.Server.Version}}|{{.Server.APIVersion}}" 2>/dev/null')
+    const out = await sshExec(sessionId, 'docker version --format "{{.Server.Version}}|{{.Server.APIVersion}}" 2>/dev/null', DOCKER_QUERY_TIMEOUT_MS)
     const [version, apiVersion] = out.trim().split('|')
     if (!version) return null
     return { version, apiVersion: apiVersion || '' }
@@ -289,7 +291,7 @@ function validateImageId(id: string): void {
 
 /** 列出所有容器(含已停止) */
 export async function dockerListContainers(sessionId: string): Promise<DockerContainer[]> {
-  const out = await sshExec(sessionId, "docker ps -a --format '{{json .}}'")
+  const out = await sshExec(sessionId, "docker ps -a --format '{{json .}}'", DOCKER_QUERY_TIMEOUT_MS)
   return parseJsonLines(out).map(normalizeContainer)
 }
 
@@ -679,7 +681,7 @@ export async function dockerInspect(sessionId: string, container: string): Promi
 
 /** 列出本地镜像 */
 export async function dockerListImages(sessionId: string): Promise<DockerImage[]> {
-  const out = await sshExec(sessionId, "docker images --format '{{json .}}'")
+  const out = await sshExec(sessionId, "docker images --format '{{json .}}'", DOCKER_QUERY_TIMEOUT_MS)
   return parseJsonLines(out).map(normalizeImage)
 }
 
@@ -736,7 +738,7 @@ export async function dockerSystemPrune(sessionId: string, withVolumes: boolean)
 
 /** 列出所有本地卷 */
 export async function dockerListVolumes(sessionId: string): Promise<DockerVolume[]> {
-  const out = await sshExec(sessionId, "docker volume ls --format '{{json .}}'")
+  const out = await sshExec(sessionId, "docker volume ls --format '{{json .}}'", DOCKER_QUERY_TIMEOUT_MS)
   return parseJsonLines(out).map((r) => ({
     name: str(r.Name),
     driver: str(r.Driver),
@@ -768,7 +770,7 @@ export async function dockerPruneVolumes(sessionId: string): Promise<string> {
 
 /** 列出所有网络 */
 export async function dockerListNetworks(sessionId: string): Promise<DockerNetwork[]> {
-  const out = await sshExec(sessionId, "docker network ls --format '{{json .}}'")
+  const out = await sshExec(sessionId, "docker network ls --format '{{json .}}'", DOCKER_QUERY_TIMEOUT_MS)
   return parseJsonLines(out).map((r) => ({
     id: str(r.ID),
     name: str(r.Name),
@@ -920,7 +922,7 @@ function validateComposePath(path: string): void {
 /** 列出所有 compose 项目(含已停止)。
  * docker compose ls 输出的是**单行 JSON 数组**,不是每行一个 JSON,单独用 JSON.parse。 */
 export async function dockerListStacks(sessionId: string): Promise<DockerStack[]> {
-  const out = await sshExec(sessionId, 'docker compose ls --all --format json')
+  const out = await sshExec(sessionId, 'docker compose ls --all --format json', DOCKER_QUERY_TIMEOUT_MS)
   try {
     const arr = JSON.parse(out.trim()) as Array<Record<string, unknown>>
     return arr.map((r) => ({
@@ -990,7 +992,7 @@ function shq(s: string): string {
 
 /** 采集所有运行中容器的资源占用(--no-stream 一次性快照) */
 export async function dockerStats(sessionId: string): Promise<DockerStats[]> {
-  const out = await sshExec(sessionId, "docker stats --no-stream --format '{{json .}}'")
+  const out = await sshExec(sessionId, "docker stats --no-stream --format '{{json .}}'", DOCKER_QUERY_TIMEOUT_MS)
   return parseJsonLines(out).map(normalizeStats)
 }
 

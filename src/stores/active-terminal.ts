@@ -1,6 +1,4 @@
 import { ref } from 'vue'
-import { activeTabId } from '@/stores/tabs'
-import { watch } from 'vue'
 
 /**
  * 活跃终端命令发送注册表。
@@ -17,10 +15,19 @@ import { watch } from 'vue'
 type Sender = (cmd: string) => void
 
 const sender = ref<Sender | null>(null)
+let ownerTabId: string | null = null
 
-// 活跃 tab 变化时由 TerminalSplit 重新注册;这里仅暴露读写接口
-export function setActiveTerminalSender(fn: Sender | null) {
+export function setActiveTerminalSender(tabId: string, fn: Sender) {
+  ownerTabId = tabId
   sender.value = fn
+  canSendToTerminal.value = true
+}
+
+export function clearActiveTerminalSender(tabId: string) {
+  if (ownerTabId !== tabId) return
+  ownerTabId = null
+  sender.value = null
+  canSendToTerminal.value = false
 }
 
 export function getActiveTerminalSender(): Sender | null {
@@ -29,26 +36,3 @@ export function getActiveTerminalSender(): Sender | null {
 
 /** 活跃 tab 是否为终端类型(可发送指令);用于侧栏按钮禁用判断 */
 export const canSendToTerminal = ref(false)
-
-/**
- * 绑定 activeTabId 变化,由 TerminalSplit 调用:
- * 当 tab 切到当前终端时调 bind(true),切走时调 bind(false)。
- * 非 terminal tab 活跃时 canSendToTerminal 为 false。
- */
-export function useActiveTerminalBinding(tabId: string, isTerminal: boolean) {
-  watch(
-    activeTabId,
-    (cur) => {
-      if (cur === tabId && isTerminal) {
-        canSendToTerminal.value = true
-      } else {
-        // 切走时:只有当前是本 tab 持有的发送权才清空
-        if (canSendToTerminal.value && cur !== tabId) {
-          canSendToTerminal.value = false
-          sender.value = null
-        }
-      }
-    },
-    { immediate: true },
-  )
-}

@@ -1,5 +1,6 @@
 import { ref, watch } from 'vue'
 import { settingsGet, settingsSet } from '@/api/settings'
+import { toast } from '@/stores/toast'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
@@ -116,7 +117,9 @@ export async function initPreferences(): Promise<void> {
 }
 
 function savePrefs(prefs: StoredPrefs) {
-  void settingsSet(STORAGE_KEY, JSON.stringify(prefs))
+  void settingsSet(STORAGE_KEY, JSON.stringify(prefs)).catch((e: unknown) => {
+    toast.error(e instanceof Error ? e.message : String(e), '偏好设置保存失败')
+  })
 }
 
 // ref 先用默认值,initPreferences() 异步覆盖

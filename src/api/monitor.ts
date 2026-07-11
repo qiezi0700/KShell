@@ -249,6 +249,6 @@ export async function collectMonitor(
   sessionId: string,
   prev: MonitorSample | null,
 ): Promise<MonitorSample> {
-  const raw = await sshExec(sessionId, MONITOR_SCRIPT)
+  const raw = await sshExec(sessionId, MONITOR_SCRIPT, 10_000)
   return parseSample(raw, prev)
 }

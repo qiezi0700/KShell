@@ -20,6 +20,7 @@ import {
   onChannelExit,
 } from '@/api/ssh'
 import type { UnlistenFn } from '@tauri-apps/api/event'
+import { v4 as uuidv4 } from 'uuid'
 
 const props = defineProps<{
   open: boolean
@@ -160,27 +161,29 @@ async function startStream() {
     cmd = `docker logs -f --tail ${n} ${ts}${id} 2>&1`
   }
 
-  // 尺寸随便传,follow 走非交互,PTY 不影响文本
-  let chId: string
+  // 先监听再打开通道，避免短日志在 invoke 返回前已经输出完毕。
+  const chId = uuidv4()
   try {
-    chId = await sshOpenExec(props.sessionId, cmd, 200, 40)
+    ;[unlistenData, unlistenExit] = await Promise.all([
+      onChannelData(chId, (bytes) => {
+        const text = decoder.decode(bytes, { stream: true })
+        appendChunk(text)
+      }),
+      onChannelExit(chId, () => {
+        void stopStream()
+      }),
+    ])
+    streamChannelId.value = chId
+    streaming.value = true
+    follow.value = true
+    pending = ''
+    await sshOpenExec(props.sessionId, cmd, 200, 40, chId)
+    if (streamChannelId.value !== chId) await sshCloseChannel(chId)
   } catch (e: unknown) {
+    await stopStream()
     toast.error(String(e), '流式日志启动失败')
     return
   }
-  streamChannelId.value = chId
-  streaming.value = true
-  follow.value = true
-  pending = ''
-
-  unlistenData = await onChannelData(chId, (bytes) => {
-    // ArrayBuffer/Uint8Array 都可能,TextDecoder 都能吃
-    const text = decoder.decode(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), { stream: true })
-    appendChunk(text)
-  })
-  unlistenExit = await onChannelExit(chId, () => {
-    stopStream()
-  })
 }
 
 async function stopStream() {

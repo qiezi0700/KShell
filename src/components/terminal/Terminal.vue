@@ -18,6 +18,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import type { UnlistenFn } from '@tauri-apps/api/event'
+import { v4 as uuidv4 } from 'uuid'
 import {
   sshOpenShell,
   sshOpenExec,
@@ -48,6 +49,7 @@ let unlistenExit: UnlistenFn | null = null
 let resizeObserver: ResizeObserver | null = null
 let wheelHandler: ((e: WheelEvent) => void) | null = null
 let currentChannelId: string | null = null
+let isUnmounted = false
 
 const encoder = new TextEncoder()
 
@@ -134,22 +136,32 @@ onMounted(async () => {
 
   try {
     const { cols, rows } = t
-    const chId =
-      props.channelId ??
-      (props.command
-        ? await sshOpenExec(props.sessionId, props.command, cols, rows)
-        : await sshOpenShell(props.sessionId, cols, rows))
+    const chId = props.channelId ?? uuidv4()
     currentChannelId = chId
-    updateTab(props.tabId, { channelId: chId } as any)
-    status.value = 'connected'
+    ;[unlistenData, unlistenExit] = await Promise.all([
+      onChannelData(chId, bytes => {
+        t.write(bytes)
+      }),
+      onChannelExit(chId, code => {
+        status.value = 'closed'
+        t.writeln(`\r\n\x1b[90m会话已结束(exit ${code ?? 'null'})\x1b[0m`)
+      }),
+    ])
 
-    unlistenData = await onChannelData(chId, bytes => {
-      t.write(bytes)
-    })
-    unlistenExit = await onChannelExit(chId, code => {
-      status.value = 'closed'
-      t.writeln(`\r\n\x1b[90m会话已结束(exit ${code ?? 'null'})\x1b[0m`)
-    })
+    // 新通道必须在事件监听完成后打开，否则高速 shell 的首屏输出可能在监听前丢失。
+    if (!props.channelId) {
+      if (props.command) {
+        await sshOpenExec(props.sessionId, props.command, cols, rows, chId)
+      } else {
+        await sshOpenShell(props.sessionId, cols, rows, chId)
+      }
+      if (isUnmounted) {
+        await sshCloseChannel(chId)
+        return
+      }
+      updateTab(props.tabId, { channelId: chId })
+    }
+    status.value = 'connected'
 
     t.onData(data => {
       if (currentChannelId) sshWrite(currentChannelId, encoder.encode(data))
@@ -181,14 +193,20 @@ onMounted(async () => {
       if (currentChannelId) sshResize(currentChannelId, cols, rows)
     })
     resizeObserver.observe(container.value!)
-  } catch (e: any) {
+  } catch (e: unknown) {
+    unlistenData?.()
+    unlistenExit?.()
+    unlistenData = null
+    unlistenExit = null
+    currentChannelId = null
     status.value = 'error'
-    errMsg.value = typeof e === 'string' ? e : e?.message ?? String(e)
+    errMsg.value = e instanceof Error ? e.message : String(e)
     t.writeln(`\r\n\x1b[31m连接失败: ${errMsg.value}\x1b[0m`)
   }
 })
 
 onBeforeUnmount(async () => {
+  isUnmounted = true
   if (wheelHandler && container.value) {
     container.value.removeEventListener('wheel', wheelHandler, { capture: true } as EventListenerOptions)
   }

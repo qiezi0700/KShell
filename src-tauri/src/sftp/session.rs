@@ -11,8 +11,7 @@ use crate::state::SessionId;
 /// 用 Arc<Mutex> 包裹因为 SftpSession 的方法都是 &self,但跨 await 需要Sync。
 pub struct SftpHandle {
     pub session: Arc<SftpSession>,
-    /// 关联的 SSH 会话 id,目前未使用,保留用于后续按 SSH 会话批量清理 SFTP
-    #[allow(dead_code)]
+    /// 关联的 SSH 会话 id,用于断开 SSH 时批量清理 SFTP 子会话。
     pub ssh_session_id: SessionId,
 }
 

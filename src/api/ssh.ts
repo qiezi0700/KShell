@@ -32,8 +32,9 @@ export async function sshOpenShell(
   sessionId: string,
   cols: number,
   rows: number,
+  channelId: string,
 ): Promise<string> {
-  return await invoke<string>('ssh_open_shell', { sessionId, cols, rows })
+  return await invoke<string>('ssh_open_shell', { sessionId, cols, rows, channelId })
 }
 
 /** 在已有 SSH 会话上以 PTY 模式交互式执行命令(如 docker exec -it),返回 channel id。 */
@@ -42,8 +43,9 @@ export async function sshOpenExec(
   command: string,
   cols: number,
   rows: number,
+  channelId: string,
 ): Promise<string> {
-  return await invoke<string>('ssh_open_exec', { sessionId, command, cols, rows })
+  return await invoke<string>('ssh_open_exec', { sessionId, command, cols, rows, channelId })
 }
 
 export async function sshWrite(channelId: string, data: Uint8Array): Promise<void> {

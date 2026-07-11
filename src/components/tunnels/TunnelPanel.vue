@@ -42,7 +42,9 @@ const remoteHost = ref('127.0.0.1')
 const remotePort = ref('')
 const adding = ref(false)
 
-const unlisteners: UnlistenFn[] = []
+let errorUnlisten: UnlistenFn | null = null
+const tunnelUnlisteners = new Map<string, UnlistenFn>()
+let refreshToken = 0
 
 const activeSessionId = computed(() => {
   const id = activeTabId.value
@@ -54,39 +56,62 @@ const activeSessionId = computed(() => {
 const isLocal = computed(() => kind.value === 'local')
 
 onMounted(async () => {
-  const errUnlisten = await onTunnelError(msg => toast.error(msg, '隧道错误'))
-  unlisteners.push(errUnlisten)
+  errorUnlisten = await onTunnelError(msg => toast.error(msg, '隧道错误'))
   await refresh()
 })
 
 onBeforeUnmount(() => {
-  unlisteners.forEach(fn => fn())
+  refreshToken++
+  errorUnlisten?.()
+  clearTunnelListeners()
 })
 
 watch(activeSessionId, () => {
   void refresh()
 })
 
+watch(kind, (next, previous) => {
+  if (next === 'remote' && previous === 'local' && localAddr.value === '127.0.0.1') {
+    localAddr.value = '0.0.0.0'
+  } else if (next === 'local' && previous === 'remote' && localAddr.value === '0.0.0.0') {
+    localAddr.value = '127.0.0.1'
+  }
+})
+
+function clearTunnelListeners() {
+  tunnelUnlisteners.forEach(fn => fn())
+  tunnelUnlisteners.clear()
+}
+
 async function refresh() {
+  const token = ++refreshToken
+  clearTunnelListeners()
   const sid = activeSessionId.value
   if (!sid) {
     items.value = []
+    loading.value = false
     return
   }
   loading.value = true
   try {
-    items.value = await tunnelList(sid)
-    for (const t of items.value) {
+    const listed = await tunnelList(sid)
+    if (token !== refreshToken || activeSessionId.value !== sid) return
+    items.value = listed
+    for (const t of listed) {
       const fn = await onTunnelUpdate(t.id, updated => {
         const idx = items.value.findIndex(x => x.id === updated.id)
         if (idx >= 0) items.value[idx] = updated
       })
-      unlisteners.push(fn)
+      if (token !== refreshToken || activeSessionId.value !== sid) {
+        fn()
+        return
+      }
+      tunnelUnlisteners.set(t.id, fn)
     }
   } catch (e: any) {
-    toast.error(String(e), '读取隧道失败')
+    if (token === refreshToken) toast.error(String(e), '读取隧道失败')
   } finally {
-    loading.value = false
+    if (token === refreshToken) loading.value = false
   }
 }
 
@@ -142,6 +167,8 @@ async function addTunnel() {
 async function removeTunnel(id: string) {
   try {
     await tunnelRemove(id)
+    tunnelUnlisteners.get(id)?.()
+    tunnelUnlisteners.delete(id)
     items.value = items.value.filter(t => t.id !== id)
   } catch (e: any) {
     toast.error(String(e), '停止隧道失败')
@@ -207,7 +234,9 @@ function destStr(t: TunnelInfo): string {
           添加隧道
         </Button>
         <div class="text-caption px-0.5 text-muted-foreground/70">
-          端口 0 表示自动分配;会话断开时隧道自动关闭。
+          {{ isLocal
+            ? '端口 0 表示自动分配;会话断开时隧道自动关闭。'
+            : '绑定 0.0.0.0 会对外开放,且需服务端允许 GatewayPorts。' }}
         </div>
       </div>
     </div>
