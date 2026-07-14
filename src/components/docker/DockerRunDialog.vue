@@ -33,6 +33,7 @@ import {
 import { toast } from '@/stores/toast'
 import {
   dockerRun,
+  dockerNetworkConnect,
   buildRunCommandFromSpec,
   type DockerImage,
   type DockerNetwork,
@@ -279,9 +280,7 @@ function extractContainerId(runOut: string): string {
 async function attachExtraNetworks(target: string, nets: string[]) {
   for (const net of nets) {
     try {
-      const out = await sshExec(props.sessionId, `docker network connect ${net} ${target} 2>&1`)
-      // docker network connect 成功输出为空;非空且含 Error 视为失败
-      if (out && /error/i.test(out)) throw new Error(out.trim())
+      await dockerNetworkConnect(props.sessionId, net, target)
     } catch (e: unknown) {
       const msg = (e as Error)?.message ?? String(e)
       toast.warning(`附加网络 ${net} 挂载失败:${msg}`)
