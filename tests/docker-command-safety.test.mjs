@@ -25,3 +25,9 @@ test('容器重建必须通过事务编排并保留失败回滚', () => {
     '重建流程不得在新容器就绪前直接删除原容器',
   )
 })
+
+test('容器克隆必须通过失败恢复编排执行', () => {
+  assert.equal(source.includes('cloneContainerTransaction('), true)
+  assert.equal(source.includes('docker stop ${origName}'), false)
+  assert.equal(source.includes('${runCmd} 2>&1'), false)
+})

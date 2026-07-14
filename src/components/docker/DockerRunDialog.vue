@@ -46,8 +46,8 @@ import {
   type DockerNetwork,
   type DockerRunSpec,
 } from '@/api/docker'
-import { sshExec } from '@/api/ssh'
 
+import { cloneContainerTransaction } from './clone-container'
 import { recreateContainerTransaction } from './recreate-container'
 
 const props = withDefaults(
@@ -392,12 +392,7 @@ async function submitRecreate() {
   }
 }
 
-/** 克隆容器流程:基于原容器配置创建新容器,不删除原容器。
- *  根据用户选项决定是否拉取最新镜像、是否停止原容器:
- *  - pull + stop:升级并保留(原容器停止保留,便于回滚)
- *  - pull + 不 stop:用最新镜像起一份新的(原容器继续运行,端口必须改)
- *  - 不 pull + 不 stop:纯复制(同镜像多实例,端口必须改)
- *  - 不 pull + stop:少见,用同镜像停旧起新(端口可复用) */
+/** 克隆容器流程：创建失败时清理新容器残留，并恢复被本流程停止的原容器。 */
 async function submitClone() {
   const spec = buildSpec()
   const origName = originalName.value
@@ -409,9 +404,9 @@ async function submitClone() {
     toast.error('克隆模式必须指定新容器名')
     return
   }
-  let runCmd: string
+  const targetName = spec.name
   try {
-    runCmd = buildRunCommandFromSpec(spec)
+    buildRunCommandFromSpec(spec)
   } catch (e: unknown) {
     toast.error(String(e), '配置校验失败')
     return
@@ -419,26 +414,39 @@ async function submitClone() {
 
   busy.value = true
   try {
-    if (clonePullImage.value) {
-      toast.info(`正在拉取 ${spec.image}…`)
-      await sshExec(props.sessionId, `docker pull ${spec.image} 2>&1`)
-    }
+    await cloneContainerTransaction(
+      {
+        image: spec.image,
+        originalName: origName,
+        targetName,
+        shouldPullImage: clonePullImage.value,
+        shouldStopOriginal: cloneStopOriginal.value,
+      },
+      {
+        exists: async (container) => dockerContainerExists(props.sessionId, container),
+        pull: async (image) => {
+          toast.info(`正在拉取 ${image}…`)
+          await dockerPull(props.sessionId, image)
+        },
+        inspectState: async (container) => (await dockerInspect(props.sessionId, container)).state,
+        stop: async (container) => {
+          await dockerStop(props.sessionId, container)
+        },
+        run: async () => {
+          const out = await dockerRun(props.sessionId, spec)
+          if (/^Error/i.test(out)) throw new Error(out.trim())
+        },
+        remove: async (container, force) => {
+          await dockerRemove(props.sessionId, container, force)
+        },
+        start: async (container) => {
+          await dockerStart(props.sessionId, container)
+        },
+      },
+    )
 
-    if (cloneStopOriginal.value) {
-      // stop 原容器释放端口;已停止时吞掉错误
-      try {
-        await sshExec(props.sessionId, `docker stop ${origName}`)
-      } catch (e: unknown) {
-        const msg = (e as Error)?.message ?? String(e)
-        if (!/is not running|No such container/i.test(msg)) throw e
-      }
-    }
-
-    const out = await sshExec(props.sessionId, `${runCmd} 2>&1`)
-    if (/^Error/i.test(out)) throw new Error(out.trim())
-    const cid = spec.name || extractContainerId(out)
-    if (spec.additionalNetworks?.length && cid) {
-      await attachExtraNetworks(cid, spec.additionalNetworks)
+    if (spec.additionalNetworks?.length) {
+      await attachExtraNetworks(targetName, spec.additionalNetworks)
     }
 
     const actions: string[] = ['新容器已启动']
@@ -477,7 +485,7 @@ async function submitClone() {
         </DialogDescription>
         <DialogDescription v-else-if="mode === 'clone'" class="text-caption text-muted-foreground">
           基于当前容器配置创建新容器,不删除原容器。可勾选是否拉取最新镜像、是否停止原容器。
-          新容器名必须不同;停止原容器后端口可复用,否则需修改宿主端口避免冲突。
+          新容器名必须不同；停止原容器后端口可复用，若克隆失败会自动恢复原容器。
         </DialogDescription>
         <DialogDescription v-else class="sr-only">用 docker run 从镜像创建一个新容器</DialogDescription>
       </DialogHeader>
