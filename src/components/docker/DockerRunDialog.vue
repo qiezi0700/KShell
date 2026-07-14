@@ -33,6 +33,13 @@ import {
 import { toast } from '@/stores/toast'
 import {
   dockerRun,
+  dockerPull,
+  dockerInspect,
+  dockerContainerExists,
+  dockerStart,
+  dockerStop,
+  dockerRemove,
+  dockerRename,
   dockerNetworkConnect,
   buildRunCommandFromSpec,
   type DockerImage,
@@ -40,6 +47,8 @@ import {
   type DockerRunSpec,
 } from '@/api/docker'
 import { sshExec } from '@/api/ssh'
+
+import { recreateContainerTransaction } from './recreate-container'
 
 const props = withDefaults(
   defineProps<{
@@ -309,19 +318,23 @@ async function submitCreate() {
   }
 }
 
-/** 重建流程:先在本地校验并组好 run 命令(避免 stop/rm 后再报错),再顺序执行
- * pull → stop → rm → run。stop/rm 若原容器已不存在或已停止,忽略对应错误继续。 */
+function createBackupName(): string {
+  return `kshell-backup-${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`
+}
+
+/** 重建期间保留旧容器备份,新容器及附加网络全部就绪后才删除备份。 */
 async function submitRecreate() {
-  const spec = buildSpec()
-  // 用旧容器名做 stop/rm 参照;避免用户改名后无法定位原容器
   const originalName = (props.initial?.name || props.initialName || '').trim()
   if (!originalName) {
     toast.error('缺少原容器名,无法定位需要停止的容器')
     return
   }
-  let runCmd: string
+
+  const formSpec = buildSpec()
+  const targetName = (formSpec.name ?? '').trim() || originalName
+  const spec: DockerRunSpec = { ...formSpec, name: targetName }
   try {
-    runCmd = buildRunCommandFromSpec(spec)
+    buildRunCommandFromSpec(spec)
   } catch (e: unknown) {
     toast.error(String(e), '配置校验失败')
     return
@@ -329,32 +342,47 @@ async function submitRecreate() {
 
   busy.value = true
   try {
-    toast.info(`正在拉取 ${spec.image}…`)
-    await sshExec(props.sessionId, `docker pull ${spec.image} 2>&1`)
+    const result = await recreateContainerTransaction(
+      {
+        image: spec.image,
+        originalName,
+        targetName,
+        backupName: createBackupName(),
+        additionalNetworks: spec.additionalNetworks ?? [],
+      },
+      {
+        pull: async (image) => {
+          toast.info(`正在拉取 ${image}…`)
+          await dockerPull(props.sessionId, image)
+        },
+        inspectState: async (container) => (await dockerInspect(props.sessionId, container)).state,
+        exists: async (container) => dockerContainerExists(props.sessionId, container),
+        stop: async (container) => {
+          await dockerStop(props.sessionId, container)
+        },
+        rename: async (container, newName) => {
+          await dockerRename(props.sessionId, container, newName)
+        },
+        run: async () => {
+          const out = await dockerRun(props.sessionId, spec)
+          if (/^Error/i.test(out)) throw new Error(out.trim())
+        },
+        connectNetwork: async (network, container) => {
+          await dockerNetworkConnect(props.sessionId, network, container)
+        },
+        remove: async (container, force) => {
+          await dockerRemove(props.sessionId, container, force)
+        },
+        start: async (container) => {
+          await dockerStart(props.sessionId, container)
+        },
+      },
+    )
 
-    // stop:容器已停止时 docker 返回非零,吞掉这个错误
-    try {
-      await sshExec(props.sessionId, `docker stop ${originalName}`)
-    } catch (e: unknown) {
-      const msg = (e as Error)?.message ?? String(e)
-      if (!/is not running|No such container/i.test(msg)) throw e
+    if (result.backupCleanupWarning) {
+      toast.warning(result.backupCleanupWarning)
     }
-
-    // rm:容器已不存在时同样吞掉
-    try {
-      await sshExec(props.sessionId, `docker rm ${originalName}`)
-    } catch (e: unknown) {
-      const msg = (e as Error)?.message ?? String(e)
-      if (!/No such container/i.test(msg)) throw e
-    }
-
-    const out = await sshExec(props.sessionId, `${runCmd} 2>&1`)
-    if (/^Error/i.test(out)) throw new Error(out.trim())
-    const cid = spec.name || extractContainerId(out)
-    if (spec.additionalNetworks?.length && cid) {
-      await attachExtraNetworks(cid, spec.additionalNetworks)
-    }
-    toast.success(`容器 ${spec.name || originalName} 已重建`)
+    toast.success(`容器 ${targetName} 已重建`)
     emit('recreated')
     emit('update:open', false)
   } catch (e: unknown) {
@@ -444,7 +472,7 @@ async function submitClone() {
           <span v-else>新建容器</span>
         </DialogTitle>
         <DialogDescription v-if="mode === 'recreate'" class="text-caption text-muted-foreground">
-          已按当前容器配置预填,可编辑后提交。提交时会依次执行 pull → stop → rm → run。
+          已按当前容器配置预填,可编辑后提交。提交时会保留旧容器备份，新容器及附加网络就绪后再清理备份；失败会自动恢复旧容器。
           仅覆盖弹窗内可编辑字段;--cap-add、--privileged、--dns、--device 等高级运行时字段不会保留。
         </DialogDescription>
         <DialogDescription v-else-if="mode === 'clone'" class="text-caption text-muted-foreground">

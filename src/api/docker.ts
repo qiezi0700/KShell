@@ -295,6 +295,21 @@ export async function dockerListContainers(sessionId: string): Promise<DockerCon
   return parseJsonLines(out).map(normalizeContainer)
 }
 
+/** 判断指定容器是否存在。仅“未找到”返回 false,权限或连接错误继续抛出。 */
+export async function dockerContainerExists(sessionId: string, container: string): Promise<boolean> {
+  validateName(container)
+  try {
+    const out = await sshExec(sessionId, `docker inspect --type container --format '{{.Id}}' ${container}`)
+    if (/No such (object|container)/i.test(out)) return false
+    if (/^Error/i.test(out.trim())) throw new Error(out.trim())
+    return out.trim().length > 0
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/No such (object|container)/i.test(message)) return false
+    throw error
+  }
+}
+
 /** 启动容器 */
 export async function dockerStart(sessionId: string, container: string): Promise<void> {
   validateName(container)

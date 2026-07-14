@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
-    "test:docker-safety": "node --test tests/docker-command-safety.test.mjs",
+    "test:docker-safety": "node --test tests/docker-*.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
