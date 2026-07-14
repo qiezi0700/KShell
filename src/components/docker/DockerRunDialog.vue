@@ -96,7 +96,7 @@ interface Form {
   ports: PortRow[]
   volumes: VolRow[]
   env: string[]      // 每项 "KEY=VALUE"
-  cmd: string        // 空格分隔;split 时按 shell-like 简单切分
+  cmd: string[]
 }
 
 function empty(): Form {
@@ -112,11 +112,11 @@ function empty(): Form {
     ports: [],
     volumes: [],
     env: [],
-    cmd: '',
+    cmd: [],
   }
 }
 
-/** 用 DockerRunSpec 预填表单;spec.cmd 数组重新拼回字符串,含空格的段落用 "" 括起 */
+/** 复制命令参数数组,避免表单编辑污染 inspect 原始数据 */
 function fillFromSpec(spec: DockerRunSpec): Form {
   const netList: string[] = []
   if (spec.networkMode) netList.push(spec.networkMode)
@@ -137,7 +137,7 @@ function fillFromSpec(spec: DockerRunSpec): Form {
       readOnly: !!v.readOnly,
     })),
     env: [...spec.env],
-    cmd: spec.cmd.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' '),
+    cmd: [...spec.cmd],
   }
 }
 
@@ -173,6 +173,8 @@ function addVol() { form.volumes.push({ source: '', destination: '', readOnly: f
 function delVol(i: number) { form.volumes.splice(i, 1) }
 function addEnv() { form.env.push('') }
 function delEnv(i: number) { form.env.splice(i, 1) }
+function addCmdArg() { form.cmd.push('') }
+function delCmdArg(i: number) { form.cmd.splice(i, 1) }
 
 function pickImage(img: DockerImage) {
   form.image = `${img.repository}:${img.tag}`
@@ -210,16 +212,6 @@ const networkOptions = computed(() => {
   const picked = new Set(form.networks)
   return props.networks.filter((n) => !picked.has(n.name)).slice(0, 200)
 })
-
-/** 简易 shell 分词:双引号包起来的内容视为一段,其余空白分隔。够本地"直接粘 cmd"场景用。
- * 已知不覆盖:嵌套引号、转义序列;若用户需要更精细控制建议在 image 后另行手编 */
-function splitCmd(raw: string): string[] {
-  const out: string[] = []
-  const re = /"([^"]*)"|(\S+)/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(raw)) !== null) out.push(m[1] ?? m[2] ?? '')
-  return out.filter((x) => x.length > 0)
-}
 
 const imageOptions = computed(() =>
   props.images
@@ -260,7 +252,7 @@ function buildSpec(): DockerRunSpec {
       .map((v) => ({ source: v.source.trim(), destination: v.destination.trim(), readOnly: v.readOnly }))
       .filter((v) => v.source && v.destination),
     env: form.env.map((e) => e.trim()).filter((e) => e.includes('=')),
-    cmd: splitCmd(form.cmd.trim()),
+    cmd: [...form.cmd],
     memory: form.memory.trim() || undefined,
     cpus: form.cpus.trim() || undefined,
   }
@@ -771,12 +763,31 @@ async function submitClone() {
               </div>
             </div>
             <div>
-              <Label class="mb-1 block text-caption text-muted-foreground">命令 (CMD)</Label>
-              <Input
-                v-model="form.cmd"
-                placeholder='覆盖镜像默认 CMD,空格分隔;含空格用 "" 括起,如 sh -c "echo hi"'
-                class="h-7 text-body font-mono"
-              />
+              <div class="mb-1 flex items-center justify-between">
+                <div>
+                  <Label class="block text-caption text-muted-foreground">命令参数 (CMD)</Label>
+                  <p class="mt-0.5 text-caption text-muted-foreground">每项对应一个 argv 参数，空参数也会原样保留。</p>
+                </div>
+                <Button variant="ghost" size="icon-sm" title="添加命令参数" @click="addCmdArg">
+                  <Plus class="size-3.5" />
+                </Button>
+              </div>
+              <div v-if="form.cmd.length === 0" class="rounded-md border border-dashed border-border/60 px-3 py-2 text-center text-caption text-muted-foreground">
+                使用镜像默认命令
+              </div>
+              <div v-else class="space-y-1.5">
+                <div v-for="(_, i) in form.cmd" :key="i" class="flex items-center gap-1.5">
+                  <span class="w-6 shrink-0 text-right font-mono text-caption text-muted-foreground">{{ i }}</span>
+                  <Input
+                    v-model="form.cmd[i]"
+                    :placeholder="i === 0 ? '可执行文件，如 sh' : '参数，可留空'"
+                    class="h-7 text-body font-mono"
+                  />
+                  <Button variant="ghost" size="icon-sm" @click="delCmdArg(i)">
+                    <X class="size-3.5" />
+                  </Button>
+                </div>
+              </div>
             </div>
           </CollapsibleContent>
         </Collapsible>
