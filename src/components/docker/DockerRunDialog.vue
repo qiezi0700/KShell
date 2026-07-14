@@ -97,6 +97,11 @@ interface Form {
   volumes: VolRow[]
   env: string[]      // 每项 "KEY=VALUE"
   cmd: string[]
+  privileged: boolean
+  capAdd: string[]
+  capDrop: string[]
+  dns: string[]
+  devices: DockerRunSpec['devices']
 }
 
 function empty(): Form {
@@ -113,6 +118,11 @@ function empty(): Form {
     volumes: [],
     env: [],
     cmd: [],
+    privileged: false,
+    capAdd: [],
+    capDrop: [],
+    dns: [],
+    devices: [],
   }
 }
 
@@ -138,6 +148,11 @@ function fillFromSpec(spec: DockerRunSpec): Form {
     })),
     env: [...spec.env],
     cmd: [...spec.cmd],
+    privileged: spec.privileged,
+    capAdd: [...spec.capAdd],
+    capDrop: [...spec.capDrop],
+    dns: [...spec.dns],
+    devices: spec.devices.map((device) => ({ ...device })),
   }
 }
 
@@ -255,6 +270,11 @@ function buildSpec(): DockerRunSpec {
     cmd: [...form.cmd],
     memory: form.memory.trim() || undefined,
     cpus: form.cpus.trim() || undefined,
+    privileged: form.privileged,
+    capAdd: [...form.capAdd],
+    capDrop: [...form.capDrop],
+    dns: [...form.dns],
+    devices: form.devices.map((device) => ({ ...device })),
   }
 }
 
@@ -473,11 +493,11 @@ async function submitClone() {
         </DialogTitle>
         <DialogDescription v-if="mode === 'recreate'" class="text-caption text-muted-foreground">
           已按当前容器配置预填,可编辑后提交。提交时会保留旧容器备份，新容器及附加网络就绪后再清理备份；失败会自动恢复旧容器。
-          仅覆盖弹窗内可编辑字段;--cap-add、--privileged、--dns、--device 等高级运行时字段不会保留。
+          会自动保留特权模式、能力、DNS 与设备映射；其他未展示的运行参数仍可能无法还原。
         </DialogDescription>
         <DialogDescription v-else-if="mode === 'clone'" class="text-caption text-muted-foreground">
           基于当前容器配置创建新容器,不删除原容器。可勾选是否拉取最新镜像、是否停止原容器。
-          新容器名必须不同；停止原容器后端口可复用，若克隆失败会自动恢复原容器。
+          新容器名必须不同；停止原容器后端口可复用，若克隆失败会自动恢复原容器。特权模式、能力、DNS 与设备映射会自动保留。
         </DialogDescription>
         <DialogDescription v-else class="sr-only">用 docker run 从镜像创建一个新容器</DialogDescription>
       </DialogHeader>

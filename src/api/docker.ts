@@ -62,6 +62,12 @@ export interface DockerInspectPortBinding {
   hostPort: string
 }
 
+export interface DockerDeviceBinding {
+  hostPath: string
+  containerPath: string
+  permissions: string
+}
+
 export interface DockerInspect {
   id: string
   name: string
@@ -94,6 +100,11 @@ export interface DockerInspect {
   cpus: number
   /** HostConfig.PortBindings 展开(权威源,补齐 NetworkSettings.Ports 缺失场景) */
   portBindings: DockerInspectPortBinding[]
+  privileged: boolean
+  capAdd: string[]
+  capDrop: string[]
+  dns: string[]
+  devices: DockerDeviceBinding[]
 }
 
 // 镜像详情(docker inspect --type=image)
@@ -446,6 +457,11 @@ export interface DockerRunSpec {
   memory?: string
   /** CPU 限制,同 dockerUpdateContainer.cpus 格式 */
   cpus?: string
+  privileged: boolean
+  capAdd: string[]
+  capDrop: string[]
+  dns: string[]
+  devices: DockerDeviceBinding[]
 }
 
 // docker 端口容器侧的白名单:数字 [/proto] 形式,proto 可选 tcp/udp/sctp
@@ -458,6 +474,8 @@ const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 const VOLUME_SOURCE_RE = /^(\/[a-zA-Z0-9/_.:@#+=-]+|[a-zA-Z0-9][a-zA-Z0-9_.-]*)$/
 // 卷 destination:必须是容器内绝对路径
 const VOLUME_DEST_RE = /^\/[a-zA-Z0-9/_.:@#+=-]*$/
+const CAPABILITY_RE = /^[A-Za-z0-9_]+$/
+const DEVICE_PERMISSIONS_RE = /^[rwm]{1,3}$/
 
 /** 从 DockerRunSpec 组装 docker run -d 命令;所有用户内容都 shq 转义,避免 shell 注入。
  * 与 buildRunCommand(从 inspect 还原)分离:那个是"重建",这个是"新建",输入结构不同。 */
@@ -479,6 +497,25 @@ export function buildRunCommandFromSpec(s: DockerRunSpec): string {
     parts.push('--restart', shq(s.restartPolicy))
   }
   if (s.networkMode) parts.push('--network', shq(s.networkMode))
+  if (s.privileged) parts.push('--privileged')
+  for (const capability of s.capAdd) {
+    if (!CAPABILITY_RE.test(capability)) throw new Error(`新增能力不合法: ${capability}`)
+    parts.push('--cap-add', shq(capability))
+  }
+  for (const capability of s.capDrop) {
+    if (!CAPABILITY_RE.test(capability)) throw new Error(`移除能力不合法: ${capability}`)
+    parts.push('--cap-drop', shq(capability))
+  }
+  for (const server of s.dns) {
+    if (!server || server.length > 253) throw new Error(`DNS 服务器不合法: ${server}`)
+    parts.push('--dns', shq(server))
+  }
+  for (const device of s.devices) {
+    if (!VOLUME_DEST_RE.test(device.hostPath)) throw new Error(`宿主设备路径不合法: ${device.hostPath}`)
+    if (!VOLUME_DEST_RE.test(device.containerPath)) throw new Error(`容器设备路径不合法: ${device.containerPath}`)
+    if (!DEVICE_PERMISSIONS_RE.test(device.permissions)) throw new Error(`设备权限不合法: ${device.permissions}`)
+    parts.push('--device', shq(`${device.hostPath}:${device.containerPath}:${device.permissions}`))
+  }
 
   for (const p of s.ports) {
     if (!PORT_HOST_RE.test(p.host)) throw new Error(`宿主端口不合法: ${p.host}`)
@@ -524,7 +561,7 @@ export async function dockerRun(sessionId: string, spec: DockerRunSpec): Promise
  * - 端口权威源用 HostConfig.PortBindings;IPv4/IPv6 双栈自动合并为一条(优先 IPv4)
  * - 网络优先用 NetworkMode(host/自定义 bridge 名),回退到 Networks 里第一个非 bridge
  * - 挂载只取 bind + 命名 volume(tmpfs 等不还原)
- * - 高级字段(cap/priv/dns/devices 等)不进入 spec — 编辑弹窗不暴露,重建后丢失 */
+ * - 特权模式、能力、DNS 与设备映射通过隐藏字段透传,避免重建时静默降权或丢设备 */
 export function inspectToRunSpec(i: DockerInspect): DockerRunSpec {
   // 双栈去重:同 container+hostPort 组合优先保留 IPv4 那条
   const seen = new Set<string>()
@@ -578,6 +615,11 @@ export function inspectToRunSpec(i: DockerInspect): DockerRunSpec {
     cmd: [...i.cmd],
     memory: i.memoryBytes > 0 ? bytesToMemStr(i.memoryBytes) : undefined,
     cpus: i.cpus > 0 ? String(i.cpus) : undefined,
+    privileged: i.privileged,
+    capAdd: [...i.capAdd],
+    capDrop: [...i.capDrop],
+    dns: [...i.dns],
+    devices: i.devices.map((device) => ({ ...device })),
   }
 }
 
@@ -996,6 +1038,23 @@ function str(v: unknown): string {
   return typeof v === 'string' ? v : v == null ? '' : String(v)
 }
 
+function stringArray(v: unknown): string[] {
+  return Array.isArray(v) ? v.map((item) => str(item)).filter(Boolean) : []
+}
+
+function parseDevices(v: unknown): DockerDeviceBinding[] {
+  if (!Array.isArray(v)) return []
+  return v.flatMap((item) => {
+    if (!item || typeof item !== 'object') return []
+    const device = item as Record<string, unknown>
+    const hostPath = str(device.PathOnHost)
+    const containerPath = str(device.PathInContainer)
+    const permissions = str(device.CgroupPermissions)
+    if (!hostPath || !containerPath || !permissions) return []
+    return [{ hostPath, containerPath, permissions }]
+  })
+}
+
 /** docker ps 的 Names 形如 "/foo,/bar";取首个并去掉 / 前缀 */
 function pickName(raw: string): string {
   return raw.split(',')[0]?.replace(/^\//, '') ?? ''
@@ -1121,6 +1180,11 @@ function normalizeInspect(r: Record<string, unknown>): DockerInspect {
         ? (host.NanoCpus as number) / 1e9
         : 0,
     portBindings: parsePortBindings(host.PortBindings),
+    privileged: host.Privileged === true,
+    capAdd: stringArray(host.CapAdd),
+    capDrop: stringArray(host.CapDrop),
+    dns: stringArray(host.Dns),
+    devices: parseDevices(host.Devices),
   }
 }
 
