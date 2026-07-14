@@ -165,6 +165,11 @@ const imagePickerOpen = ref(false)
 const clonePullImage = ref(true)
 const cloneStopOriginal = ref(true)
 
+function handleOpenChange(nextOpen: boolean) {
+  if (!nextOpen && busy.value) return
+  emit('update:open', nextOpen)
+}
+
 // 打开时按 mode 决定预填:create 清空;recreate/clone 用 initial 填,并默认展开高级
 watch(
   () => props.open,
@@ -177,7 +182,6 @@ watch(
         Object.assign(form, empty())
         advancedOpen.value = false
       }
-      busy.value = false
     }
   },
 )
@@ -476,7 +480,7 @@ async function submitClone() {
 </script>
 
 <template>
-  <Dialog :open="open" @update:open="(v) => emit('update:open', v)">
+  <Dialog :open="open" @update:open="handleOpenChange">
     <DialogContent class="max-w-2xl w-[92vw] max-h-[85vh] overflow-hidden flex flex-col gap-3">
       <DialogHeader class="min-w-0">
         <DialogTitle class="flex min-w-0 items-center gap-2">
@@ -814,7 +818,7 @@ async function submitClone() {
       </div>
 
       <DialogFooter class="shrink-0">
-        <Button variant="outline" :disabled="busy" @click="emit('update:open', false)">取消</Button>
+        <Button variant="outline" :disabled="busy" @click="handleOpenChange(false)">取消</Button>
         <Button variant="default" :disabled="!canSubmit" @click="submit">
           <template v-if="mode === 'recreate'">
             {{ busy ? '重建中…' : '拉取并重建' }}
