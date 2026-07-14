@@ -1,27 +1,35 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
-import { ScrollText, Copy, RefreshCw, FileText, Play, Pause, Filter, Clock, FileSearch } from '@lucide/vue'
+import type { UnlistenFn } from '@tauri-apps/api/event'
+import { v4 as uuidv4 } from 'uuid'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { Clock, Copy, FileSearch, FileText, Filter, Pause, Play, RefreshCw, ScrollText } from '@lucide/vue'
+
+import { dockerFindLogFiles, dockerLogs } from '@/api/docker'
+import {
+  onChannelData,
+  onChannelError,
+  onChannelExit,
+  sshCloseChannel,
+  sshOpenExec,
+} from '@/api/ssh'
+import { LatestOperationGuard } from '@/components/docker/latest-operation-guard'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
-import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Input } from '@/components/ui/input'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { toast } from '@/stores/toast'
-import { dockerLogs, dockerFindLogFiles } from '@/api/docker'
-import {
-  sshOpenExec,
-  sshCloseChannel,
-  onChannelData,
-  onChannelExit,
-  onChannelError,
-} from '@/api/ssh'
-import type { UnlistenFn } from '@tauri-apps/api/event'
-import { v4 as uuidv4 } from 'uuid'
 
 const props = defineProps<{
   open: boolean
@@ -50,9 +58,12 @@ const loading = ref(false)              // 一次性拉取的 loading
 const lines = ref<string[]>([])         // 所有已收到的行(未过滤)
 const streaming = ref(false)            // 当前是否连着长通道
 const streamChannelId = ref<string | null>(null)
-let unlistenData: UnlistenFn | null = null
-let unlistenExit: UnlistenFn | null = null
-let unlistenError: UnlistenFn | null = null
+let streamUnlisteners: UnlistenFn[] = []
+let streamDecoder: TextDecoder | null = null
+
+const fetchGuard = new LatestOperationGuard()
+const scanGuard = new LatestOperationGuard()
+const streamGuard = new LatestOperationGuard()
 
 // 日志文件候选列表(点"查找日志文件"后填充)
 const logCandidates = ref<string[]>([])
@@ -63,13 +74,11 @@ const pickerOpen = ref(false)
 const filteredText = computed(() => {
   const kw = filter.value.trim().toLowerCase()
   if (!kw) return lines.value.join('\n')
-  return lines.value.filter((l) => l.toLowerCase().includes(kw)).join('\n')
+  return lines.value.filter((line) => line.toLowerCase().includes(kw)).join('\n')
 })
 
 const bodyRef = ref<HTMLDivElement | null>(null)
 
-// TextDecoder 流式模式;跨 chunk 的 utf-8 边界不会切坏
-const decoder = new TextDecoder('utf-8', { fatal: false })
 // 上次 chunk 末尾未收满一行的残段,拼到下一 chunk 头再切
 let pending = ''
 
@@ -87,43 +96,98 @@ function appendChunk(text: string) {
   const next = lines.value.concat(parts)
   // 截尾保留最近 MAX_LINES 行,避免内存无限增长
   lines.value = next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next
-  scrollToBottom()
+  void scrollToBottom()
 }
 
-// 一次性拉取:关闭现有流,清空缓冲,调 dockerLogs
-async function fetchOnce() {
-  await stopStream()
-  lines.value = []
-  pending = ''
-  loading.value = true
+function isDialogContextCurrent(sessionId: string, containerId: string): boolean {
+  return props.open && props.sessionId === sessionId && props.containerId === containerId
+}
+
+function disposeUnlisteners(unlisteners: UnlistenFn[]) {
+  for (const unlisten of unlisteners) unlisten()
+}
+
+async function closeChannelSafely(channelId: string) {
   try {
-    const text = await dockerLogs(props.sessionId, props.containerId!, tail.value, path.value || undefined)
-    lines.value = text.split(/\r?\n/)
-    if (timestamps.value && path.value) {
-      // tail 文件模式没时间戳可加,提示一下
-      lines.value = ['(提示:tail 文件模式无 --timestamps,时间戳仅对 docker logs 生效)', ...lines.value]
-    }
-    // 空/近似空提示 —— 常见于 Java 容器把日志写到文件,docker logs 什么也看不到
-    const bodyText = lines.value.join('').trim()
-    if (!path.value && bodyText.length < 4) {
-      lines.value = [
-        '(docker logs 无输出。若应用日志被写入容器内文件,请点上方"扫描日志文件"选择路径)',
-      ]
-    }
-    scrollToBottom()
-  } catch (e: unknown) {
-    lines.value = [`加载日志失败: ${String(e)}`]
-  } finally {
-    loading.value = false
+    await sshCloseChannel(channelId)
+  } catch {
+    // 通道可能已被服务端关闭,忽略
   }
 }
 
-// 扫描容器内候选日志文件路径,填入 dropdown 供用户挑选
+function flushPendingLine() {
+  if (!pending) return
+  const next = lines.value.concat([pending])
+  lines.value = next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next
+  pending = ''
+  void scrollToBottom()
+}
+
+// 一次性拉取只允许最新请求写入状态,避免旧容器响应覆盖当前弹窗。
+async function fetchOnce() {
+  const containerId = props.containerId
+  if (!props.open || !containerId) return
+
+  const sessionId = props.sessionId
+  const requestVersion = fetchGuard.begin()
+  const requestedPath = path.value.trim()
+  const requestedTail = tail.value
+  const requestedTimestamps = timestamps.value
+  loading.value = true
+
+  await stopStream()
+  if (!fetchGuard.isCurrent(requestVersion) || !isDialogContextCurrent(sessionId, containerId)) {
+    return
+  }
+
+  lines.value = []
+  pending = ''
+  try {
+    const text = await dockerLogs(
+      sessionId,
+      containerId,
+      requestedTail,
+      requestedPath || undefined,
+    )
+    if (!fetchGuard.isCurrent(requestVersion) || !isDialogContextCurrent(sessionId, containerId)) {
+      return
+    }
+
+    let nextLines = text.split(/\r?\n/)
+    if (requestedTimestamps && requestedPath) {
+      nextLines = ['(提示:tail 文件模式无 --timestamps,时间戳仅对 docker logs 生效)', ...nextLines]
+    }
+    const bodyText = nextLines.join('').trim()
+    if (!requestedPath && bodyText.length < 4) {
+      nextLines = [
+        '(docker logs 无输出。若应用日志被写入容器内文件,请点上方"扫描日志文件"选择路径)',
+      ]
+    }
+    lines.value = nextLines
+    void scrollToBottom()
+  } catch (e: unknown) {
+    if (fetchGuard.isCurrent(requestVersion) && isDialogContextCurrent(sessionId, containerId)) {
+      lines.value = [`加载日志失败: ${String(e)}`]
+    }
+  } finally {
+    if (fetchGuard.isCurrent(requestVersion)) loading.value = false
+  }
+}
+
+// 扫描结果同样绑定当前容器,切换目标后丢弃旧响应。
 async function scanLogFiles() {
-  if (!props.containerId || scanning.value) return
+  const containerId = props.containerId
+  if (!props.open || !containerId || scanning.value) return
+
+  const sessionId = props.sessionId
+  const requestVersion = scanGuard.begin()
   scanning.value = true
   try {
-    const list = await dockerFindLogFiles(props.sessionId, props.containerId)
+    const list = await dockerFindLogFiles(sessionId, containerId)
+    if (!scanGuard.isCurrent(requestVersion) || !isDialogContextCurrent(sessionId, containerId)) {
+      return
+    }
+
     logCandidates.value = list
     if (list.length === 0) {
       toast.info('未找到候选日志文件(容器可能没装 sh/find,或应用只写 stdout)')
@@ -131,96 +195,122 @@ async function scanLogFiles() {
       pickerOpen.value = true
     }
   } catch (e: unknown) {
-    toast.error(String(e), '扫描失败')
+    if (scanGuard.isCurrent(requestVersion) && isDialogContextCurrent(sessionId, containerId)) {
+      toast.error(String(e), '扫描失败')
+    }
   } finally {
-    scanning.value = false
+    if (scanGuard.isCurrent(requestVersion)) scanning.value = false
   }
 }
 
-function pickLogPath(p: string) {
-  path.value = p
+function pickLogPath(selectedPath: string) {
+  path.value = selectedPath
   pickerOpen.value = false
-  fetchOnce()
+  void fetchOnce()
 }
 
-// 启动流式跟随:走 sshOpenExec 长通道跑 `docker logs -f` 或 `tail -f`
+// 每次流式跟随拥有独立代次,旧通道事件不能停止或污染新流。
 async function startStream() {
-  if (streaming.value || !props.containerId) return
-  // 组装命令
-  const id = props.containerId
+  const containerId = props.containerId
+  if (streaming.value || !props.open || !containerId) return
+
+  const sessionId = props.sessionId
+  const requestedPath = path.value.trim()
   const n = Math.min(Math.max(Math.floor(tail.value), 0), 5000)
   let cmd: string
-  const p = path.value.trim()
-  if (p) {
-    // 校验路径避免注入,直接用 tail -F 跟随(-F 处理文件轮转)
-    if (!/^\/[a-zA-Z0-9/_.:@#+=-]+$/.test(p)) {
+  if (requestedPath) {
+    if (!/^\/[a-zA-Z0-9/_.:@#+=-]+$/.test(requestedPath)) {
       toast.error('日志路径不合法(需绝对路径,不允许空格或 shell 元字符)')
       return
     }
-    cmd = `docker exec ${id} tail -n ${n} -F ${p} 2>&1`
+    cmd = `docker exec ${containerId} tail -n ${n} -F ${requestedPath} 2>&1`
   } else {
     const ts = timestamps.value ? '--timestamps ' : ''
-    cmd = `docker logs -f --tail ${n} ${ts}${id} 2>&1`
+    cmd = `docker logs -f --tail ${n} ${ts}${containerId} 2>&1`
   }
 
-  // 先监听再打开通道，避免短日志在 invoke 返回前已经输出完毕。
-  const chId = uuidv4()
+  fetchGuard.invalidate()
+  loading.value = false
+  const streamVersion = streamGuard.begin()
+  const channelId = uuidv4()
+  const decoder = new TextDecoder('utf-8', { fatal: false })
+  const localUnlisteners: UnlistenFn[] = []
+  let listenersAdopted = false
+  streaming.value = true
+  follow.value = true
+  pending = ''
+
+  const isCurrentStream = () => (
+    streamGuard.isCurrent(streamVersion) && isDialogContextCurrent(sessionId, containerId)
+  )
+  const abandonSetup = async () => {
+    disposeUnlisteners(localUnlisteners)
+    if (streamGuard.isCurrent(streamVersion)) await stopStream(streamVersion)
+  }
+
   try {
-    ;[unlistenData, unlistenExit, unlistenError] = await Promise.all([
-      onChannelData(chId, (bytes) => {
-        const text = decoder.decode(bytes, { stream: true })
-        appendChunk(text)
-      }),
-      onChannelExit(chId, () => {
-        void stopStream()
-      }),
-      onChannelError(chId, (message) => {
-        appendChunk(`\n[通道错误] ${message}\n`)
-        void stopStream()
-      }),
-    ])
-    streamChannelId.value = chId
-    streaming.value = true
-    follow.value = true
-    pending = ''
-    await sshOpenExec(props.sessionId, cmd, 200, 40, chId)
-    if (streamChannelId.value !== chId) await sshCloseChannel(chId)
+    localUnlisteners.push(await onChannelData(channelId, (bytes) => {
+      if (!streamGuard.isCurrent(streamVersion)) return
+      appendChunk(decoder.decode(bytes, { stream: true }))
+    }))
+    localUnlisteners.push(await onChannelExit(channelId, () => {
+      void stopStream(streamVersion)
+    }))
+    localUnlisteners.push(await onChannelError(channelId, (message) => {
+      if (!streamGuard.isCurrent(streamVersion)) return
+      appendChunk(`\n[通道错误] ${message}\n`)
+      void stopStream(streamVersion)
+    }))
+
+    if (!streamGuard.isCurrent(streamVersion) || !isDialogContextCurrent(sessionId, containerId)) {
+      disposeUnlisteners(localUnlisteners)
+      return
+    }
+
+    streamUnlisteners = localUnlisteners
+    streamDecoder = decoder
+    streamChannelId.value = channelId
+    listenersAdopted = true
+    await sshOpenExec(sessionId, cmd, 200, 40, channelId)
+
+    if (!streamGuard.isCurrent(streamVersion) || !isDialogContextCurrent(sessionId, containerId)) {
+      await closeChannelSafely(channelId)
+    }
   } catch (e: unknown) {
-    await stopStream()
-    toast.error(String(e), '流式日志启动失败')
-    return
+    if (!listenersAdopted) disposeUnlisteners(localUnlisteners)
+    if (streamGuard.isCurrent(streamVersion) && isDialogContextCurrent(sessionId, containerId)) {
+      await stopStream(streamVersion)
+      toast.error(String(e), '流式日志启动失败')
+    } else {
+      await closeChannelSafely(channelId)
+    }
   }
 }
 
-async function stopStream() {
+async function stopStream(expectedVersion?: number) {
+  if (expectedVersion !== undefined && !streamGuard.isCurrent(expectedVersion)) return
+
+  streamGuard.invalidate()
   follow.value = false
   streaming.value = false
-  const chId = streamChannelId.value
+  const channelId = streamChannelId.value
+  const decoder = streamDecoder
+  const unlisteners = streamUnlisteners
   streamChannelId.value = null
-  unlistenData?.()
-  unlistenExit?.()
-  unlistenError?.()
-  unlistenData = null
-  unlistenExit = null
-  unlistenError = null
-  if (chId) {
-    try {
-      await sshCloseChannel(chId)
-    } catch {
-      // 通道可能已被服务端关闭,忽略
-    }
-  }
-  // flush pending 半行避免最后一行丢失
-  if (pending) {
-    const next = lines.value.concat([pending])
-    lines.value = next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next
-    pending = ''
-  }
+  streamDecoder = null
+  streamUnlisteners = []
+  disposeUnlisteners(unlisteners)
+
+  const decoderTail = decoder?.decode() ?? ''
+  if (decoderTail) pending += decoderTail
+  flushPendingLine()
+
+  if (channelId) await closeChannelSafely(channelId)
 }
 
 function toggleFollow() {
-  if (streaming.value) stopStream()
-  else startStream()
+  if (streaming.value) void stopStream()
+  else void startStream()
 }
 
 async function copyLog() {
@@ -234,31 +324,44 @@ async function copyLog() {
   }
 }
 
-// 打开/切换容器时重置并拉取一次
+// 打开、关闭或切换目标时使旧请求失效,并为新容器重置输入状态。
 watch(
-  () => [props.open, props.containerId] as const,
-  ([open, id], prev) => {
-    const prevOpen = prev ? prev[0] : false
-    if (open && id) {
-      // 从关闭切到打开时清空上次输入,避免上一个容器的路径/过滤串到下一个
-      if (!prevOpen) {
+  () => [props.open, props.sessionId, props.containerId] as const,
+  ([open, sessionId, containerId], previous) => {
+    const wasOpen = previous?.[0] ?? false
+    const contextChanged = previous?.[1] !== sessionId || previous?.[2] !== containerId
+
+    if (open && containerId) {
+      if (!wasOpen || contextChanged) {
         path.value = ''
         filter.value = ''
         timestamps.value = false
         tail.value = 200
+        scanGuard.invalidate()
+        scanning.value = false
+        pickerOpen.value = false
+        logCandidates.value = []
       }
-      fetchOnce()
-    } else if (!open) {
-      // 弹窗关闭:停流、清缓冲
-      stopStream()
-      lines.value = []
+      void fetchOnce()
+      return
     }
+
+    fetchGuard.invalidate()
+    scanGuard.invalidate()
+    loading.value = false
+    scanning.value = false
+    pickerOpen.value = false
+    void stopStream()
+    lines.value = []
+    pending = ''
   },
   { immediate: true },
 )
 
 onBeforeUnmount(() => {
-  stopStream()
+  fetchGuard.invalidate()
+  scanGuard.invalidate()
+  void stopStream()
 })
 </script>
 
@@ -279,7 +382,7 @@ onBeforeUnmount(() => {
                 size="icon-sm"
                 class="ml-auto"
                 :disabled="loading"
-                @click="streaming ? stopStream() : fetchOnce()"
+                @click="fetchOnce"
               >
                 <RefreshCw class="size-3.5" :class="loading && 'animate-spin'" />
               </Button>
