@@ -38,7 +38,9 @@ import {
   type DockerStack,
   type DockerRunSpec,
 } from '@/api/docker'
+import { LatestOperationGuard } from '@/components/docker/latest-operation-guard'
 import { addTab, nextTabId, type DockerTab } from '@/stores/tabs'
+
 import DockerContainers from './DockerContainers.vue'
 import DockerImages from './DockerImages.vue'
 import DockerVolumes from './DockerVolumes.vue'
@@ -115,6 +117,75 @@ const imageInspectData = ref<DockerImageInspect | null>(null)
 const imageInspectHistory = ref<DockerImageLayer[]>([])
 const imageInspectLoading = ref(false)
 
+const rawInspectGuard = new LatestOperationGuard()
+const containerInspectGuard = new LatestOperationGuard()
+const recreateGuard = new LatestOperationGuard()
+const cloneGuard = new LatestOperationGuard()
+const editGuard = new LatestOperationGuard()
+const imageInspectGuard = new LatestOperationGuard()
+
+function closeRawInspect() {
+  rawInspectGuard.invalidate()
+  rawInspectOpen.value = false
+  rawInspectData.value = null
+  rawInspectLoading.value = false
+}
+
+function onRawInspectOpenChange(open: boolean) {
+  if (open) rawInspectOpen.value = true
+  else closeRawInspect()
+}
+
+function closeContainerInspect() {
+  containerInspectGuard.invalidate()
+  inspectContainer.value = null
+  inspectData.value = null
+  inspectLoading.value = false
+}
+
+function onContainerInspectOpenChange(open: boolean) {
+  if (!open) closeContainerInspect()
+}
+
+function onRecreateOpenChange(open: boolean) {
+  recreateOpen.value = open
+  if (!open) recreateGuard.invalidate()
+}
+
+function onCloneOpenChange(open: boolean) {
+  cloneOpen.value = open
+  if (!open) cloneGuard.invalidate()
+}
+
+function onEditOpenChange(open: boolean) {
+  if (open) return
+  editGuard.invalidate()
+  editInspect.value = null
+}
+
+function closeImageInspect() {
+  imageInspectGuard.invalidate()
+  imageInspectOpen.value = false
+  imageInspectRef.value = null
+  imageInspectData.value = null
+  imageInspectHistory.value = []
+  imageInspectLoading.value = false
+}
+
+function onImageInspectOpenChange(open: boolean) {
+  if (open) imageInspectOpen.value = true
+  else closeImageInspect()
+}
+
+function invalidateDetailRequests() {
+  rawInspectGuard.invalidate()
+  containerInspectGuard.invalidate()
+  recreateGuard.invalidate()
+  cloneGuard.invalidate()
+  editGuard.invalidate()
+  imageInspectGuard.invalidate()
+}
+
 // Registry 登录弹窗
 const registryOpen = ref(false)
 
@@ -136,6 +207,7 @@ onMounted(() => {
 
 // tab 关闭时停止轮询并清空数据,避免残留占用与无效请求
 onBeforeUnmount(() => {
+  invalidateDetailRequests()
   clearDocker(sessionId.value)
 })
 
@@ -250,18 +322,28 @@ async function doPruneVolumes() {
 }
 
 async function showVolumeInspect(v: DockerVolume) {
+  const requestVersion = rawInspectGuard.begin()
+  const requestSessionId = sessionId.value
   rawInspectTitle.value = '卷详情'
   rawInspectSubject.value = v.name
   rawInspectData.value = null
   rawInspectOpen.value = true
   rawInspectLoading.value = true
   try {
-    rawInspectData.value = await dockerInspectVolume(sessionId.value, v.name)
+    const data = await dockerInspectVolume(requestSessionId, v.name)
+    if (
+      !rawInspectGuard.isCurrent(requestVersion)
+      || !rawInspectOpen.value
+      || rawInspectSubject.value !== v.name
+    ) return
+    rawInspectData.value = data
   } catch (e: unknown) {
-    toast.error(String(e), '加载卷详情失败')
-    rawInspectOpen.value = false
+    if (rawInspectGuard.isCurrent(requestVersion)) {
+      toast.error(String(e), '加载卷详情失败')
+      closeRawInspect()
+    }
   } finally {
-    rawInspectLoading.value = false
+    if (rawInspectGuard.isCurrent(requestVersion)) rawInspectLoading.value = false
   }
 }
 
@@ -368,18 +450,28 @@ async function doStackDeploy(path: string) {
 }
 
 async function showNetworkInspect(n: DockerNetwork) {
+  const requestVersion = rawInspectGuard.begin()
+  const requestSessionId = sessionId.value
   rawInspectTitle.value = '网络详情'
   rawInspectSubject.value = n.name
   rawInspectData.value = null
   rawInspectOpen.value = true
   rawInspectLoading.value = true
   try {
-    rawInspectData.value = await dockerInspectNetwork(sessionId.value, n.id)
+    const data = await dockerInspectNetwork(requestSessionId, n.id)
+    if (
+      !rawInspectGuard.isCurrent(requestVersion)
+      || !rawInspectOpen.value
+      || rawInspectSubject.value !== n.name
+    ) return
+    rawInspectData.value = data
   } catch (e: unknown) {
-    toast.error(String(e), '加载网络详情失败')
-    rawInspectOpen.value = false
+    if (rawInspectGuard.isCurrent(requestVersion)) {
+      toast.error(String(e), '加载网络详情失败')
+      closeRawInspect()
+    }
   } finally {
-    rawInspectLoading.value = false
+    if (rawInspectGuard.isCurrent(requestVersion)) rawInspectLoading.value = false
   }
 }
 
@@ -407,31 +499,43 @@ function showLogs(c: DockerContainer) {
 }
 
 async function showInspect(c: DockerContainer) {
+  const requestVersion = containerInspectGuard.begin()
+  const requestSessionId = sessionId.value
   inspectContainer.value = c.name
   inspectData.value = null
   inspectLoading.value = true
   try {
-    inspectData.value = await dockerInspect(sessionId.value, c.id)
+    const data = await dockerInspect(requestSessionId, c.id)
+    if (
+      !containerInspectGuard.isCurrent(requestVersion)
+      || inspectContainer.value !== c.name
+    ) return
+    inspectData.value = data
   } catch (e: unknown) {
-    toast.error(String(e), '加载详情失败')
-    inspectContainer.value = null
+    if (containerInspectGuard.isCurrent(requestVersion)) {
+      toast.error(String(e), '加载详情失败')
+      closeContainerInspect()
+    }
   } finally {
-    inspectLoading.value = false
+    if (containerInspectGuard.isCurrent(requestVersion)) inspectLoading.value = false
   }
 }
 
 async function doRecreate(c: DockerContainer) {
   if (recreatingIds.value.has(c.id)) return
-  // 先取一次 inspect,拿到当前完整配置作为编辑弹窗的预填
+  const requestVersion = recreateGuard.begin()
+  const requestSessionId = sessionId.value
   let insp: DockerInspect
   try {
-    insp = await dockerInspect(sessionId.value, c.id)
+    insp = await dockerInspect(requestSessionId, c.id)
   } catch (e: unknown) {
-    toast.error(String(e), '读取容器配置失败')
+    if (recreateGuard.isCurrent(requestVersion)) {
+      toast.error(String(e), '读取容器配置失败')
+    }
     return
   }
+  if (!recreateGuard.isCurrent(requestVersion)) return
   if (!insp.image || insp.image.startsWith('sha256:')) {
-    // 镜像被引用为纯 digest 时无法确定 tag,pull 无从下手
     toast.warning('该容器绑定的是镜像 digest,无法自动拉取更新')
     return
   }
@@ -451,15 +555,20 @@ function onRecreated() {
 
 /** 克隆容器:读取原容器配置,打开 DockerRunDialog 的 clone 模式 */
 async function doClone(c: DockerContainer) {
+  const requestVersion = cloneGuard.begin()
+  const requestSessionId = sessionId.value
   let insp: DockerInspect
   try {
-    insp = await dockerInspect(sessionId.value, c.id)
+    insp = await dockerInspect(requestSessionId, c.id)
   } catch (e: unknown) {
-    toast.error(String(e), '读取容器配置失败')
+    if (cloneGuard.isCurrent(requestVersion)) {
+      toast.error(String(e), '读取容器配置失败')
+    }
     return
   }
+  if (!cloneGuard.isCurrent(requestVersion)) return
+
   cloneInitial.value = inspectToRunSpec(insp)
-  // 默认加 -clone 后缀,提示用户这是新容器
   const spec = cloneInitial.value
   if (spec.name && !spec.name.endsWith('-clone')) {
     spec.name = `${spec.name}-clone`
@@ -474,15 +583,22 @@ async function onInstalled() {
 }
 
 async function doEdit(c: DockerContainer) {
-  // 编辑弹窗要拿当前 memoryBytes/cpus/restartPolicy 做默认值,先取一次 inspect
+  const requestVersion = editGuard.begin()
+  const requestSessionId = sessionId.value
   try {
-    editInspect.value = await dockerInspect(sessionId.value, c.id)
+    const inspect = await dockerInspect(requestSessionId, c.id)
+    if (!editGuard.isCurrent(requestVersion)) return
+    editInspect.value = inspect
   } catch (e: unknown) {
-    toast.error(String(e), '读取容器配置失败')
+    if (editGuard.isCurrent(requestVersion)) {
+      toast.error(String(e), '读取容器配置失败')
+    }
   }
 }
 
 async function showImageInspect(img: DockerImage) {
+  const requestVersion = imageInspectGuard.begin()
+  const requestSessionId = sessionId.value
   const refText = img.repository !== '<none>' && img.tag !== '<none>'
     ? `${img.repository}:${img.tag}`
     : img.id
@@ -492,23 +608,28 @@ async function showImageInspect(img: DockerImage) {
   imageInspectOpen.value = true
   imageInspectLoading.value = true
   try {
-    // inspect + history 并行拉取;history 失败不阻断 inspect 展示
     const [insp, hist] = await Promise.allSettled([
-      dockerImageInspect(sessionId.value, img.id),
-      dockerImageHistory(sessionId.value, img.id),
+      dockerImageInspect(requestSessionId, img.id),
+      dockerImageHistory(requestSessionId, img.id),
     ])
+    if (
+      !imageInspectGuard.isCurrent(requestVersion)
+      || !imageInspectOpen.value
+      || imageInspectRef.value !== refText
+    ) return
     if (insp.status === 'fulfilled') imageInspectData.value = insp.value
     else throw insp.reason
     if (hist.status === 'fulfilled') imageInspectHistory.value = hist.value
   } catch (e: unknown) {
-    toast.error(String(e), '加载镜像详情失败')
-    imageInspectOpen.value = false
+    if (imageInspectGuard.isCurrent(requestVersion)) {
+      toast.error(String(e), '加载镜像详情失败')
+      closeImageInspect()
+    }
   } finally {
-    imageInspectLoading.value = false
+    if (imageInspectGuard.isCurrent(requestVersion)) imageInspectLoading.value = false
   }
 }
 
-// 进容器交互终端:优先 sh(几乎所有镜像都有),失败提示手动切 bash
 function doExec(c: DockerContainer) {
   const cmd = `docker exec -it ${c.id} sh`
   addTab({
@@ -694,7 +815,7 @@ function doExec(c: DockerContainer) {
       :container="inspectContainer"
       :loading="inspectLoading"
       :data="inspectData"
-      @update:open="(v) => { if (!v) inspectContainer = null }"
+      @update:open="onContainerInspectOpenChange"
     />
 
     <!-- 卷/网络原始 JSON 详情弹窗 -->
@@ -704,7 +825,7 @@ function doExec(c: DockerContainer) {
       :subject="rawInspectSubject"
       :loading="rawInspectLoading"
       :data="rawInspectData"
-      @update:open="rawInspectOpen = $event"
+      @update:open="onRawInspectOpenChange"
     />
 
     <!-- 系统清理弹窗 -->
@@ -734,7 +855,7 @@ function doExec(c: DockerContainer) {
       mode="recreate"
       :initial="recreateInitial"
       :initial-name="recreateName"
-      @update:open="recreateOpen = $event"
+      @update:open="onRecreateOpenChange"
       @recreated="onRecreated"
     />
 
@@ -747,7 +868,7 @@ function doExec(c: DockerContainer) {
       mode="clone"
       :initial="cloneInitial"
       :initial-name="cloneName"
-      @update:open="cloneOpen = $event"
+      @update:open="onCloneOpenChange"
       @recreated="onRecreated"
     />
 
@@ -756,7 +877,7 @@ function doExec(c: DockerContainer) {
       :open="editInspect !== null"
       :session-id="sessionId"
       :inspect="editInspect"
-      @update:open="(v) => { if (!v) editInspect = null }"
+      @update:open="onEditOpenChange"
       @updated="refreshDocker(sessionId)"
     />
 
@@ -767,7 +888,7 @@ function doExec(c: DockerContainer) {
       :loading="imageInspectLoading"
       :data="imageInspectData"
       :history="imageInspectHistory"
-      @update:open="imageInspectOpen = $event"
+      @update:open="onImageInspectOpenChange"
     />
 
     <!-- 私有 Registry 登录 / 登出 -->
