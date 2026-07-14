@@ -297,6 +297,17 @@ fn validate_channel_id(state: &AppState, channel_id: &str) -> Result<(), String>
 }
 
 const MAX_EXEC_STDIN_BYTES: usize = 64 * 1024;
+const MAX_EXEC_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+
+fn append_exec_output(out: &mut Vec<u8>, data: &[u8]) -> Result<(), String> {
+    if data.len() > MAX_EXEC_OUTPUT_BYTES.saturating_sub(out.len()) {
+        return Err(format!(
+            "命令输出过大，最多允许 {MAX_EXEC_OUTPUT_BYTES} 字节，请缩小查询范围"
+        ));
+    }
+    out.extend_from_slice(data);
+    Ok(())
+}
 
 fn validate_exec_stdin(stdin: &[u8]) -> Result<(), String> {
     if stdin.len() > MAX_EXEC_STDIN_BYTES {
@@ -370,14 +381,16 @@ async fn execute_ssh_command(
         }
     }
 
-    // 收集全部输出直到 EOF/Close；监控脚本输出较小，直接拼接
+    // 一次性命令必须限制累计输出，避免异常日志或 inspect 数据耗尽桌面端内存。
     let mut out = Vec::new();
     let mut exit_status = None;
     let wait_loop = async {
         loop {
             match channel.wait().await {
-                Some(ChannelMsg::Data { data }) => out.extend_from_slice(&data[..]),
-                Some(ChannelMsg::ExtendedData { data, .. }) => out.extend_from_slice(&data[..]),
+                Some(ChannelMsg::Data { data }) => append_exec_output(&mut out, &data[..])?,
+                Some(ChannelMsg::ExtendedData { data, .. }) => {
+                    append_exec_output(&mut out, &data[..])?
+                }
                 Some(ChannelMsg::ExitStatus {
                     exit_status: status,
                 }) => {
@@ -387,20 +400,25 @@ async fn execute_ssh_command(
                 Some(_) => {}
             }
         }
+        Ok::<(), String>(())
     };
 
-    if let Some(ms) = timeout_ms {
-        if tokio::time::timeout(Duration::from_millis(ms), wait_loop)
-            .await
-            .is_err()
-        {
-            let _ = channel.close().await;
-            return Err(format!(
-                "命令执行超时({ms}毫秒)，可能是远端 sudo 等待密码或网络卡住"
-            ));
+    let wait_result = if let Some(ms) = timeout_ms {
+        match tokio::time::timeout(Duration::from_millis(ms), wait_loop).await {
+            Ok(result) => result,
+            Err(_) => {
+                let _ = channel.close().await;
+                return Err(format!(
+                    "命令执行超时({ms}毫秒)，可能是远端 sudo 等待密码或网络卡住"
+                ));
+            }
         }
     } else {
-        wait_loop.await;
+        wait_loop.await
+    };
+    if let Err(error) = wait_result {
+        let _ = channel.close().await;
+        return Err(error);
     }
     let _ = channel.close().await;
     finish_exec_result(out, exit_status)
@@ -524,7 +542,10 @@ pub async fn ssh_disconnect(
 
 #[cfg(test)]
 mod tests {
-    use super::{finish_exec_result, validate_exec_stdin, MAX_EXEC_STDIN_BYTES};
+    use super::{
+        append_exec_output, finish_exec_result, validate_exec_stdin, MAX_EXEC_OUTPUT_BYTES,
+        MAX_EXEC_STDIN_BYTES,
+    };
 
     #[test]
     fn exec_stdin_rejects_oversized_input() {
@@ -537,6 +558,19 @@ mod tests {
     fn exec_stdin_accepts_input_at_limit() {
         let input = vec![0; MAX_EXEC_STDIN_BYTES];
         validate_exec_stdin(&input).expect("边界长度的标准输入应被接受");
+    }
+    #[test]
+    fn exec_output_rejects_data_beyond_limit() {
+        let mut output = vec![0; MAX_EXEC_OUTPUT_BYTES];
+        let error = append_exec_output(&mut output, &[1]).expect_err("超过上限的输出必须被拒绝");
+        assert!(error.contains("命令输出过大"));
+    }
+
+    #[test]
+    fn exec_output_accepts_data_at_limit() {
+        let mut output = vec![0; MAX_EXEC_OUTPUT_BYTES - 1];
+        append_exec_output(&mut output, &[1]).expect("边界长度的输出应被接受");
+        assert_eq!(output.len(), MAX_EXEC_OUTPUT_BYTES);
     }
     #[test]
     fn exec_result_rejects_non_zero_status() {
