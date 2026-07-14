@@ -38,6 +38,7 @@ import {
 } from '@/api/docker'
 
 import { editContainerTransaction } from './edit-container'
+import { LatestOperationGuard } from './latest-operation-guard'
 
 const props = defineProps<{
   open: boolean
@@ -66,6 +67,7 @@ const initialNetworks = ref<string[]>([])
 const currentNetworks = ref<string[]>([])
 const availableNetworks = ref<DockerNetwork[]>([])
 const customNet = ref('')
+const networkListGuard = new LatestOperationGuard()
 // 简单去掉一些非用户网络(如已连的)后展示;host/none 只允许单独存在,选择时若冲突让 docker 自己报
 const selectableNetworks = computed(() =>
   availableNetworks.value
@@ -86,8 +88,9 @@ function formatMemory(bytes: number): string {
 
 // 打开时用当前 inspect 数据填充默认值
 watch(
-  () => [props.open, props.inspect] as const,
-  async ([open, insp]) => {
+  () => [props.open, props.inspect, props.sessionId] as const,
+  async ([open, insp, sessionId]) => {
+    const requestVersion = networkListGuard.begin()
     if (!open || !insp) return
     form.name = insp.name
     form.memory = formatMemory(insp.memoryBytes)
@@ -100,7 +103,10 @@ watch(
     availableNetworks.value = []
     // 拉网络列表用于下拉候选;失败不阻塞其它编辑
     try {
-      availableNetworks.value = await dockerListNetworks(props.sessionId)
+      const networks = await dockerListNetworks(sessionId)
+      if (networkListGuard.isCurrent(requestVersion)) {
+        availableNetworks.value = networks
+      }
     } catch {
       // 静默:用户仍可手输网络名
     }
