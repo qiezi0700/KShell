@@ -98,7 +98,6 @@ watch(
     currentNetworks.value = [...insp.networks]
     customNet.value = ''
     availableNetworks.value = []
-    busy.value = false
     // 拉网络列表用于下拉候选;失败不阻塞其它编辑
     try {
       availableNetworks.value = await dockerListNetworks(props.sessionId)
@@ -161,6 +160,11 @@ const canSubmit = computed(
       networksChanged.value),
 )
 
+function handleOpenChange(nextOpen: boolean) {
+  if (!nextOpen && busy.value) return
+  emit('update:open', nextOpen)
+}
+
 async function submit() {
   if (!canSubmit.value || !props.inspect) return
   const inspect = props.inspect
@@ -220,7 +224,7 @@ async function submit() {
 </script>
 
 <template>
-  <Dialog :open="open" @update:open="(v) => emit('update:open', v)">
+  <Dialog :open="open" @update:open="handleOpenChange">
     <DialogContent class="max-w-md w-[92vw]">
       <DialogHeader>
         <DialogTitle class="flex items-center gap-2">
@@ -337,7 +341,7 @@ async function submit() {
       </div>
 
       <DialogFooter>
-        <Button variant="outline" :disabled="busy" @click="emit('update:open', false)">取消</Button>
+        <Button variant="outline" :disabled="busy" @click="handleOpenChange(false)">取消</Button>
         <Button variant="default" :disabled="!canSubmit" @click="submit">
           {{ busy ? '应用中…' : '应用' }}
         </Button>
