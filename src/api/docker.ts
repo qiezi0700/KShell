@@ -1,4 +1,5 @@
 import { buildComposeStackCommand, validateComposePath } from './docker-compose-command'
+import { validateDockerPortMapping } from './docker-run-validation'
 import { sshExec, sshExecWithStdin } from './ssh'
 
 const DOCKER_QUERY_TIMEOUT_MS = 15_000
@@ -464,10 +465,6 @@ export interface DockerRunSpec {
   devices: DockerDeviceBinding[]
 }
 
-// docker 端口容器侧的白名单:数字 [/proto] 形式,proto 可选 tcp/udp/sctp
-const PORT_CONTAINER_RE = /^[0-9]+(\/(tcp|udp|sctp))?$/
-// docker 端口宿主侧:可选 "IP:" 前缀(IPv4 / IPv6 简单写法),后跟数字
-const PORT_HOST_RE = /^([0-9]{1,3}(\.[0-9]{1,3}){3}:)?[0-9]+$/
 // env KEY:大写字母/数字/下划线,首字符不能是数字
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 // 卷 source:宿主机绝对路径 或命名卷(与容器名同规则)
@@ -518,8 +515,7 @@ export function buildRunCommandFromSpec(s: DockerRunSpec): string {
   }
 
   for (const p of s.ports) {
-    if (!PORT_HOST_RE.test(p.host)) throw new Error(`宿主端口不合法: ${p.host}`)
-    if (!PORT_CONTAINER_RE.test(p.container)) throw new Error(`容器端口不合法: ${p.container}`)
+    validateDockerPortMapping(p.host, p.container)
     parts.push('-p', shq(`${p.host}:${p.container}`))
   }
 
