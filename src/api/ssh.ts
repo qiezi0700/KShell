@@ -66,6 +66,17 @@ export async function sshExec(
   return await invoke<string>('ssh_exec', { sessionId, command, timeoutMs })
 }
 
+/** 在已有 SSH 会话上执行一次性命令,敏感输入通过 SSH channel stdin 发送。 */
+export async function sshExecWithStdin(
+  sessionId: string,
+  command: string,
+  stdin: string,
+  timeoutMs?: number,
+): Promise<string> {
+  const data = Array.from(new TextEncoder().encode(stdin))
+  return await invoke<string>('ssh_exec_with_stdin', { sessionId, command, stdin: data, timeoutMs })
+}
+
 export async function sshCloseChannel(channelId: string): Promise<void> {
   await invoke('ssh_close_channel', { channelId })
 }

@@ -1,5 +1,5 @@
 import { buildComposeStackCommand, validateComposePath } from './docker-compose-command'
-import { sshExec } from './ssh'
+import { sshExec, sshExecWithStdin } from './ssh'
 
 const DOCKER_QUERY_TIMEOUT_MS = 15_000
 
@@ -190,8 +190,8 @@ export interface DockerInstallOptions {
   mirror: DockerInstallMirror
   /** 是否同时把当前用户加入 docker 组(需要 sudo;生效需重新登录会话) */
   addUserToDockerGroup: boolean
-  /** sudo 密码(可选);非 root 用户无免密 sudo 时传入,经 env + printf | sudo -S 走 stdin,
-   *  不进 argv / shell 历史。空串表示远端已配免密 sudo 或当前为 root。 */
+  /** sudo 密码(可选);非 root 用户无免密 sudo 时通过 SSH channel stdin 传入。
+   * 空串表示远端已配免密 sudo 或当前为 root。 */
   sudoPassword?: string
 }
 
@@ -216,41 +216,32 @@ function mirrorArg(mirror: DockerInstallMirror): string {
  * 用 docker 官方一键脚本 get.docker.com,跨 CentOS/Ubuntu/Debian/RHEL 等主流发行版。
  * --mirror 参数由官方脚本支持,Aliyun/AzureChinaCloud 为内置可选项;
  * 清华/中科大走 DOWNLOAD_URL 环境变量覆盖下载源。
- * sudo 密码(若提供)经 env 注入 + printf | sudo -S 从 stdin 读取,不进 argv / shell 历史。
+ * 密码本身不参与命令生成，由 dockerInstall 通过 SSH channel stdin 单独发送。
  */
 export function dockerInstallCommand(opts: DockerInstallOptions): string {
   const envPrefix = mirrorEnvPart(opts.mirror)
   const mArg = mirrorArg(opts.mirror)
-  // 脚本输出到 stdout,失败时 stderr 会包含 Error 信息
-  const install = `curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && sh /tmp/get-docker.sh${mArg}`
+  const download = 'curl -fsSL https://get.docker.com -o /tmp/get-docker.sh'
+  const install = `${envPrefix}sh /tmp/get-docker.sh${mArg}`
 
-  // 无 sudo 密码:维持原行为(脚本内部自行 sudo,需远端免密 sudo 或 root)
   if (!opts.sudoPassword) {
-    if (!opts.addUserToDockerGroup) return `${envPrefix}${install}`
-    // 加入 docker 组:usermod -aG 需 sudo;失败不阻断安装
-    return `${envPrefix}${install} && (sudo usermod -aG docker \\$USER 2>/dev/null || true)`
+    if (!opts.addUserToDockerGroup) return `${download} && ${install}`
+    return `${download} && ${install} && (sudo usermod -aG docker \$USER 2>/dev/null || true)`
   }
 
-  // 有 sudo 密码:用 env 注入密码 + printf | sudo -S 从 stdin 喂密码;
-  // 整条安装命令包进 sh -c,再经 sudo -S 执行,这样脚本内的所有 sudo 调用都免密
-  // -p "" 抑制 sudo 的密码提示符输出,避免污染日志
-  const inner = `printf '%s\\n' "$KSHELL_SUDO_PW" | sudo -S -p '' ${envPrefix}sh /tmp/get-docker.sh${mArg}`
-  // 外层 env 赋值走进程环境(短生命周期),不进 argv 也不进 shell 历史
-  let wrapped = `env KSHELL_SUDO_PW=${shq(opts.sudoPassword)} sh -c ${shq(inner)}`
-
-  if (opts.addUserToDockerGroup) {
-    // 加组也用同一密码注入;失败不阻断
-    const grp = `printf '%s\\n' "$KSHELL_SUDO_PW" | sudo -S -p '' usermod -aG docker \\$USER 2>/dev/null || true`
-    wrapped = `${wrapped} && env KSHELL_SUDO_PW=${shq(opts.sudoPassword)} sh -c ${shq(grp)}`
-  }
-  // curl 下载脚本不需要 sudo,放 sudo 包裹外层
-  return `curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && ${wrapped}`
+  const privileged = opts.addUserToDockerGroup
+    ? `${install} && (usermod -aG docker "$SUDO_USER" 2>/dev/null || true)`
+    : install
+  return `${download} && sudo -S -p '' sh -c ${shq(privileged)}`
 }
 
-/** 在远端执行 Docker 安装命令。安装耗时 1-3 分钟,超时 5 分钟避免永久挂起。
- *  调用方需提示进行中,并处理失败时显示完整日志。 */
+/** 在远端执行 Docker 安装命令。sudo 密码通过 SSH channel stdin 发送，
+ * 不进入远端命令行参数、进程环境或 shell 历史。 */
 export async function dockerInstall(sessionId: string, opts: DockerInstallOptions): Promise<string> {
-  return sshExec(sessionId, `${dockerInstallCommand(opts)} 2>&1`, 5 * 60 * 1000)
+  const command = `${dockerInstallCommand(opts)} 2>&1`
+  if (!opts.sudoPassword) return sshExec(sessionId, command, 5 * 60 * 1000)
+  if (opts.sudoPassword.length > 4096) throw new Error('sudo 密码过长(>4096)')
+  return sshExecWithStdin(sessionId, command, `${opts.sudoPassword}\n`, 5 * 60 * 1000)
 }
 
 /** 获取 Docker 服务端版本信息 */
@@ -858,9 +849,9 @@ function validateRegistryUser(user: string): void {
   }
 }
 
-/** 登录到远端 docker registry。凭据经环境变量传入 + printf 管道走 --password-stdin,
- * 避免密码出现在 argv / shell 历史。docker login 成功后会把 token 写到远端
- * ~/.docker/config.json(base64),这是 docker CLI 自身行为;需要清理走 dockerLogout。
+/** 登录到远端 Docker Registry。密码通过 SSH channel stdin 直接发送给
+ * docker login --password-stdin，不进入远端命令行参数、进程环境或 shell 历史。
+ * docker login 成功后会把 token 写到远端 ~/.docker/config.json；需要清理时调用 dockerLogout。
  * registry 传空串表示 Docker Hub 默认。 */
 export async function dockerLogin(
   sessionId: string,
@@ -875,16 +866,12 @@ export async function dockerLogin(
   if (!password) throw new Error('密码不能为空')
   if (password.length > 4096) throw new Error('密码过长(>4096)')
 
-  // 内层 sh 脚本:从环境变量 KSHELL_PW 读密码,printf 是 sh 内置命令,不产生 exec argv
-  const inner = reg
-    ? `printf %s "$KSHELL_PW" | docker login -u ${shq(user)} --password-stdin ${shq(reg)} 2>&1`
-    : `printf %s "$KSHELL_PW" | docker login -u ${shq(user)} --password-stdin 2>&1`
-  // 外层:env 前缀 + sh -c 执行;env 的赋值段在 /proc/*/environ 里短暂可见,
-  // 但远远好于直接把密码放到 docker 命令行参数上被 ps 抓到
-  const wrapped = `env KSHELL_PW=${shq(password)} sh -c ${shq(inner)}`
-  const out = await sshExec(sessionId, wrapped)
+  const command = reg
+    ? `docker login -u ${shq(user)} --password-stdin ${shq(reg)} 2>&1`
+    : `docker login -u ${shq(user)} --password-stdin 2>&1`
+  const out = await sshExecWithStdin(sessionId, command, password)
   if (!/Login Succeeded/i.test(out)) {
-    throw new Error(out.trim() || 'docker login 失败')
+    throw new Error(out.trim() || 'Registry 登录失败')
   }
 }
 

@@ -41,7 +41,7 @@ const emit = defineEmits<{
 const mirror = ref<DockerInstallMirror>('aliyun')
 const addUserToDockerGroup = ref(true)
 const busy = ref(false)
-// sudo 密码(可选):非 root 且无免密 sudo 时填入;经 env + printf | sudo -S 走 stdin
+// sudo 密码仅通过 SSH channel stdin 发送，不拼入远端命令
 const sudoPassword = ref('')
 const showSudo = ref(false)
 // 失败时保留完整日志,便于排查并可重试
@@ -218,7 +218,7 @@ async function submit() {
               autocomplete="off"
             />
             <p class="text-caption text-muted-foreground">
-              密码经环境变量注入 + stdin 传给 sudo,不会出现在命令行参数或 shell 历史中。
+              密码通过 SSH 通道标准输入直接传给 sudo，不会出现在远端命令行参数、进程环境或 shell 历史中。
             </p>
           </div>
         </section>

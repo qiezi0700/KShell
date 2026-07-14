@@ -45,6 +45,7 @@ pub fn run() {
             commands::ssh_close_channel,
             commands::ssh_disconnect,
             commands::ssh_exec,
+            commands::ssh_exec_with_stdin,
             // 持久化
             commands::groups_list,
             commands::group_upsert,

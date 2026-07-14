@@ -296,15 +296,49 @@ fn validate_channel_id(state: &AppState, channel_id: &str) -> Result<(), String>
     Ok(())
 }
 
+const MAX_EXEC_STDIN_BYTES: usize = 64 * 1024;
+
+fn validate_exec_stdin(stdin: &[u8]) -> Result<(), String> {
+    if stdin.len() > MAX_EXEC_STDIN_BYTES {
+        return Err(format!(
+            "命令标准输入过长，最多允许 {MAX_EXEC_STDIN_BYTES} 字节"
+        ));
+    }
+    Ok(())
+}
+
 /// 在已有 SSH 会话上一次性执行命令(request_exec),收集 stdout+stderr 后关闭 channel。
 /// 供 M4 监控采集与 M5 Docker 数据获取复用。
 /// timeout_ms 为 None 时无超时(默认,兼容监控等长轮询场景);Docker 安装等
 /// 可能卡住的命令应传超时(如 300_000),避免远端 sudo 提示或网络问题导致永久挂起。
+
 #[tauri::command]
 pub async fn ssh_exec(
     state: State<'_, AppState>,
     session_id: SessionId,
     command: String,
+    timeout_ms: Option<u64>,
+) -> Result<String, String> {
+    execute_ssh_command(state.inner(), session_id, command, None, timeout_ms).await
+}
+
+#[tauri::command]
+pub async fn ssh_exec_with_stdin(
+    state: State<'_, AppState>,
+    session_id: SessionId,
+    command: String,
+    stdin: Vec<u8>,
+    timeout_ms: Option<u64>,
+) -> Result<String, String> {
+    validate_exec_stdin(&stdin)?;
+    execute_ssh_command(state.inner(), session_id, command, Some(stdin), timeout_ms).await
+}
+
+async fn execute_ssh_command(
+    state: &AppState,
+    session_id: SessionId,
+    command: String,
+    stdin: Option<Vec<u8>>,
     timeout_ms: Option<u64>,
 ) -> Result<String, String> {
     let session = state
@@ -325,7 +359,18 @@ pub async fn ssh_exec(
         .await
         .map_err(|e| format!("请求 exec 失败: {e}"))?;
 
-    // 收集全部输出直到 EOF/Close;监控脚本输出较小,直接拼接
+    if let Some(stdin) = stdin {
+        if let Err(e) = channel.data(&stdin[..]).await {
+            let _ = channel.close().await;
+            return Err(format!("写入命令标准输入失败: {e}"));
+        }
+        if let Err(e) = channel.eof().await {
+            let _ = channel.close().await;
+            return Err(format!("关闭命令标准输入失败: {e}"));
+        }
+    }
+
+    // 收集全部输出直到 EOF/Close；监控脚本输出较小，直接拼接
     let mut out = Vec::new();
     let mut exit_status = None;
     let wait_loop = async {
@@ -351,7 +396,7 @@ pub async fn ssh_exec(
         {
             let _ = channel.close().await;
             return Err(format!(
-                "命令执行超时({ms}毫秒),可能是远端 sudo 等待密码或网络卡住"
+                "命令执行超时({ms}毫秒)，可能是远端 sudo 等待密码或网络卡住"
             ));
         }
     } else {
@@ -479,8 +524,20 @@ pub async fn ssh_disconnect(
 
 #[cfg(test)]
 mod tests {
-    use super::finish_exec_result;
+    use super::{finish_exec_result, validate_exec_stdin, MAX_EXEC_STDIN_BYTES};
 
+    #[test]
+    fn exec_stdin_rejects_oversized_input() {
+        let input = vec![0; MAX_EXEC_STDIN_BYTES + 1];
+        let error = validate_exec_stdin(&input).expect_err("超长标准输入必须被拒绝");
+        assert!(error.contains("标准输入过长"));
+    }
+
+    #[test]
+    fn exec_stdin_accepts_input_at_limit() {
+        let input = vec![0; MAX_EXEC_STDIN_BYTES];
+        validate_exec_stdin(&input).expect("边界长度的标准输入应被接受");
+    }
     #[test]
     fn exec_result_rejects_non_zero_status() {
         let error = finish_exec_result(b"permission denied\n".to_vec(), Some(1))
