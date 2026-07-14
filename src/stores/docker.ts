@@ -1,6 +1,6 @@
 import { computed, shallowRef } from 'vue'
 import {
-  dockerVersion,
+  dockerProbe,
   dockerListContainers,
   dockerListImages,
   dockerStats,
@@ -21,6 +21,8 @@ import { isDockerPollAvailable } from '@/stores/docker-poll-result'
 const INTERVAL_MS = 5000
 
 interface SessionDocker {
+  /** null 表示尚未完成独立探测，不能据此展示安装入口 */
+  installed: boolean | null
   available: boolean
   version: DockerVersion | null
   containers: DockerContainer[]
@@ -52,6 +54,7 @@ function ensure(sessionId: string): SessionDocker {
   let s = sessions.value[sessionId]
   if (!s) {
     s = {
+      installed: null,
       available: false,
       version: null,
       containers: [],
@@ -94,13 +97,55 @@ async function tick(sessionId: string, showLoading: boolean) {
   ensure(sessionId)
   if (showLoading) patch(sessionId, { loading: true })
   try {
+    if (showLoading) {
+      try {
+        const probe = await dockerProbe(sessionId)
+        patch(sessionId, {
+          installed: probe.installed,
+          available: probe.available,
+          version: probe.version,
+        })
+        if (!probe.available) {
+          const message = probe.installed
+            ? `Docker 已安装但当前用户不可用: ${probe.message}`
+            : probe.message
+          patch(sessionId, {
+            loading: false,
+            containersError: message,
+            imagesError: message,
+            volumesError: message,
+            networksError: message,
+            stacksError: message,
+          })
+          return
+        }
+      } catch (error: unknown) {
+        const message = errMsg(error, 'Docker 探测失败')
+        patch(sessionId, {
+          installed: null,
+          available: false,
+          loading: false,
+          containersError: message,
+          imagesError: message,
+          volumesError: message,
+          networksError: message,
+          stacksError: message,
+        })
+        return
+      }
+    }
+
     // 容器与镜像并行采集,各自独立成败:任一失败不影响另一类展示,
-    // 也可让 UI 各自给出重试入口,而不是整体坍塌成空。
-    const [cRes, iRes, vRes, nRes, sRes] = await Promise.allSettled([
+    // 每批最多两个请求，与 Rust 会话级 exec 调度器保持一致，避免抢占 SFTP/监控。
+    const [cRes, iRes] = await Promise.allSettled([
       dockerListContainers(sessionId),
       dockerListImages(sessionId),
+    ])
+    const [vRes, nRes] = await Promise.allSettled([
       dockerListVolumes(sessionId),
       dockerListNetworks(sessionId),
+    ])
+    const [sRes] = await Promise.allSettled([
       dockerListStacks(sessionId),
     ])
     const pollAvailable = isDockerPollAvailable([cRes, iRes, vRes, nRes, sRes])
@@ -154,10 +199,6 @@ export function startDocker(sessionId: string) {
   if (!sessionId) return
   if (timers.has(sessionId)) return
   ensure(sessionId)
-  // version 变化极少,单独拉取一次即可,不阻塞列表轮询
-  void dockerVersion(sessionId).then((v) => {
-    if (v) patch(sessionId, { version: v })
-  })
   void tick(sessionId, true)
   timers.set(sessionId, window.setInterval(() => void tick(sessionId, false), INTERVAL_MS))
 }

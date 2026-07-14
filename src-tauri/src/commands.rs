@@ -217,12 +217,13 @@ pub async fn ssh_open_shell(
         .ok_or_else(|| format!("会话不存在: {session_id}"))?
         .clone();
     let ch_id = channel_id;
-    let ssh_handle = {
+    let (ssh_handle, scheduler) = {
         let session = session.lock().await;
-        session.handle.clone()
+        (session.handle.clone(), session.scheduler.clone())
     };
     let handle = ssh::channel::open_shell(
         &ssh_handle,
+        &scheduler,
         app,
         ch_id.clone(),
         session_id.clone(),
@@ -255,18 +256,21 @@ pub async fn ssh_open_exec(
         .ok_or_else(|| format!("会话不存在: {session_id}"))?
         .clone();
     let ch_id = channel_id;
-    let ssh_handle = {
+    let (ssh_handle, scheduler) = {
         let session = session.lock().await;
-        session.handle.clone()
+        (session.handle.clone(), session.scheduler.clone())
     };
     let handle = ssh::channel::open_exec(
         &ssh_handle,
+        &scheduler,
         app,
         ch_id.clone(),
         session_id.clone(),
-        command,
-        cols,
-        rows,
+        ssh::channel::ExecChannelSpec {
+            command,
+            cols,
+            rows,
+        },
     )
     .await
     .map_err(err)?;
@@ -357,18 +361,21 @@ async fn execute_ssh_command(
         .get(&session_id)
         .ok_or_else(|| format!("会话不存在: {session_id}"))?
         .clone();
-    let ssh_handle = {
+    let (ssh_handle, scheduler) = {
         let session = session.lock().await;
-        session.handle.clone()
+        (session.handle.clone(), session.scheduler.clone())
     };
-    let mut channel = ssh_handle
-        .channel_open_session()
+    let mut lease = scheduler
+        .open_exec(&ssh_handle)
         .await
-        .map_err(|e| format!("打开 exec channel 失败: {e}"))?;
-    channel
-        .exec(true, command.as_bytes())
+        .map_err(|e| format!("调度 exec channel 失败: {e:#}"))?;
+    let (framed_command, exit_marker) = frame_exec_command(&command);
+    lease
+        .channel
+        .exec(true, framed_command.as_bytes())
         .await
         .map_err(|e| format!("请求 exec 失败: {e}"))?;
+    let channel = &mut lease.channel;
 
     if let Some(stdin) = stdin {
         if let Err(e) = channel.data(&stdin[..]).await {
@@ -421,7 +428,59 @@ async fn execute_ssh_command(
         return Err(error);
     }
     let _ = channel.close().await;
-    finish_exec_result(out, exit_status)
+    let (out, framed_exit_status) = extract_framed_exit_status(out, &exit_marker);
+    finish_exec_result(out, framed_exit_status.or(exit_status))
+}
+
+fn frame_exec_command(command: &str) -> (String, String) {
+    let marker = format!("__KSHELL_EXIT_{}__:", Uuid::new_v4().simple());
+    let framed_command = format!(
+        "(\n{command}\n)\n__kshell_exit_status=$?\nprintf '\\n{marker}%s\\n' \"$__kshell_exit_status\"\n"
+    );
+    (framed_command, marker)
+}
+
+fn extract_framed_exit_status(out: Vec<u8>, marker: &str) -> (Vec<u8>, Option<u32>) {
+    let marker = marker.as_bytes();
+    let Some(marker_start) = out.windows(marker.len()).rposition(|window| window == marker) else {
+        return (out, None);
+    };
+    let status_start = marker_start + marker.len();
+    let status_end = out[status_start..]
+        .iter()
+        .position(|byte| !byte.is_ascii_digit())
+        .map(|offset| status_start + offset)
+        .unwrap_or(out.len());
+    if status_end == status_start {
+        return (out, None);
+    }
+    let Ok(status_text) = std::str::from_utf8(&out[status_start..status_end]) else {
+        return (out, None);
+    };
+    let Ok(status) = status_text.parse::<u32>() else {
+        return (out, None);
+    };
+
+    let marker_line_end = match out.get(status_end..) {
+        Some([b'\r', b'\n', ..]) => status_end + 2,
+        Some([b'\n', ..]) => status_end + 1,
+        _ if status_end == out.len() => status_end,
+        _ => return (out, None),
+    };
+    // 包装层会在标记前额外输出一个换行，只移除这一层，保留命令原本的结尾格式。
+    let output_prefix_end = if out.get(marker_start.saturating_sub(2)..marker_start)
+        == Some(b"\r\n")
+    {
+        marker_start - 2
+    } else if out.get(marker_start.saturating_sub(1)..marker_start) == Some(b"\n") {
+        marker_start - 1
+    } else {
+        marker_start
+    };
+    let mut cleaned = Vec::with_capacity(out.len() - (marker_line_end - output_prefix_end));
+    cleaned.extend_from_slice(&out[..output_prefix_end]);
+    cleaned.extend_from_slice(&out[marker_line_end..]);
+    (cleaned, Some(status))
 }
 
 fn finish_exec_result(out: Vec<u8>, exit_status: Option<u32>) -> Result<String, String> {
@@ -502,7 +561,21 @@ pub async fn ssh_disconnect(
     // 先关闭该会话下的所有隧道,避免 session 移除后隧道回调无法路由
     crate::ssh::tunnel::tunnel_close_session(&app, &state, &session_id).await;
 
-    // SFTP 子会话持有独立 channel，必须在移除 SSH 主会话前显式关闭。
+    // 与进行中的 SFTP 初始化串行，并先移除 SSH 主会话，阻止新的子资源进入。
+    let sftp_open_lock = state
+        .sftp_open_locks
+        .get(&session_id)
+        .map(|entry| entry.value().clone());
+    let _sftp_open_guard = match sftp_open_lock.as_ref() {
+        Some(lock) => Some(lock.lock().await),
+        None => None,
+    };
+    let session = state
+        .sessions
+        .remove(&session_id)
+        .map(|(_, session)| session);
+
+    // 前端 sftp_id 是共享 subsystem 的租约，断开时先清租约，再只关闭底层会话一次。
     let sftp_ids: Vec<_> = state
         .sftp_sessions
         .iter()
@@ -511,10 +584,12 @@ pub async fn ssh_disconnect(
         .collect();
     for id in sftp_ids {
         crate::sftp::commands::abort_transfers_for_sftp(&app, state.inner(), &id);
-        if let Some((_, handle)) = state.sftp_sessions.remove(&id) {
-            let _ = handle.session.close().await;
-        }
+        state.sftp_sessions.remove(&id);
     }
+    if let Some((_, shared)) = state.shared_sftp_sessions.remove(&session_id) {
+        let _ = shared.session.close().await;
+    }
+    state.sftp_open_locks.remove(&session_id);
 
     // 关闭该会话下所有通道
     let ch_ids: Vec<_> = state
@@ -528,7 +603,7 @@ pub async fn ssh_disconnect(
             let _ = ch.tx.send(ChannelCommand::Close);
         }
     }
-    if let Some((_, session)) = state.sessions.remove(&session_id) {
+    if let Some(session) = session {
         let ssh_handle = {
             let session = session.lock().await;
             session.handle.clone()
@@ -543,8 +618,8 @@ pub async fn ssh_disconnect(
 #[cfg(test)]
 mod tests {
     use super::{
-        append_exec_output, finish_exec_result, validate_exec_stdin, MAX_EXEC_OUTPUT_BYTES,
-        MAX_EXEC_STDIN_BYTES,
+        append_exec_output, extract_framed_exit_status, finish_exec_result, frame_exec_command,
+        validate_exec_stdin, MAX_EXEC_OUTPUT_BYTES, MAX_EXEC_STDIN_BYTES,
     };
 
     #[test]
@@ -594,5 +669,52 @@ mod tests {
             .expect_err("缺少退出状态时必须拒绝误判成功");
         assert!(error.contains("未返回退出状态"));
         assert!(error.contains("legacy output"));
+    }
+
+    #[test]
+    fn framed_exec_recovers_status_when_ssh_status_is_missing() {
+        let (_, marker) = frame_exec_command("printf ok");
+        let framed = format!("ok\n{marker}0\n").into_bytes();
+        let (output, status) = extract_framed_exit_status(framed, &marker);
+
+        assert_eq!(status, Some(0));
+        assert_eq!(output, b"ok");
+        assert_eq!(
+            finish_exec_result(output, status).expect("应用层退出码 0 应成功"),
+            "ok"
+        );
+    }
+
+    #[test]
+    fn framed_exec_preserves_original_trailing_newline() {
+        let (_, marker) = frame_exec_command("printf 'ok\\n'");
+        let framed = format!("ok\n\n{marker}0\n").into_bytes();
+        let (output, status) = extract_framed_exit_status(framed, &marker);
+
+        assert_eq!(status, Some(0));
+        assert_eq!(output, b"ok\n");
+    }
+
+    #[test]
+    fn framed_exec_status_overrides_wrapper_ssh_status() {
+        let (_, marker) = frame_exec_command("false");
+        let framed = format!("denied\n{marker}7\n").into_bytes();
+        let (output, framed_status) = extract_framed_exit_status(framed, &marker);
+        let effective_status = framed_status.or(Some(0));
+        let error = finish_exec_result(output, effective_status)
+            .expect_err("应用层非零退出码不能被包装命令的退出码覆盖");
+
+        assert!(error.contains("exit 7"));
+        assert!(error.contains("denied"));
+    }
+
+    #[test]
+    fn framed_exec_preserves_data_after_marker() {
+        let (_, marker) = frame_exec_command("printf out");
+        let framed = format!("out\n{marker}0\nlate stderr\n").into_bytes();
+        let (output, status) = extract_framed_exit_status(framed, &marker);
+
+        assert_eq!(status, Some(0));
+        assert_eq!(output, b"outlate stderr\n");
     }
 }

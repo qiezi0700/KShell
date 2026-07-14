@@ -83,6 +83,13 @@ const dragOver = ref<'local' | 'remote' | null>(null)
 
 // Tauri v2 原生 drag-drop 事件的反注册函数(处理从资源管理器拖入的 OS 文件)
 let unlistenDragDrop: UnlistenFn | null = null
+let isUnmounted = false
+
+function closeSftpLease(id: string) {
+  void sftpClose(id).catch((error: unknown) => {
+    toast.error(error instanceof Error ? error.message : String(error), 'SFTP 关闭失败')
+  })
+}
 
 onMounted(async () => {
   // 异步从 SQLite 加载左右栏宽度比,加载完才允许回写
@@ -102,8 +109,14 @@ onMounted(async () => {
 
   if (!sftpId.value) {
     try {
-      sftpId.value = await sftpOpen(props.sessionId)
+      const openedId = await sftpOpen(props.sessionId)
+      if (isUnmounted) {
+        closeSftpLease(openedId)
+        return
+      }
+      sftpId.value = openedId
     } catch (e: unknown) {
+      if (isUnmounted) return
       const message = e instanceof Error ? e.message : String(e)
       toast.error(message, 'SFTP 打开失败')
       emit('openError', message)
@@ -111,6 +124,8 @@ onMounted(async () => {
       return
     }
   }
+  const readySftpId = sftpId.value
+  if (!readySftpId || isUnmounted) return
   // 初始化两个栏的家目录
   try {
     localCwd.value = await localHome()
@@ -118,11 +133,13 @@ onMounted(async () => {
     localCwd.value = 'C:\\'
   }
   try {
-    remoteCwd.value = await sftpHome(sftpId.value)
+    remoteCwd.value = await sftpHome(readySftpId)
   } catch {
     remoteCwd.value = '/'
   }
+  if (isUnmounted) return
   await Promise.all([refreshLocal(), refreshRemote()])
+  if (isUnmounted) return
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('mousemove', onWindowMouseMove)
   window.addEventListener('mouseup', onWindowMouseUp)
@@ -130,31 +147,43 @@ onMounted(async () => {
   // 监听系统级文件拖入(拖 Windows 资源管理器里的文件到窗口)。
   // WebView 的 DOM drop 事件在 Tauri v2 里拿不到真实磁盘路径,必须走这个 API。
   // 只对本组件可见的双栏容器做命中测试,拖到其他标签页/侧边栏时忽略。
-  unlistenDragDrop = await getCurrentWebview().onDragDropEvent(event => {
-    const p = event.payload
-    if (p.type === 'enter' || p.type === 'over') {
-      dragOver.value = hitTestSide(p.position)
-    } else if (p.type === 'leave') {
-      dragOver.value = null
-    } else if (p.type === 'drop') {
-      const side = hitTestSide(p.position)
-      dragOver.value = null
-      if (side && p.paths.length > 0) {
-        void handleExternalDrop(side, p.paths)
+  try {
+    const dragDropUnlisten = await getCurrentWebview().onDragDropEvent(event => {
+      const p = event.payload
+      if (p.type === 'enter' || p.type === 'over') {
+        dragOver.value = hitTestSide(p.position)
+      } else if (p.type === 'leave') {
+        dragOver.value = null
+      } else if (p.type === 'drop') {
+        const side = hitTestSide(p.position)
+        dragOver.value = null
+        if (side && p.paths.length > 0) {
+          void handleExternalDrop(side, p.paths)
+        }
       }
+    })
+    if (isUnmounted) {
+      dragDropUnlisten()
+    } else {
+      unlistenDragDrop = dragDropUnlisten
     }
-  })
+  } catch (error: unknown) {
+    if (!isUnmounted) {
+      toast.error(error instanceof Error ? error.message : String(error), '系统拖拽监听失败')
+    }
+  }
 })
 
-onBeforeUnmount(async () => {
+onBeforeUnmount(() => {
+  isUnmounted = true
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('mousemove', onWindowMouseMove)
   window.removeEventListener('mouseup', onWindowMouseUp)
   unlistenDragDrop?.()
   if (hDragging.value) onHUp()
-  if (sftpId.value) {
-    try { await sftpClose(sftpId.value) } catch {}
-  }
+  const leaseId = sftpId.value
+  sftpId.value = null
+  if (leaseId) closeSftpLease(leaseId)
 })
 
 // ============================================================

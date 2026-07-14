@@ -4,6 +4,7 @@ export interface CloneContainerPlan {
   targetName: string
   shouldPullImage: boolean
   shouldStopOriginal: boolean
+  additionalNetworks?: string[]
 }
 
 export interface CloneContainerOperations {
@@ -12,6 +13,7 @@ export interface CloneContainerOperations {
   inspectState: (container: string) => Promise<string>
   stop: (container: string) => Promise<void>
   run: () => Promise<void>
+  connectNetwork: (network: string, container: string) => Promise<void>
   remove: (container: string, force: boolean) => Promise<void>
   start: (container: string) => Promise<void>
 }
@@ -34,6 +36,7 @@ export async function cloneContainerTransaction(
 
   let originalStopped = false
   let runAttempted = false
+  let newContainerCreated = false
 
   try {
     if (plan.shouldPullImage) {
@@ -50,14 +53,25 @@ export async function cloneContainerTransaction(
 
     runAttempted = true
     await operations.run()
+    newContainerCreated = true
+
+    for (const network of plan.additionalNetworks ?? []) {
+      await operations.connectNetwork(network, plan.targetName)
+    }
   } catch (error: unknown) {
     const rollbackErrors: string[] = []
 
-    if (runAttempted) {
+    if (runAttempted && !newContainerCreated) {
       try {
-        if (await operations.exists(plan.targetName)) {
-          await operations.remove(plan.targetName, true)
-        }
+        newContainerCreated = await operations.exists(plan.targetName)
+      } catch (rollbackError: unknown) {
+        rollbackErrors.push(`检查克隆容器残留失败：${errorMessage(rollbackError)}`)
+      }
+    }
+
+    if (newContainerCreated) {
+      try {
+        await operations.remove(plan.targetName, true)
       } catch (rollbackError: unknown) {
         rollbackErrors.push(`清理克隆容器残留失败：${errorMessage(rollbackError)}`)
       }

@@ -47,6 +47,7 @@ import {
   type DockerRunSpec,
 } from '@/api/docker'
 
+import { createContainerTransaction } from './create-container'
 import { cloneContainerTransaction } from './clone-container'
 import { recreateContainerTransaction } from './recreate-container'
 
@@ -102,6 +103,12 @@ interface Form {
   capDrop: string[]
   dns: string[]
   devices: DockerRunSpec['devices']
+  entrypoint: string[]
+  user: string
+  labels: Record<string, string>
+  tty: boolean
+  openStdin: boolean
+  readOnlyRootfs: boolean
 }
 
 function empty(): Form {
@@ -123,6 +130,12 @@ function empty(): Form {
     capDrop: [],
     dns: [],
     devices: [],
+    entrypoint: [],
+    user: '',
+    labels: {},
+    tty: false,
+    openStdin: false,
+    readOnlyRootfs: false,
   }
 }
 
@@ -153,6 +166,12 @@ function fillFromSpec(spec: DockerRunSpec): Form {
     capDrop: [...spec.capDrop],
     dns: [...spec.dns],
     devices: spec.devices.map((device) => ({ ...device })),
+    entrypoint: [...spec.entrypoint],
+    user: spec.user ?? '',
+    labels: { ...spec.labels },
+    tty: spec.tty,
+    openStdin: spec.openStdin,
+    readOnlyRootfs: spec.readOnlyRootfs,
   }
 }
 
@@ -256,6 +275,14 @@ function buildSpec(): DockerRunSpec {
   const nets = form.networks.map((n) => n.trim()).filter(Boolean)
   const primary = nets[0]
   const extras = nets.slice(1)
+  const selectedNetworks = new Set(nets)
+  const networkAttachments = (props.initial?.networkAttachments ?? [])
+    .filter((attachment) => selectedNetworks.has(attachment.name))
+    .map((attachment) => ({
+      ...attachment,
+      aliases: [...attachment.aliases],
+      linkLocalIps: [...attachment.linkLocalIps],
+    }))
   return {
     image: form.image.trim(),
     name: form.name.trim() || undefined,
@@ -264,6 +291,7 @@ function buildSpec(): DockerRunSpec {
     restartPolicy: form.restartPolicy && form.restartPolicy !== 'no' ? form.restartPolicy : undefined,
     networkMode: primary || undefined,
     additionalNetworks: extras.length ? extras : undefined,
+    networkAttachments: networkAttachments.length ? networkAttachments : undefined,
     ports: form.ports
       .map((p) => ({ host: p.host.trim(), container: p.container.trim() }))
       .filter((p) => p.host && p.container),
@@ -279,6 +307,14 @@ function buildSpec(): DockerRunSpec {
     capDrop: [...form.capDrop],
     dns: [...form.dns],
     devices: form.devices.map((device) => ({ ...device })),
+    logDriver: props.initial?.logDriver,
+    logOptions: props.initial?.logOptions ? { ...props.initial.logOptions } : undefined,
+    entrypoint: [...form.entrypoint],
+    user: form.user || undefined,
+    labels: { ...form.labels },
+    tty: form.tty,
+    openStdin: form.openStdin,
+    readOnlyRootfs: form.readOnlyRootfs,
   }
 }
 
@@ -293,37 +329,45 @@ async function submit() {
   }
 }
 
-/** 把 docker run 输出的最后一行(通常是容器 ID)提取出来,用于后续 network connect 定位。
+/** 把 docker run 输出的最后一行(通常是容器 ID)提取出来。
  * docker 可能会先输出拉镜像的进度,真正的 ID 一定在最末尾 */
 function extractContainerId(runOut: string): string {
   const lines = runOut.trim().split('\n').map((l) => l.trim()).filter(Boolean)
   return lines[lines.length - 1] ?? ''
 }
 
-/** 对已 run 起来的容器追加挂网络;每个 network connect 失败单独 toast 提示但不中断
- * (主要问题:网络不存在 / 已连接 / 驱动不兼容,不应因此让整个流程失败) */
-async function attachExtraNetworks(target: string, nets: string[]) {
-  for (const net of nets) {
-    try {
-      await dockerNetworkConnect(props.sessionId, net, target)
-    } catch (e: unknown) {
-      const msg = (e as Error)?.message ?? String(e)
-      toast.warning(`附加网络 ${net} 挂载失败:${msg}`)
-    }
-  }
-}
-
 async function submitCreate() {
   const spec = buildSpec()
+  try {
+    buildRunCommandFromSpec(spec)
+  } catch (e: unknown) {
+    toast.error(String(e), '配置校验失败')
+    return
+  }
+
   busy.value = true
   try {
-    const out = await dockerRun(props.sessionId, spec)
-    // docker run 成功返回容器 ID(短或长);失败会走 catch 或输出 Error:xxx
-    if (/^Error/i.test(out)) throw new Error(out.trim())
-    const cid = spec.name || extractContainerId(out)
-    if (spec.additionalNetworks?.length && cid) {
-      await attachExtraNetworks(cid, spec.additionalNetworks)
-    }
+    await createContainerTransaction(
+      {
+        targetName: spec.name,
+        additionalNetworks: spec.additionalNetworks ?? [],
+      },
+      {
+        run: async () => {
+          const out = await dockerRun(props.sessionId, spec)
+          if (/^Error/i.test(out)) throw new Error(out.trim())
+          return spec.name || extractContainerId(out)
+        },
+        exists: async (container) => dockerContainerExists(props.sessionId, container),
+        connectNetwork: async (network, container) => {
+          const attachment = spec.networkAttachments?.find((item) => item.name === network)
+          await dockerNetworkConnect(props.sessionId, network, container, attachment)
+        },
+        remove: async (container, force) => {
+          await dockerRemove(props.sessionId, container, force)
+        },
+      },
+    )
     toast.success('容器已创建')
     emit('created')
     emit('update:open', false)
@@ -384,7 +428,8 @@ async function submitRecreate() {
           if (/^Error/i.test(out)) throw new Error(out.trim())
         },
         connectNetwork: async (network, container) => {
-          await dockerNetworkConnect(props.sessionId, network, container)
+          const attachment = spec.networkAttachments?.find((item) => item.name === network)
+          await dockerNetworkConnect(props.sessionId, network, container, attachment)
         },
         remove: async (container, force) => {
           await dockerRemove(props.sessionId, container, force)
@@ -437,6 +482,7 @@ async function submitClone() {
         targetName,
         shouldPullImage: clonePullImage.value,
         shouldStopOriginal: cloneStopOriginal.value,
+        additionalNetworks: spec.additionalNetworks ?? [],
       },
       {
         exists: async (container) => dockerContainerExists(props.sessionId, container),
@@ -452,6 +498,10 @@ async function submitClone() {
           const out = await dockerRun(props.sessionId, spec)
           if (/^Error/i.test(out)) throw new Error(out.trim())
         },
+        connectNetwork: async (network, container) => {
+          const attachment = spec.networkAttachments?.find((item) => item.name === network)
+          await dockerNetworkConnect(props.sessionId, network, container, attachment)
+        },
         remove: async (container, force) => {
           await dockerRemove(props.sessionId, container, force)
         },
@@ -460,10 +510,6 @@ async function submitClone() {
         },
       },
     )
-
-    if (spec.additionalNetworks?.length) {
-      await attachExtraNetworks(targetName, spec.additionalNetworks)
-    }
 
     const actions: string[] = ['新容器已启动']
     if (cloneStopOriginal.value) actions.push(`原容器 ${origName} 已停止保留`)
@@ -497,11 +543,11 @@ async function submitClone() {
         </DialogTitle>
         <DialogDescription v-if="mode === 'recreate'" class="text-caption text-muted-foreground">
           已按当前容器配置预填,可编辑后提交。提交时会保留旧容器备份，新容器及附加网络就绪后再清理备份；失败会自动恢复旧容器。
-          会自动保留特权模式、能力、DNS 与设备映射；其他未展示的运行参数仍可能无法还原。
+          未展示但可安全表达的运行参数会自动保留；检测到无法无损还原的关键配置时会在打开弹窗前阻止重建。
         </DialogDescription>
         <DialogDescription v-else-if="mode === 'clone'" class="text-caption text-muted-foreground">
           基于当前容器配置创建新容器,不删除原容器。可勾选是否拉取最新镜像、是否停止原容器。
-          新容器名必须不同；停止原容器后端口可复用，若克隆失败会自动恢复原容器。特权模式、能力、DNS 与设备映射会自动保留。
+          新容器名必须不同；Compose 归属标签和固定网络地址会按新容器身份重新分配。停止原容器后端口可复用，若克隆失败会自动回滚。
         </DialogDescription>
         <DialogDescription v-else class="sr-only">用 docker run 从镜像创建一个新容器</DialogDescription>
       </DialogHeader>

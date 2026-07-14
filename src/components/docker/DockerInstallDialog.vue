@@ -48,6 +48,11 @@ const showSudo = ref(false)
 const errorLog = ref('')
 const errorHint = ref('')
 
+function handleOpenChange(nextOpen: boolean) {
+  if (!nextOpen && busy.value) return
+  emit('update:open', nextOpen)
+}
+
 // 镜像源选项
 const MIRROR_OPTIONS: Array<{ value: DockerInstallMirror; label: string; hint: string }> = [
   { value: 'aliyun', label: '阿里云镜像', hint: '国内推荐,下载速度快' },
@@ -70,10 +75,9 @@ const commandPreview = computed(() =>
 watch(
   () => props.open,
   (v) => {
-    if (v) {
+    if (v && !busy.value) {
       mirror.value = 'aliyun'
       addUserToDockerGroup.value = true
-      busy.value = false
       sudoPassword.value = ''
       showSudo.value = false
       errorLog.value = ''
@@ -146,7 +150,7 @@ async function submit() {
 </script>
 
 <template>
-  <Dialog :open="open" @update:open="(v) => emit('update:open', v)">
+  <Dialog :open="open" @update:open="handleOpenChange">
     <DialogContent class="max-w-xl w-[92vw] max-h-[85vh] overflow-hidden flex flex-col gap-3">
       <DialogHeader>
         <DialogTitle class="flex items-center gap-2">
@@ -273,7 +277,7 @@ async function submit() {
       </div>
 
       <DialogFooter class="shrink-0">
-        <Button variant="outline" :disabled="busy" @click="emit('update:open', false)">取消</Button>
+        <Button variant="outline" :disabled="busy" @click="handleOpenChange(false)">取消</Button>
         <Button variant="default" :disabled="busy" @click="submit">
           {{ busy ? '安装中…' : errorLog ? '重试安装' : '执行安装' }}
         </Button>

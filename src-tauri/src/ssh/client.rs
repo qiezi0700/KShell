@@ -22,6 +22,7 @@ const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 15_000;
 
 pub struct SshSession {
     pub handle: Arc<Handle<ClientHandler>>,
+    pub scheduler: Arc<super::scheduler::ChannelScheduler>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -381,6 +382,7 @@ async fn finish_connect(
 
     Ok(SshSession {
         handle: Arc::new(handle),
+        scheduler: Arc::new(super::scheduler::ChannelScheduler::new()),
     })
 }
 async fn authenticate(

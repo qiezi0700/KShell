@@ -1,6 +1,7 @@
 pub mod channel;
 pub mod client;
 pub mod known_hosts;
+pub mod scheduler;
 pub mod tunnel;
 
 pub use channel::{ChannelCommand, ChannelHandle};

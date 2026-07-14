@@ -36,6 +36,8 @@ pub struct HostConfirmResult {
 /// - `pending_host_confirms`:check_server_key 等待用户确认首次连接的 oneshot 发送端
 /// - `crypto`:凭据加密用的机器绑定 key
 /// - `sftp_sessions`:SFTP 会话池,复用 SSH 连接
+/// - `shared_sftp_sessions`:每个 SSH 会话唯一的底层 SFTP subsystem
+/// - `sftp_open_locks`:SFTP 打开/关闭串行锁,避免重复初始化与末租约关闭竞态
 /// - `transfers`:进行中的传输任务控制项,用于取消以及会话关闭时立即终止
 /// - `tunnels`:M6 端口转发规则,按 tunnel_id 索引;按 session_id 分组清理
 pub struct AppState {
@@ -48,6 +50,8 @@ pub struct AppState {
     pub pending_ki_prompts: DashMap<String, tokio::sync::oneshot::Sender<Vec<String>>>,
     pub crypto: CryptoKey,
     pub sftp_sessions: DashMap<String, SftpHandle>,
+    pub shared_sftp_sessions: DashMap<SessionId, SftpHandle>,
+    pub sftp_open_locks: DashMap<SessionId, Arc<Mutex<()>>>,
     pub transfers: DashMap<String, TransferControl>,
     pub tunnels: DashMap<TunnelId, TunnelEntry>,
 }
@@ -63,6 +67,8 @@ impl AppState {
             pending_ki_prompts: DashMap::new(),
             crypto,
             sftp_sessions: DashMap::new(),
+            shared_sftp_sessions: DashMap::new(),
+            sftp_open_locks: DashMap::new(),
             transfers: DashMap::new(),
             tunnels: DashMap::new(),
         }

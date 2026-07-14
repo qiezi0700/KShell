@@ -9,6 +9,8 @@ import { dockerSystemDf, dockerSystemPrune, type DockerDfEntry } from '@/api/doc
 import { openConfirm } from '@/stores/prompt'
 import { toast } from '@/stores/toast'
 
+import { LatestOperationGuard } from './latest-operation-guard'
+
 const props = defineProps<{
   open: boolean
   sessionId: string
@@ -23,39 +25,69 @@ const emit = defineEmits<{
 const loading = ref(false)
 const rows = ref<DockerDfEntry[]>([])
 const pruning = ref(false)
+const refreshGuard = new LatestOperationGuard()
+const pruneGuard = new LatestOperationGuard()
+
+function isDialogContextCurrent(sessionId: string): boolean {
+  return props.open && props.sessionId === sessionId
+}
+
+function handleOpenChange(nextOpen: boolean) {
+  if (!nextOpen && pruning.value) return
+  if (!nextOpen) {
+    refreshGuard.invalidate()
+    loading.value = false
+  }
+  emit('update:open', nextOpen)
+}
 
 async function refresh() {
+  if (!props.open) return
+  const sessionId = props.sessionId
+  const requestVersion = refreshGuard.begin()
   loading.value = true
   try {
-    rows.value = await dockerSystemDf(props.sessionId)
+    const nextRows = await dockerSystemDf(sessionId)
+    if (refreshGuard.isCurrent(requestVersion) && isDialogContextCurrent(sessionId)) {
+      rows.value = nextRows
+    }
   } catch (e: unknown) {
-    toast.error(String(e), '读取磁盘占用失败')
+    if (refreshGuard.isCurrent(requestVersion) && isDialogContextCurrent(sessionId)) {
+      toast.error(String(e), '读取磁盘占用失败')
+    }
   } finally {
-    loading.value = false
+    if (refreshGuard.isCurrent(requestVersion)) loading.value = false
   }
 }
 
 async function prune(withVolumes: boolean) {
-  const ok = await openConfirm({
-    title: withVolumes ? '深度清理(含未使用卷)' : '清理未使用资源',
-    message: withVolumes
-      ? '将删除所有已停止的容器、未挂载的卷、悬空镜像与构建缓存。\n卷中的数据会永久丢失,操作不可逆!'
-      : '将删除所有已停止的容器、无容器使用的镜像、未使用的网络与构建缓存。\n(不会动到卷)',
-    confirmText: withVolumes ? '深度清理' : '清理',
-    cancelText: '取消',
-    destructive: true,
-  })
-  if (!ok) return
+  if (pruning.value || !props.open) return
+  const sessionId = props.sessionId
+  const actionVersion = pruneGuard.begin()
   pruning.value = true
   try {
-    const out = await dockerSystemPrune(props.sessionId, withVolumes)
+    const ok = await openConfirm({
+      title: withVolumes ? '深度清理(含未使用卷)' : '清理未使用资源',
+      message: withVolumes
+        ? '将删除所有已停止的容器、未挂载的卷、悬空镜像与构建缓存。\n卷中的数据会永久丢失,操作不可逆!'
+        : '将删除所有已停止的容器、无容器使用的镜像、未使用的网络与构建缓存。\n(不会动到卷)',
+      confirmText: withVolumes ? '深度清理' : '清理',
+      cancelText: '取消',
+      destructive: true,
+    })
+    if (!ok || !pruneGuard.isCurrent(actionVersion) || !isDialogContextCurrent(sessionId)) return
+
+    const out = await dockerSystemPrune(sessionId, withVolumes)
+    if (!pruneGuard.isCurrent(actionVersion) || !isDialogContextCurrent(sessionId)) return
     // docker prune 输出末尾会带 "Total reclaimed space: xxx"
     const m = out.match(/Total reclaimed space:\s*([^\n]+)/i)
     toast.success(m ? `已回收 ${m[1].trim()}` : '清理完成')
     emit('pruned')
-    refresh()
+    await refresh()
   } catch (e: unknown) {
-    toast.error(String(e), '清理失败')
+    if (pruneGuard.isCurrent(actionVersion) && isDialogContextCurrent(sessionId)) {
+      toast.error(String(e), '清理失败')
+    }
   } finally {
     pruning.value = false
   }
@@ -63,22 +95,25 @@ async function prune(withVolumes: boolean) {
 
 // 打开时拉一次;关闭时不主动清空,下次打开先显示旧数据再刷新,避免闪烁
 watch(
-  () => props.open,
-  (open) => {
-    if (open) refresh()
+  () => [props.open, props.sessionId] as const,
+  ([open]) => {
+    refreshGuard.invalidate()
+    pruneGuard.invalidate()
+    if (open) void refresh()
+    else loading.value = false
   },
   { immediate: true },
 )
 </script>
 
 <template>
-  <Dialog :open="open" @update:open="(v) => emit('update:open', v)">
+  <Dialog :open="open" @update:open="handleOpenChange">
     <DialogContent class="max-w-2xl w-[92vw]">
       <DialogHeader>
         <DialogTitle class="flex items-center gap-2">
           <HardDrive class="size-4" />
           <span>Docker 磁盘占用</span>
-          <Button variant="ghost" size="icon-sm" class="ml-auto" :disabled="loading" @click="refresh">
+          <Button variant="ghost" size="icon-sm" class="ml-auto" :disabled="loading || pruning" @click="refresh">
             <RefreshCw class="size-3.5" :class="loading && 'animate-spin'" />
           </Button>
         </DialogTitle>

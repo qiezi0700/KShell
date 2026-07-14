@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onUnmounted } from 'vue'
+import { computed, mergeProps, ref, watch, onUnmounted, useAttrs } from 'vue'
 import { X } from '@lucide/vue'
 import {
   DialogClose,
@@ -14,8 +14,11 @@ import { cn } from '@/lib/utils'
 import { nextZIndex, releaseZIndex } from '@/lib/z-index'
 import DialogOverlay from './DialogOverlay.vue'
 
+defineOptions({ inheritAttrs: false })
+
 const props = defineProps<DialogContentProps & { class?: string, overlayClass?: string }>()
 const emits = defineEmits<DialogContentEmits>()
+const attrs = useAttrs()
 // overlayClass / class 是宿主样式,不透传给 reka-ui 的 DialogContent
 const forwardedProps = computed(() => {
   const { overlayClass: _o, class: _c, ...rest } = props
@@ -45,7 +48,7 @@ onUnmounted(() => releaseZIndex(zIndex.value))
   <DialogPortal>
     <DialogOverlay :class="overlayClass" :style="{ zIndex }" />
     <DialogContent
-      v-bind="forwarded"
+      v-bind="mergeProps(forwarded, attrs)"
       :class="cn(
         'fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2',
         'gap-4 border border-border bg-card p-5 shadow-lg rounded-md',

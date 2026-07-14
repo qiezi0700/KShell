@@ -13,6 +13,10 @@ const compiled = ts.transpileModule(source, {
 }).outputText
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`
 const { decodePreviewBytes, encodePreviewText } = await import(moduleUrl)
+const dialogContentSource = await readFile(
+  new URL('../src/components/ui/dialog/DialogContent.vue', import.meta.url),
+  'utf8',
+)
 
 test('解码 UTF-8 并保持可编辑', () => {
   const result = decodePreviewBytes(new TextEncoder().encode('你好\nKShell'))
@@ -53,4 +57,10 @@ test('拒绝无效 UTF-8 内容', () => {
     () => decodePreviewBytes(Uint8Array.from([0xc3, 0x28])),
     /编码/,
   )
+})
+
+test('DialogContent 将键盘等透传事件绑定到真实内容节点', () => {
+  assert.match(dialogContentSource, /defineOptions\(\{ inheritAttrs: false \}\)/)
+  assert.match(dialogContentSource, /const attrs = useAttrs\(\)/)
+  assert.match(dialogContentSource, /<DialogContent[\s\S]*v-bind="mergeProps\(forwarded, attrs\)"/)
 })

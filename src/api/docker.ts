@@ -1,8 +1,37 @@
 import { buildComposeStackCommand, validateComposePath } from './docker-compose-command'
+import {
+  DOCKER_PROBE_MARKER,
+  parseDockerProbeOutput,
+  type DockerProbe,
+} from './docker-probe'
 import { validateDockerPortMapping } from './docker-run-validation'
-import { sshExec, sshExecWithStdin } from './ssh'
+import {
+  validateDockerCpuLimit,
+  validateDockerImageReference,
+  validateDockerMemoryLimit,
+  validateDockerRegistry,
+  validateDockerRegistryUser,
+} from './docker-validation'
+import {
+  sshExec as invokeSshExec,
+  sshExecWithStdin as invokeSshExecWithStdin,
+} from './ssh'
 
 const DOCKER_QUERY_TIMEOUT_MS = 15_000
+const DOCKER_PATH_PREFIX = 'export PATH="$PATH:/usr/local/bin:/usr/bin:/snap/bin"; '
+
+function sshExec(sessionId: string, command: string, timeoutMs?: number): Promise<string> {
+  return invokeSshExec(sessionId, `${DOCKER_PATH_PREFIX}${command}`, timeoutMs)
+}
+
+function sshExecWithStdin(
+  sessionId: string,
+  command: string,
+  stdin: string,
+  timeoutMs?: number,
+): Promise<string> {
+  return invokeSshExecWithStdin(sessionId, `${DOCKER_PATH_PREFIX}${command}`, stdin, timeoutMs)
+}
 
 // ============================================================
 // 类型定义
@@ -69,6 +98,14 @@ export interface DockerDeviceBinding {
   permissions: string
 }
 
+export interface DockerNetworkAttachment {
+  name: string
+  aliases: string[]
+  ipv4Address?: string
+  ipv6Address?: string
+  linkLocalIps: string[]
+}
+
 export interface DockerInspect {
   id: string
   name: string
@@ -78,8 +115,12 @@ export interface DockerInspect {
   startedAt: string
   command: string
   entrypoint: string
+  entrypointArgs: string[]
+  user: string
   ip: string
   networks: string[]
+  /** 网络附件的可重建配置；运行时动态分配的地址不会写入这里 */
+  networkAttachments: DockerNetworkAttachment[]
   ports: DockerInspectPort[]
   mounts: DockerInspectMount[]
   env: string[]
@@ -106,6 +147,13 @@ export interface DockerInspect {
   capDrop: string[]
   dns: string[]
   devices: DockerDeviceBinding[]
+  logDriver: string
+  logOptions: Record<string, string>
+  tty: boolean
+  openStdin: boolean
+  readOnlyRootfs: boolean
+  /** 当前重建器无法无损表达的关键配置；非空时必须阻止重建和克隆 */
+  recreateSafetyIssues: string[]
 }
 
 // 镜像详情(docker inspect --type=image)
@@ -180,14 +228,25 @@ export interface DockerStats {
 // 可用性检测
 // ============================================================
 
-/** 检测远端是否安装 docker 且当前用户有权限(docker info 成功即算可用) */
+export type { DockerProbe } from './docker-probe'
+
+/** 独立区分 Docker 未安装、已安装但 daemon/权限不可用，以及可正常访问。 */
+export async function dockerProbe(sessionId: string): Promise<DockerProbe> {
+  const command =
+    `if ! command -v docker >/dev/null 2>&1; then ` +
+    `printf '${DOCKER_PROBE_MARKER}missing\n'; ` +
+    `else info="$(docker info 2>&1)"; code=$?; ` +
+    `if [ "$code" -eq 0 ]; then ` +
+    `version="$(docker version --format '{{.Server.Version}}|{{.Server.APIVersion}}' 2>/dev/null)"; ` +
+    `printf '${DOCKER_PROBE_MARKER}ready|%s\n' "$version"; ` +
+    `else printf '${DOCKER_PROBE_MARKER}unusable\n%s\n' "$info"; fi; fi`
+  const output = await sshExec(sessionId, command, DOCKER_QUERY_TIMEOUT_MS)
+  return parseDockerProbeOutput(output)
+}
+
+/** 检测远端 Docker 是否可供当前 SSH 用户使用。 */
 export async function dockerAvailable(sessionId: string): Promise<boolean> {
-  try {
-    const out = await sshExec(sessionId, 'command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && echo ok', DOCKER_QUERY_TIMEOUT_MS)
-    return out.trim() === 'ok'
-  } catch {
-    return false
-  }
+  return (await dockerProbe(sessionId)).available
 }
 
 // ============================================================
@@ -277,10 +336,6 @@ export async function dockerVersion(sessionId: string): Promise<DockerVersion | 
 // 真正的参数化需在后端单独开 docker 命令,当前仍走 ssh_exec 传整条命令。
 const NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/
 
-// 镜像标识与容器名不同:可能为 sha256:hash、短 hash、repo:tag、repo@sha256:digest,
-// 乃至 registry 路径(含 /),因此允许 : @ / . _ -,同样禁空白与 shell 元字符。
-const IMAGE_RE = /^[a-zA-Z0-9@:._/-]+$/
-
 function validateName(name: string, label = '容器标识'): void {
   if (!name || !NAME_RE.test(name)) {
     throw new Error(`${label}不合法: ${name}`)
@@ -288,9 +343,7 @@ function validateName(name: string, label = '容器标识'): void {
 }
 
 function validateImageId(id: string): void {
-  if (!id || !IMAGE_RE.test(id)) {
-    throw new Error(`镜像标识不合法: ${id}`)
-  }
+  validateDockerImageReference(id)
 }
 
 /** 列出所有容器(含已停止) */
@@ -384,9 +437,6 @@ export interface DockerUpdateOpts {
   restart?: string
 }
 
-// 内存字符串白名单:数字 + 可选 k/m/g 单位;拒绝空白与 shell 元字符
-const MEM_RE = /^[0-9]+(\.[0-9]+)?[kKmMgG]?$/
-const CPU_RE = /^[0-9]+(\.[0-9]+)?$/
 const RESTART_RE = /^(no|always|on-failure|unless-stopped)(:[0-9]+)?$/
 
 /** 修改运行时限制:内存 / CPU / 重启策略。docker update 支持热改,无需重启容器。 */
@@ -401,12 +451,12 @@ export async function dockerUpdateContainer(
   const cpu = opts.cpus?.trim()
   const restart = opts.restart?.trim()
   if (mem) {
-    if (!MEM_RE.test(mem)) throw new Error(`内存限制不合法: ${mem}(示例:512m / 2g)`)
+    validateDockerMemoryLimit(mem, true)
     parts.push('--memory', mem)
     // docker 默认令 memory-swap = 2×memory;不显式设置以保留默认行为
   }
   if (cpu) {
-    if (!CPU_RE.test(cpu)) throw new Error(`CPU 数不合法: ${cpu}(示例:1.5)`)
+    validateDockerCpuLimit(cpu, true)
     parts.push('--cpus', cpu)
   }
   if (restart) {
@@ -448,6 +498,8 @@ export interface DockerRunSpec {
   networkMode?: string
   /** 附加网络列表:docker run 只能一个 --network,其余在 run 后用 docker network connect 依次挂载 */
   additionalNetworks?: string[]
+  /** 与网络名绑定的别名和静态地址；表单调整网络顺序时仍按名称关联 */
+  networkAttachments?: DockerNetworkAttachment[]
   ports: DockerPortMapping[]
   volumes: DockerVolumeBinding[]
   /** KEY=VALUE 字符串数组 */
@@ -463,6 +515,15 @@ export interface DockerRunSpec {
   capDrop: string[]
   dns: string[]
   devices: DockerDeviceBinding[]
+  /** 日志驱动及其选项；重建时从 HostConfig.LogConfig 原样透传 */
+  logDriver?: string
+  logOptions?: Record<string, string>
+  entrypoint: string[]
+  user?: string
+  labels: Record<string, string>
+  tty: boolean
+  openStdin: boolean
+  readOnlyRootfs: boolean
 }
 
 // env KEY:大写字母/数字/下划线,首字符不能是数字
@@ -473,6 +534,37 @@ const VOLUME_SOURCE_RE = /^(\/[a-zA-Z0-9/_.:@#+=-]+|[a-zA-Z0-9][a-zA-Z0-9_.-]*)$
 const VOLUME_DEST_RE = /^\/[a-zA-Z0-9/_.:@#+=-]*$/
 const CAPABILITY_RE = /^[A-Za-z0-9_]+$/
 const DEVICE_PERMISSIONS_RE = /^[rwm]{1,3}$/
+const USER_RE = /^[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)?$/
+const NETWORK_ADDRESS_RE = /^[0-9A-Fa-f:.]+(?:\/[0-9]{1,3})?$/
+const LOG_DRIVER_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
+const LOG_OPTION_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
+
+function validateNetworkAddress(value: string, label: string): void {
+  if (!value || value.length > 64 || !NETWORK_ADDRESS_RE.test(value)) {
+    throw new Error(`${label}不合法: ${value}`)
+  }
+}
+
+function appendNetworkOptions(parts: string[], attachment: DockerNetworkAttachment | undefined): void {
+  if (!attachment) return
+  const aliases = [...new Set(attachment.aliases)]
+  for (const alias of aliases) {
+    validateName(alias, '网络别名')
+    parts.push('--network-alias', shq(alias))
+  }
+  if (attachment.ipv4Address) {
+    validateNetworkAddress(attachment.ipv4Address, '固定 IPv4 地址')
+    parts.push('--ip', shq(attachment.ipv4Address))
+  }
+  if (attachment.ipv6Address) {
+    validateNetworkAddress(attachment.ipv6Address, '固定 IPv6 地址')
+    parts.push('--ip6', shq(attachment.ipv6Address))
+  }
+  for (const address of [...new Set(attachment.linkLocalIps)]) {
+    validateNetworkAddress(address, '链路本地地址')
+    parts.push('--link-local-ip', shq(address))
+  }
+}
 
 /** 从 DockerRunSpec 组装 docker run -d 命令;所有用户内容都 shq 转义,避免 shell 注入。
  * 与 buildRunCommand(从 inspect 还原)分离:那个是"重建",这个是"新建",输入结构不同。 */
@@ -493,7 +585,33 @@ export function buildRunCommandFromSpec(s: DockerRunSpec): string {
     if (!RESTART_RE.test(s.restartPolicy)) throw new Error(`重启策略不合法: ${s.restartPolicy}`)
     parts.push('--restart', shq(s.restartPolicy))
   }
-  if (s.networkMode) parts.push('--network', shq(s.networkMode))
+  if (s.networkMode) {
+    parts.push('--network', shq(s.networkMode))
+    appendNetworkOptions(
+      parts,
+      s.networkAttachments?.find((attachment) => attachment.name === s.networkMode),
+    )
+  }
+  if (s.entrypoint.length > 0) {
+    const entrypoint = s.entrypoint[0] ?? ''
+    if (!entrypoint || entrypoint.length > 4096 || entrypoint.includes('\0')) {
+      throw new Error('容器入口点不合法')
+    }
+    parts.push('--entrypoint', shq(entrypoint))
+  }
+  if (s.user) {
+    if (!USER_RE.test(s.user)) throw new Error(`运行用户不合法: ${s.user}`)
+    parts.push('--user', shq(s.user))
+  }
+  for (const [key, value] of Object.entries(s.labels)) {
+    if (!key || key.length > 4096 || /[\0\r\n]/.test(key) || /[\0\r\n]/.test(value)) {
+      throw new Error(`容器标签不合法: ${key}`)
+    }
+    parts.push('--label', shq(`${key}=${value}`))
+  }
+  if (s.openStdin) parts.push('-i')
+  if (s.tty) parts.push('-t')
+  if (s.readOnlyRootfs) parts.push('--read-only')
   if (s.privileged) parts.push('--privileged')
   for (const capability of s.capAdd) {
     if (!CAPABILITY_RE.test(capability)) throw new Error(`新增能力不合法: ${capability}`)
@@ -512,6 +630,16 @@ export function buildRunCommandFromSpec(s: DockerRunSpec): string {
     if (!VOLUME_DEST_RE.test(device.containerPath)) throw new Error(`容器设备路径不合法: ${device.containerPath}`)
     if (!DEVICE_PERMISSIONS_RE.test(device.permissions)) throw new Error(`设备权限不合法: ${device.permissions}`)
     parts.push('--device', shq(`${device.hostPath}:${device.containerPath}:${device.permissions}`))
+  }
+  if (s.logDriver) {
+    if (!LOG_DRIVER_RE.test(s.logDriver)) throw new Error(`日志驱动不合法: ${s.logDriver}`)
+    parts.push('--log-driver', shq(s.logDriver))
+  }
+  for (const [key, value] of Object.entries(s.logOptions ?? {})) {
+    if (!LOG_OPTION_KEY_RE.test(key) || value.length > 4096 || /[\0\r\n]/.test(value)) {
+      throw new Error(`日志选项不合法: ${key}`)
+    }
+    parts.push('--log-opt', shq(`${key}=${value}`))
   }
 
   for (const p of s.ports) {
@@ -535,15 +663,16 @@ export function buildRunCommandFromSpec(s: DockerRunSpec): string {
   }
 
   if (s.memory) {
-    if (!MEM_RE.test(s.memory)) throw new Error(`内存限制不合法: ${s.memory}`)
+    validateDockerMemoryLimit(s.memory, false)
     parts.push('--memory', s.memory)
   }
   if (s.cpus) {
-    if (!CPU_RE.test(s.cpus)) throw new Error(`CPU 数不合法: ${s.cpus}`)
+    validateDockerCpuLimit(s.cpus, false)
     parts.push('--cpus', s.cpus)
   }
 
   parts.push(shq(s.image))
+  for (const argument of s.entrypoint.slice(1)) parts.push(shq(argument))
   for (const a of s.cmd) parts.push(shq(a))
   return parts.join(' ')
 }
@@ -558,7 +687,10 @@ export async function dockerRun(sessionId: string, spec: DockerRunSpec): Promise
  * - 网络优先用 NetworkMode(host/自定义 bridge 名),回退到 Networks 里第一个非 bridge
  * - 挂载只取 bind + 命名 volume(tmpfs 等不还原)
  * - 特权模式、能力、DNS 与设备映射通过隐藏字段透传,避免重建时静默降权或丢设备 */
-export function inspectToRunSpec(i: DockerInspect): DockerRunSpec {
+export function inspectToRunSpec(
+  i: DockerInspect,
+  mode: 'recreate' | 'clone' = 'recreate',
+): DockerRunSpec {
   // 双栈去重:同 container+hostPort 组合优先保留 IPv4 那条
   const seen = new Set<string>()
   const ports: DockerPortMapping[] = []
@@ -596,6 +728,18 @@ export function inspectToRunSpec(i: DockerInspect): DockerRunSpec {
     networkMode = i.networks[0]
   }
   const additionalNetworks = i.networks.filter((n) => n && n !== networkMode)
+  const networkAttachments = i.networkAttachments.map((attachment) => ({
+    ...attachment,
+    aliases: [...attachment.aliases],
+    linkLocalIps: mode === 'clone' ? [] : [...attachment.linkLocalIps],
+    ipv4Address: mode === 'clone' ? undefined : attachment.ipv4Address,
+    ipv6Address: mode === 'clone' ? undefined : attachment.ipv6Address,
+  }))
+  const labels = mode === 'clone'
+    ? Object.fromEntries(
+        Object.entries(i.labels).filter(([key]) => !key.startsWith('com.docker.compose.')),
+      )
+    : { ...i.labels }
 
   return {
     image: i.image,
@@ -605,6 +749,7 @@ export function inspectToRunSpec(i: DockerInspect): DockerRunSpec {
     restartPolicy: i.restartPolicy && i.restartPolicy !== 'no' ? i.restartPolicy : undefined,
     networkMode: networkMode || undefined,
     additionalNetworks: additionalNetworks.length ? additionalNetworks : undefined,
+    networkAttachments: networkAttachments.length ? networkAttachments : undefined,
     ports,
     volumes,
     env: [...i.env],
@@ -616,6 +761,14 @@ export function inspectToRunSpec(i: DockerInspect): DockerRunSpec {
     capDrop: [...i.capDrop],
     dns: [...i.dns],
     devices: i.devices.map((device) => ({ ...device })),
+    logDriver: i.logDriver || undefined,
+    logOptions: { ...i.logOptions },
+    entrypoint: [...i.entrypointArgs],
+    user: i.user || undefined,
+    labels,
+    tty: i.tty,
+    openStdin: i.openStdin,
+    readOnlyRootfs: i.readOnlyRootfs,
   }
 }
 
@@ -637,7 +790,7 @@ export async function dockerImageInspect(sessionId: string, imageId: string): Pr
   validateImageId(imageId)
   const out = await sshExec(
     sessionId,
-    `docker inspect --type=image --format '{{json .}}' ${imageId}`,
+    `docker inspect --type=image --format '{{json .}}' -- ${shq(imageId)}`,
   )
   const r = parseJsonLines(out)[0]
   if (!r) throw new Error('未找到镜像信息')
@@ -672,7 +825,7 @@ export async function dockerImageHistory(sessionId: string, imageId: string): Pr
   validateImageId(imageId)
   const out = await sshExec(
     sessionId,
-    `docker history --no-trunc --format '{{json .}}' ${imageId}`,
+    `docker history --no-trunc --format '{{json .}}' -- ${shq(imageId)}`,
   )
   return parseJsonLines(out).map((r) => ({
     id: str(r.ID),
@@ -689,23 +842,21 @@ export async function dockerImageHistory(sessionId: string, imageId: string): Pr
  * 帮用户绕开"不知道路径写在哪"的问题,直接给出候选。 */
 export async function dockerFindLogFiles(sessionId: string, container: string): Promise<string[]> {
   validateName(container)
-  // -maxdepth 6 与限定根目录避免全盘扫描;xargs 补 ls -S 排序,让活跃日志更靠前;
-  // 2>/dev/null 吞掉找不到目录/权限错误;head -30 兜底防列表爆炸
+  // 先筛出容器内实际存在的根目录，避免 find 把常见但不存在的目录当成扫描错误。
   const roots = '/var/log /app /workspace /opt /home /logs /data /srv /root /tmp'
   const inner =
-    `find ${roots} -maxdepth 6 -type f ` +
+    `roots=""; for root in ${roots}; do [ -d "$root" ] && roots="$roots $root"; done; ` +
+    `[ -z "$roots" ] && exit 0; ` +
+    `find $roots -maxdepth 6 -type f ` +
     `\\( -name "*.log" -o -name "*.out" -o -name "*.err" -o -name "*.log.*" -o -name "catalina.out" -o -name "console.txt" \\) ` +
-    `-size +0c 2>/dev/null | head -100 | xargs -r ls -1S 2>/dev/null | head -30`
-  try {
-    const out = await sshExec(sessionId, `docker exec ${container} sh -c '${inner}' 2>&1`)
-    return out
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.startsWith('/') && LOG_PATH_RE.test(l))
-  } catch {
-    // 极简镜像(distroless / scratch)可能没 sh / find,静默返回空,UI 侧提示
-    return []
+    `-size +0c | head -100 | xargs -r ls -1S | head -30`
+  const out = await sshExec(sessionId, `docker exec ${container} sh -c '${inner}' 2>&1`)
+  const outputLines = out.split('\n').map((line) => line.trim()).filter(Boolean)
+  const diagnostics = outputLines.filter((line) => !line.startsWith('/') || !LOG_PATH_RE.test(line))
+  if (diagnostics.length > 0) {
+    throw new Error(`扫描日志文件失败: ${diagnostics.slice(0, 3).join('；')}`)
   }
+  return outputLines.slice(0, 30)
 }
 
 /** 查询容器详情(docker inspect),返回归一化后的结构化字段。
@@ -733,7 +884,7 @@ export async function dockerListImages(sessionId: string): Promise<DockerImage[]
 /** 删除镜像 */
 export async function dockerRemoveImage(sessionId: string, imageId: string): Promise<void> {
   validateImageId(imageId)
-  await sshExec(sessionId, `docker rmi ${imageId}`)
+  await sshExec(sessionId, `docker rmi -- ${shq(imageId)}`)
 }
 
 // ============================================================
@@ -848,10 +999,17 @@ export async function dockerNetworkConnect(
   sessionId: string,
   network: string,
   container: string,
+  attachment?: DockerNetworkAttachment,
 ): Promise<void> {
   validateName(network, '网络名')
   validateName(container)
-  await sshExec(sessionId, `docker network connect ${network} ${container} 2>&1`)
+  if (attachment && attachment.name !== network) {
+    throw new Error(`网络附件与目标网络不匹配: ${attachment.name}`)
+  }
+  const parts = ['docker', 'network', 'connect']
+  appendNetworkOptions(parts, attachment)
+  parts.push(shq(network), shq(container), '2>&1')
+  await sshExec(sessionId, parts.join(' '))
 }
 
 /** 断开容器与指定网络。运行时也可断,但断掉最后一个网络后容器会失去网络访问。 */
@@ -869,24 +1027,6 @@ export async function dockerNetworkDisconnect(
 // Registry 登录 / 登出
 // ============================================================
 
-// registry 地址白名单:host[:port][/path],host 允许字母数字点连字符,不允许协议前缀。
-// 空 registry 表示 Docker Hub 默认。
-const REGISTRY_RE = /^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?(:[0-9]{1,5})?(\/[a-zA-Z0-9._/-]*)?$/
-// 用户名白名单:字母/数字开头,允许 . _ - + @
-const REGISTRY_USER_RE = /^[a-zA-Z0-9][a-zA-Z0-9._+@-]*$/
-
-function validateRegistry(registry: string): void {
-  if (registry && !REGISTRY_RE.test(registry)) {
-    throw new Error(`registry 地址不合法(示例:registry.example.com:5000): ${registry}`)
-  }
-}
-
-function validateRegistryUser(user: string): void {
-  if (!REGISTRY_USER_RE.test(user)) {
-    throw new Error(`用户名不合法(允许字母数字与 . _ - + @)`)
-  }
-}
-
 /** 登录到远端 Docker Registry。密码通过 SSH channel stdin 直接发送给
  * docker login --password-stdin，不进入远端命令行参数、进程环境或 shell 历史。
  * docker login 成功后会把 token 写到远端 ~/.docker/config.json；需要清理时调用 dockerLogout。
@@ -899,8 +1039,8 @@ export async function dockerLogin(
 ): Promise<void> {
   const reg = registry.trim()
   const user = username.trim()
-  validateRegistry(reg)
-  validateRegistryUser(user)
+  validateDockerRegistry(reg)
+  validateDockerRegistryUser(user)
   if (!password) throw new Error('密码不能为空')
   if (password.length > 4096) throw new Error('密码过长(>4096)')
 
@@ -917,30 +1057,24 @@ export async function dockerLogin(
  * registry 传空串表示 Docker Hub 默认。 */
 export async function dockerLogout(sessionId: string, registry: string): Promise<string> {
   const reg = registry.trim()
-  validateRegistry(reg)
+  validateDockerRegistry(reg)
   const cmd = reg ? `docker logout ${shq(reg)} 2>&1` : 'docker logout 2>&1'
   return sshExec(sessionId, cmd)
 }
 
-/** 读远端 ~/.docker/config.json 的 auths keys,列出当前已登录的 registry 地址。
- * 用 grep + sed 而不是 jq / python,尽量少依赖;解析容错,失败返回空数组。 */
+/** 读远端 ~/.docker/config.json 的 auths keys,列出当前已登录的 registry 地址。 */
 export async function dockerListRegistries(sessionId: string): Promise<string[]> {
-  try {
-    // 只提取 auths 对象下的一级 key;awk 状态机比嵌套 sed 稳
-    const cmd =
-      `awk '/"auths"[[:space:]]*:/{f=1;d=0;next} ` +
-      `f&&/{/{d++;next} ` +
-      `f&&/}/{d--;if(d<=0){f=0};next} ` +
-      `f&&d>=1&&/"[^"]+"[[:space:]]*:/{match($0,/"[^"]+"/);if(RSTART){print substr($0,RSTART+1,RLENGTH-2)}}' ` +
-      `~/.docker/config.json 2>/dev/null`
-    const out = await sshExec(sessionId, cmd)
-    return out
-      .split('\n')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0)
-  } catch {
-    return []
-  }
+  // 在增加当前行的花括号深度前提取一级 key，避免把嵌套对象里的 auth 字段误判成 Registry。
+  const cmd =
+    `if [ -r ~/.docker/config.json ]; then ` +
+    `awk '/"auths"[[:space:]]*:[[:space:]]*\{/{f=1;d=1;line=$0;` +
+    `sub(/^.*"auths"[[:space:]]*:[[:space:]]*\{/,"",line);` +
+    `o=gsub(/\{/,"{",line);c=gsub(/\}/,"}",line);d+=o-c;if(d<=0){exit};next} ` +
+    `f{if(d==1&&match($0,/^[[:space:]]*"[^"]+"[[:space:]]*:/)){` +
+    `key=substr($0,RSTART,RLENGTH);sub(/^[[:space:]]*"/,"",key);sub(/"[[:space:]]*:$/,"",key);print key};` +
+    `o=gsub(/\{/,"{");c=gsub(/\}/,"}");d+=o-c;if(d<=0){exit}}' ~/.docker/config.json; fi`
+  const out = await sshExec(sessionId, cmd)
+  return [...new Set(out.split('\n').map((value) => value.trim()).filter(Boolean))]
 }
 
 // ============================================================
@@ -952,14 +1086,19 @@ export async function dockerListRegistries(sessionId: string): Promise<string[]>
 export async function dockerListStacks(sessionId: string): Promise<DockerStack[]> {
   const out = await sshExec(sessionId, 'docker compose ls --all --format json', DOCKER_QUERY_TIMEOUT_MS)
   try {
-    const arr = JSON.parse(out.trim()) as Array<Record<string, unknown>>
-    return arr.map((r) => ({
-      name: str(r.Name),
-      status: str(r.Status),
-      configFiles: str(r.ConfigFiles),
-    }))
-  } catch {
-    return []
+    const parsed: unknown = JSON.parse(out.trim())
+    if (!Array.isArray(parsed)) throw new Error('响应不是数组')
+    return parsed.map((item) => {
+      const r = record(item)
+      return {
+        name: str(r.Name),
+        status: str(r.Status),
+        configFiles: str(r.ConfigFiles),
+      }
+    })
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`Compose 列表解析失败: ${message}`)
   }
 }
 
@@ -985,7 +1124,7 @@ export async function dockerStackDeploy(sessionId: string, composePath: string):
  * ref 与 imageId 走同一套白名单:允许 registry.host/repo/name:tag、digest 形式,禁 shell 元字符。 */
 export async function dockerPull(sessionId: string, ref: string): Promise<string> {
   validateImageId(ref)
-  return sshExec(sessionId, `docker pull ${ref} 2>&1`)
+  return sshExec(sessionId, `docker pull -- ${shq(ref)} 2>&1`)
 }
 
 // ============================================================
@@ -1048,6 +1187,101 @@ function parseDevices(v: unknown): DockerDeviceBinding[] {
     const permissions = str(device.CgroupPermissions)
     if (!hostPath || !containerPath || !permissions) return []
     return [{ hostPath, containerPath, permissions }]
+  })
+}
+
+function record(v: unknown): Record<string, unknown> {
+  return v && typeof v === 'object' && !Array.isArray(v)
+    ? v as Record<string, unknown>
+    : {}
+}
+
+function hasItems(v: unknown): boolean {
+  if (Array.isArray(v)) return v.length > 0
+  return Object.keys(record(v)).length > 0
+}
+
+function detectRecreateSafetyIssues(
+  config: Record<string, unknown>,
+  host: Record<string, unknown>,
+  mounts: unknown[],
+): string[] {
+  const issues = new Set<string>()
+  const add = (condition: boolean, message: string) => {
+    if (condition) issues.add(message)
+  }
+
+  add(host.AutoRemove === true, '自动删除(--rm)')
+  add(host.Init === true, 'init 进程(--init)')
+  add(hasItems(host.DeviceRequests), 'GPU/设备请求')
+  add(hasItems(host.Tmpfs), 'tmpfs 挂载')
+  add(hasItems(host.SecurityOpt), '安全选项')
+  add(hasItems(host.GroupAdd), '附加用户组')
+  add(hasItems(host.ExtraHosts), '自定义 hosts')
+  add(hasItems(host.Sysctls), 'sysctl 参数')
+  add(hasItems(host.Ulimits), 'ulimit 参数')
+  add(hasItems(host.DnsSearch) || hasItems(host.DnsOptions), 'DNS 搜索域或选项')
+  add(hasItems(host.Links), '容器链接')
+  add(hasItems(host.VolumesFrom), '继承卷(--volumes-from)')
+  add(hasItems(host.DeviceCgroupRules), '设备 cgroup 规则')
+  add(host.PublishAllPorts === true, '自动发布全部端口')
+
+  const runtime = str(host.Runtime)
+  add(!!runtime && runtime !== 'runc', `非默认运行时 ${runtime}`)
+  add(/^container:/.test(str(host.NetworkMode)), '共享其他容器网络命名空间')
+  add(!!str(host.PidMode), '自定义 PID 命名空间')
+  add(!!str(host.UTSMode), '自定义 UTS 命名空间')
+  add(!!str(host.UsernsMode), '自定义用户命名空间')
+  add(!['', 'private'].includes(str(host.IpcMode)), '自定义 IPC 命名空间')
+  add(!['', 'private'].includes(str(host.CgroupnsMode)), '自定义 cgroup 命名空间')
+  add(!!str(host.CgroupParent), '自定义 cgroup 父级')
+
+  const shmSize = typeof host.ShmSize === 'number' ? host.ShmSize : 0
+  add(shmSize > 0 && shmSize !== 64 * 1024 * 1024, '自定义共享内存大小')
+  add(typeof host.CpuShares === 'number' && host.CpuShares !== 0, 'CPU 权重')
+  add(typeof host.CpuPeriod === 'number' && host.CpuPeriod !== 0, 'CPU 周期')
+  add(typeof host.CpuQuota === 'number' && host.CpuQuota !== 0, 'CPU 配额')
+  add(!!str(host.CpusetCpus) || !!str(host.CpusetMems), 'CPU/内存节点绑定')
+  add(typeof host.MemoryReservation === 'number' && host.MemoryReservation !== 0, '内存软限制')
+  add(host.OomKillDisable === true, '禁用 OOM Killer')
+  add(typeof host.OomScoreAdj === 'number' && host.OomScoreAdj !== 0, 'OOM 分数调整')
+  add(typeof host.PidsLimit === 'number' && host.PidsLimit > 0, 'PID 数量限制')
+
+  for (const item of mounts) {
+    const mount = record(item)
+    const type = str(mount.Type)
+    const mode = str(mount.Mode)
+    const propagation = str(mount.Propagation)
+    add(type !== 'bind' && type !== 'volume', `${type || '未知类型'}挂载`)
+    add(!!mode && !['ro', 'rw'].includes(mode), `挂载模式 ${mode}`)
+    add(!!propagation && propagation !== 'rprivate', `挂载传播模式 ${propagation}`)
+  }
+
+  add(!!str(config.MacAddress), '固定 MAC 地址')
+  return [...issues]
+}
+
+function parseNetworkAttachments(
+  r: Record<string, unknown>,
+  networks: Record<string, unknown>,
+): DockerNetworkAttachment[] {
+  const containerName = str(r.Name).replace(/^\//, '')
+  const containerId = str(r.Id)
+  const shortId = containerId.slice(0, 12)
+  const automaticAliases = new Set([containerName, containerId, shortId])
+
+  return Object.entries(networks).map(([name, endpointValue]) => {
+    const endpoint = record(endpointValue)
+    const ipam = record(endpoint.IPAMConfig)
+    const aliases = [...stringArray(endpoint.Aliases), ...stringArray(endpoint.DNSNames)]
+      .filter((alias) => !automaticAliases.has(alias))
+    return {
+      name,
+      aliases: [...new Set(aliases)],
+      ipv4Address: str(ipam.IPv4Address) || undefined,
+      ipv6Address: str(ipam.IPv6Address) || undefined,
+      linkLocalIps: stringArray(ipam.LinkLocalIPs),
+    }
   })
 }
 
@@ -1137,12 +1371,19 @@ function normalizeInspect(r: Record<string, unknown>): DockerInspect {
   const state = (r.State ?? {}) as Record<string, unknown>
   const host = (r.HostConfig ?? {}) as Record<string, unknown>
   const restart = (host.RestartPolicy ?? {}) as Record<string, unknown>
+  const logConfig = record(host.LogConfig)
   const net = (r.NetworkSettings ?? {}) as Record<string, unknown>
   const networks = (net.Networks ?? {}) as Record<string, unknown>
   const labels = (config.Labels ?? {}) as Record<string, unknown>
   const mounts = (r.Mounts ?? []) as unknown[]
+  const restartName = str(restart.Name)
+  const maximumRetryCount = typeof restart.MaximumRetryCount === 'number'
+    ? restart.MaximumRetryCount
+    : 0
+  const containerId = str(r.Id)
+  const hostname = str(config.Hostname)
   return {
-    id: str(r.Id),
+    id: containerId,
     name: str(r.Name).replace(/^\//, ''),
     image: str(config.Image),
     state: str(state.Status),
@@ -1150,14 +1391,17 @@ function normalizeInspect(r: Record<string, unknown>): DockerInspect {
     startedAt: str(state.StartedAt),
     command: joinArr(config.Cmd),
     entrypoint: joinArr(config.Entrypoint),
+    entrypointArgs: stringArray(config.Entrypoint),
+    user: str(config.User),
     ip: str(net.IPAddress),
     networks: Object.keys(networks),
+    networkAttachments: parseNetworkAttachments(r, networks),
     ports: parsePorts(net.Ports),
     mounts: mounts.map((m) => {
       const mo = (m ?? {}) as Record<string, unknown>
       return {
         type: str(mo.Type),
-        source: str(mo.Source),
+        source: str(mo.Type) === 'volume' ? str(mo.Name) || str(mo.Source) : str(mo.Source),
         destination: str(mo.Destination),
         mode: str(mo.Mode),
       }
@@ -1165,9 +1409,11 @@ function normalizeInspect(r: Record<string, unknown>): DockerInspect {
     env: Array.isArray(config.Env) ? (config.Env as unknown[]).map((x) => str(x)) : [],
     labels: Object.fromEntries(Object.entries(labels).map(([k, v]) => [k, str(v)])),
     cmd: Array.isArray(config.Cmd) ? (config.Cmd as unknown[]).map((x) => str(x)) : [],
-    restartPolicy: str(restart.Name),
+    restartPolicy: restartName === 'on-failure' && maximumRetryCount > 0
+      ? `${restartName}:${maximumRetryCount}`
+      : restartName,
     networkMode: str(host.NetworkMode),
-    hostname: str(config.Hostname),
+    hostname: hostname === containerId.slice(0, 12) ? '' : hostname,
     workingDir: str(config.WorkingDir),
     memoryBytes: typeof host.Memory === 'number' ? (host.Memory as number) : 0,
     // NanoCpus 是纳核数(1e9 = 1 core);<0 视为无限制
@@ -1181,6 +1427,14 @@ function normalizeInspect(r: Record<string, unknown>): DockerInspect {
     capDrop: stringArray(host.CapDrop),
     dns: stringArray(host.Dns),
     devices: parseDevices(host.Devices),
+    logDriver: str(logConfig.Type),
+    logOptions: Object.fromEntries(
+      Object.entries(record(logConfig.Config)).map(([key, value]) => [key, str(value)]),
+    ),
+    tty: config.Tty === true,
+    openStdin: config.OpenStdin === true,
+    readOnlyRootfs: host.ReadonlyRootfs === true,
+    recreateSafetyIssues: detectRecreateSafetyIssues(config, host, mounts),
   }
 }
 

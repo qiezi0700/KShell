@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { Search, Play, Square, RotateCw, Trash2, Logs, AlertCircle, Info, SquareTerminal, PackageCheck, PlusCircle, Box, SquarePen, Ellipsis, Copy, Download } from '@lucide/vue'
+import { Search, Play, Square, RotateCw, Trash2, Logs, AlertCircle, Info, SquareTerminal, PackageCheck, PlusCircle, Box, SquarePen, Ellipsis, Copy, Download, LoaderCircle } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -12,12 +12,14 @@ const props = defineProps<{
   containers: DockerContainer[]
   loading: boolean
   error: string | null
+  /** 仅明确探测为未安装时展示安装入口；null/true 都可能是连接或权限问题 */
+  installed: boolean | null
   /** 是否已成功采集过(决定错误文案是「不可用」还是临时报错) */
   available: boolean
   /** 容器资源占用,按容器短 ID 索引 */
   stats: Record<string, DockerStats>
-  /** 正在重建的容器 ID 集合(pull + stop + rm + run 中),显示 spin 并禁用重复触发 */
-  recreating: Set<string>
+  /** 正在执行变更操作的容器 ID 集合，同一行的变更入口会统一禁用 */
+  busy: Set<string>
 }>()
 
 const emit = defineEmits<{
@@ -105,7 +107,7 @@ function stateLabel(s: string): string {
         <span class="text-body">{{ error }}</span>
         <div class="flex items-center gap-2">
           <Button variant="outline" size="sm" @click="emit('retry')">重试</Button>
-          <Button variant="default" size="sm" @click="emit('install')">
+          <Button v-if="installed === false" variant="default" size="sm" @click="emit('install')">
             <Download class="size-3.5" />
             安装 Docker
           </Button>
@@ -224,7 +226,7 @@ function stateLabel(s: string): string {
             </Tooltip>
             <Tooltip>
               <TooltipTrigger as-child>
-                <Button v-if="c.state !== 'running'" variant="ghost" size="icon-sm" @click.stop="emit('start', c)">
+                <Button v-if="c.state !== 'running'" variant="ghost" size="icon-sm" :disabled="busy.has(c.id)" @click.stop="emit('start', c)">
                   <Play class="size-3.5" />
                 </Button>
               </TooltipTrigger>
@@ -232,7 +234,7 @@ function stateLabel(s: string): string {
             </Tooltip>
             <Tooltip>
               <TooltipTrigger as-child>
-                <Button v-if="c.state === 'running'" variant="ghost" size="icon-sm" @click.stop="emit('stop', c)">
+                <Button v-if="c.state === 'running'" variant="ghost" size="icon-sm" :disabled="busy.has(c.id)" @click.stop="emit('stop', c)">
                   <Square class="size-3.5" />
                 </Button>
               </TooltipTrigger>
@@ -248,7 +250,7 @@ function stateLabel(s: string): string {
             </Tooltip>
             <Tooltip>
               <TooltipTrigger as-child>
-                <Button variant="ghost" size="icon-sm" class="hover:bg-destructive/20 hover:text-destructive" @click.stop="emit('remove', c)">
+                <Button variant="ghost" size="icon-sm" class="hover:bg-destructive/20 hover:text-destructive" :disabled="busy.has(c.id)" @click.stop="emit('remove', c)">
                   <Trash2 class="size-3.5" />
                 </Button>
               </TooltipTrigger>
@@ -257,8 +259,9 @@ function stateLabel(s: string): string {
             <!-- 次要操作:重启 / 更新重建 / 编辑 / 详情 -->
             <DropdownMenu>
               <DropdownMenuTrigger as-child>
-                <Button variant="ghost" size="icon-sm">
-                  <Ellipsis class="size-3.5" />
+                <Button variant="ghost" size="icon-sm" :disabled="busy.has(c.id)">
+                  <LoaderCircle v-if="busy.has(c.id)" class="size-3.5 animate-spin" />
+                  <Ellipsis v-else class="size-3.5" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" class="min-w-40">
@@ -266,8 +269,8 @@ function stateLabel(s: string): string {
                   <RotateCw class="size-3.5" />
                   重启
                 </DropdownMenuItem>
-                <DropdownMenuItem :disabled="recreating.has(c.id)" @select="emit('recreate', c)">
-                  <PackageCheck class="size-3.5" :class="recreating.has(c.id) && 'animate-spin'" />
+                <DropdownMenuItem :disabled="busy.has(c.id)" @select="emit('recreate', c)">
+                  <PackageCheck class="size-3.5" />
                   更新并重建
                 </DropdownMenuItem>
                 <DropdownMenuItem @select="emit('clone', c)">

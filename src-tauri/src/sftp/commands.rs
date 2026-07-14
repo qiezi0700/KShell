@@ -14,6 +14,7 @@ use russh_sftp::protocol::OpenFlags;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::sync::Mutex;
 
 use crate::state::{AppState, TransferControl};
 
@@ -77,21 +78,42 @@ const CHUNK_SIZE: usize = 256 * 1024;
 // SFTP 会话管理
 // ============================================================
 
+fn sftp_open_lock(state: &AppState, session_id: &str) -> Arc<Mutex<()>> {
+    state
+        .sftp_open_locks
+        .entry(session_id.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
 #[tauri::command]
 pub async fn sftp_open(state: State<'_, AppState>, session_id: String) -> Result<String, String> {
+    let open_lock = sftp_open_lock(state.inner(), &session_id);
+    let _open_guard = open_lock.lock().await;
     let ssh = state
         .sessions
         .get(&session_id)
         .ok_or_else(|| format!("SSH 会话不存在: {session_id}"))?
         .clone();
-    let ssh_handle = {
-        let ssh = ssh.lock().await;
-        ssh.handle.clone()
-    };
     let sftp_id = uuid::Uuid::new_v4().to_string();
-    let handle = session::open_sftp(&ssh_handle, session_id.clone())
+    if let Some(handle) = state
+        .shared_sftp_sessions
+        .get(&session_id)
+        .map(|entry| entry.value().clone())
+    {
+        state.sftp_sessions.insert(sftp_id.clone(), handle);
+        return Ok(sftp_id);
+    }
+    let (ssh_handle, scheduler) = {
+        let ssh = ssh.lock().await;
+        (ssh.handle.clone(), ssh.scheduler.clone())
+    };
+    let handle = session::open_sftp(&ssh_handle, &scheduler, session_id.clone())
         .await
         .map_err(err)?;
+    state
+        .shared_sftp_sessions
+        .insert(session_id, handle.clone());
     state.sftp_sessions.insert(sftp_id.clone(), handle);
     Ok(sftp_id)
 }
@@ -103,8 +125,20 @@ pub async fn sftp_close(
     sftp_id: String,
 ) -> Result<(), String> {
     abort_transfers_for_sftp(&app, state.inner(), &sftp_id);
-    if let Some((_, h)) = state.sftp_sessions.remove(&sftp_id) {
-        let _ = h.session.close().await;
+    let Some((_, lease)) = state.sftp_sessions.remove(&sftp_id) else {
+        return Ok(());
+    };
+    let session_id = lease.ssh_session_id;
+    let open_lock = sftp_open_lock(state.inner(), &session_id);
+    let _open_guard = open_lock.lock().await;
+    let has_other_lease = state
+        .sftp_sessions
+        .iter()
+        .any(|entry| entry.value().ssh_session_id == session_id);
+    if !has_other_lease {
+        if let Some((_, shared)) = state.shared_sftp_sessions.remove(&session_id) {
+            shared.session.close().await.map_err(err)?;
+        }
     }
     Ok(())
 }

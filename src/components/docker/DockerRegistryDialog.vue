@@ -16,6 +16,8 @@ import { Badge } from '@/components/ui/badge'
 import { toast } from '@/stores/toast'
 import { dockerLogin, dockerLogout, dockerListRegistries } from '@/api/docker'
 
+import { LatestOperationGuard } from './latest-operation-guard'
+
 const props = defineProps<{
   open: boolean
   sessionId: string
@@ -31,57 +33,84 @@ const password = ref('')
 const showPw = ref(false)
 const busy = ref(false)
 const loggedIn = ref<string[]>([])
+const listGuard = new LatestOperationGuard()
+const actionGuard = new LatestOperationGuard()
+
+function isDialogContextCurrent(sessionId: string): boolean {
+  return props.open && props.sessionId === sessionId
+}
+
+function handleOpenChange(nextOpen: boolean) {
+  if (!nextOpen && busy.value) return
+  if (!nextOpen) listGuard.invalidate()
+  emit('update:open', nextOpen)
+}
 
 // 打开时清空敏感字段并刷新已登录列表;registry / username 保留便于连试
 watch(
-  () => props.open,
-  async (v) => {
-    if (!v) {
-      password.value = ''
-      showPw.value = false
-      busy.value = false
-      return
-    }
+  () => [props.open, props.sessionId] as const,
+  ([open]) => {
+    listGuard.invalidate()
+    actionGuard.invalidate()
     password.value = ''
     showPw.value = false
-    busy.value = false
-    await refresh()
+    if (open) void refresh()
   },
+  { immediate: true },
 )
 
 async function refresh() {
+  const sessionId = props.sessionId
+  const requestVersion = listGuard.begin()
   try {
-    loggedIn.value = await dockerListRegistries(props.sessionId)
-  } catch {
-    loggedIn.value = []
+    const registries = await dockerListRegistries(sessionId)
+    if (listGuard.isCurrent(requestVersion) && isDialogContextCurrent(sessionId)) {
+      loggedIn.value = registries
+    }
+  } catch (e: unknown) {
+    if (listGuard.isCurrent(requestVersion) && isDialogContextCurrent(sessionId)) {
+      loggedIn.value = []
+      toast.error(String(e), '读取 Registry 登录列表失败')
+    }
   }
 }
 
-const canLogin = computed(() => !busy.value && username.value.trim() && password.value.length > 0)
+const canLogin = computed(() => !busy.value && !!username.value.trim() && password.value.length > 0)
 
 async function doLogin() {
   if (!canLogin.value) return
+  const sessionId = props.sessionId
+  const actionVersion = actionGuard.begin()
   busy.value = true
   try {
-    await dockerLogin(props.sessionId, registry.value, username.value, password.value)
+    await dockerLogin(sessionId, registry.value, username.value, password.value)
+    if (!actionGuard.isCurrent(actionVersion) || !isDialogContextCurrent(sessionId)) return
     toast.success('登录成功', registry.value || 'Docker Hub')
     password.value = ''
     await refresh()
   } catch (e: unknown) {
-    toast.error(String(e), '登录失败')
+    if (actionGuard.isCurrent(actionVersion) && isDialogContextCurrent(sessionId)) {
+      toast.error(String(e), '登录失败')
+    }
   } finally {
     busy.value = false
   }
 }
 
 async function doLogout(reg: string) {
+  if (busy.value) return
+  const sessionId = props.sessionId
+  const actionVersion = actionGuard.begin()
   busy.value = true
   try {
-    await dockerLogout(props.sessionId, normalizeForLogout(reg))
+    await dockerLogout(sessionId, normalizeForLogout(reg))
+    if (!actionGuard.isCurrent(actionVersion) || !isDialogContextCurrent(sessionId)) return
     toast.success('已登出', reg)
     await refresh()
   } catch (e: unknown) {
-    toast.error(String(e), '登出失败')
+    if (actionGuard.isCurrent(actionVersion) && isDialogContextCurrent(sessionId)) {
+      toast.error(String(e), '登出失败')
+    }
   } finally {
     busy.value = false
   }
@@ -101,7 +130,7 @@ function displayRegistry(key: string): string {
 </script>
 
 <template>
-  <Dialog :open="open" @update:open="(v) => emit('update:open', v)">
+  <Dialog :open="open" @update:open="handleOpenChange">
     <DialogContent class="max-w-md w-[92vw]">
       <DialogHeader>
         <DialogTitle class="flex items-center gap-2">
@@ -180,7 +209,7 @@ function displayRegistry(key: string): string {
       </div>
 
       <DialogFooter>
-        <Button variant="outline" :disabled="busy" @click="emit('update:open', false)">关闭</Button>
+        <Button variant="outline" :disabled="busy" @click="handleOpenChange(false)">关闭</Button>
         <Button variant="default" :disabled="!canLogin" @click="doLogin">
           <LogIn class="size-3.5" />
           {{ busy ? '登录中…' : '登录' }}

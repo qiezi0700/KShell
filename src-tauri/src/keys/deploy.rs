@@ -39,18 +39,20 @@ pub async fn deploy_public_key(
          fi"
     );
 
-    let ssh_handle = {
+    let (ssh_handle, scheduler) = {
         let session = session.lock().await;
-        session.handle.clone()
+        (session.handle.clone(), session.scheduler.clone())
     };
-    let mut channel = ssh_handle
-        .channel_open_session()
+    let mut lease = scheduler
+        .open_exec(&ssh_handle)
         .await
-        .map_err(|e| anyhow!("打开 exec channel 失败: {e}"))?;
-    channel
+        .map_err(|e| anyhow!("调度 exec channel 失败: {e:#}"))?;
+    lease
+        .channel
         .exec(true, cmd.as_bytes())
         .await
         .map_err(|e| anyhow!("执行部署命令失败: {e}"))?;
+    let channel = &mut lease.channel;
 
     let mut out = Vec::new();
     loop {

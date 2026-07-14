@@ -198,8 +198,14 @@ function setPulling(ref: string, on: boolean) {
   pullingRefs.value = next
 }
 
-// 正在重建的容器 ID 集合;新流程走弹窗,不再显示行内 spin,但保留结构避免子组件 prop 断裂
-const recreatingIds = ref<Set<string>>(new Set())
+// 同一容器的变更操作必须串行，避免启动/停止/删除等请求互相覆盖。
+const containerBusyIds = ref<Set<string>>(new Set())
+function setContainerBusy(id: string, on: boolean) {
+  const next = new Set(containerBusyIds.value)
+  if (on) next.add(id)
+  else next.delete(id)
+  containerBusyIds.value = next
+}
 
 onMounted(() => {
   startDocker(sessionId.value)
@@ -212,36 +218,49 @@ onBeforeUnmount(() => {
 })
 
 async function doStart(c: DockerContainer) {
+  if (containerBusyIds.value.has(c.id)) return
+  setContainerBusy(c.id, true)
   try {
     await dockerStart(sessionId.value, c.id)
     toast.success(`容器 ${c.name} 已启动`)
     refreshDocker(sessionId.value)
   } catch (e: unknown) {
     toast.error(String(e), '启动失败')
+  } finally {
+    setContainerBusy(c.id, false)
   }
 }
 
 async function doStop(c: DockerContainer) {
+  if (containerBusyIds.value.has(c.id)) return
+  setContainerBusy(c.id, true)
   try {
     await dockerStop(sessionId.value, c.id)
     toast.success(`容器 ${c.name} 已停止`)
     refreshDocker(sessionId.value)
   } catch (e: unknown) {
     toast.error(String(e), '停止失败')
+  } finally {
+    setContainerBusy(c.id, false)
   }
 }
 
 async function doRestart(c: DockerContainer) {
+  if (containerBusyIds.value.has(c.id)) return
+  setContainerBusy(c.id, true)
   try {
     await dockerRestart(sessionId.value, c.id)
     toast.success(`容器 ${c.name} 已重启`)
     refreshDocker(sessionId.value)
   } catch (e: unknown) {
     toast.error(String(e), '重启失败')
+  } finally {
+    setContainerBusy(c.id, false)
   }
 }
 
 async function doRemove(c: DockerContainer) {
+  if (containerBusyIds.value.has(c.id)) return
   const ok = await openConfirm({
     title: '删除容器',
     message: `确定删除容器「${c.name}」吗?运行中的容器将被强制删除。`,
@@ -249,13 +268,16 @@ async function doRemove(c: DockerContainer) {
     cancelText: '取消',
     destructive: true,
   })
-  if (!ok) return
+  if (!ok || containerBusyIds.value.has(c.id)) return
+  setContainerBusy(c.id, true)
   try {
     await dockerRemove(sessionId.value, c.id, true)
     toast.info(`容器 ${c.name} 已删除`)
     refreshDocker(sessionId.value)
   } catch (e: unknown) {
     toast.error(String(e), '删除失败')
+  } finally {
+    setContainerBusy(c.id, false)
   }
 }
 
@@ -522,7 +544,8 @@ async function showInspect(c: DockerContainer) {
 }
 
 async function doRecreate(c: DockerContainer) {
-  if (recreatingIds.value.has(c.id)) return
+  if (containerBusyIds.value.has(c.id)) return
+  setContainerBusy(c.id, true)
   const requestVersion = recreateGuard.begin()
   const requestSessionId = sessionId.value
   let insp: DockerInspect
@@ -533,8 +556,17 @@ async function doRecreate(c: DockerContainer) {
       toast.error(String(e), '读取容器配置失败')
     }
     return
+  } finally {
+    setContainerBusy(c.id, false)
   }
   if (!recreateGuard.isCurrent(requestVersion)) return
+  if (insp.recreateSafetyIssues.length > 0) {
+    toast.error(
+      `无法无损还原以下配置：${insp.recreateSafetyIssues.join('、')}。请通过原 Compose 文件或命令行重建。`,
+      '已阻止不安全重建',
+    )
+    return
+  }
   if (!insp.image || insp.image.startsWith('sha256:')) {
     toast.warning('该容器绑定的是镜像 digest,无法自动拉取更新')
     return
@@ -555,6 +587,8 @@ function onRecreated() {
 
 /** 克隆容器:读取原容器配置,打开 DockerRunDialog 的 clone 模式 */
 async function doClone(c: DockerContainer) {
+  if (containerBusyIds.value.has(c.id)) return
+  setContainerBusy(c.id, true)
   const requestVersion = cloneGuard.begin()
   const requestSessionId = sessionId.value
   let insp: DockerInspect
@@ -565,10 +599,18 @@ async function doClone(c: DockerContainer) {
       toast.error(String(e), '读取容器配置失败')
     }
     return
+  } finally {
+    setContainerBusy(c.id, false)
   }
   if (!cloneGuard.isCurrent(requestVersion)) return
-
-  cloneInitial.value = inspectToRunSpec(insp)
+  if (insp.recreateSafetyIssues.length > 0) {
+    toast.error(
+      `无法无损还原以下配置：${insp.recreateSafetyIssues.join('、')}。请通过原 Compose 文件或命令行克隆。`,
+      '已阻止不安全克隆',
+    )
+    return
+  }
+  cloneInitial.value = inspectToRunSpec(insp, 'clone')
   const spec = cloneInitial.value
   if (spec.name && !spec.name.endsWith('-clone')) {
     spec.name = `${spec.name}-clone`
@@ -722,9 +764,10 @@ function doExec(c: DockerContainer) {
       :containers="state?.containers ?? []"
       :loading="state?.loading ?? false"
       :error="state?.containersError ?? null"
+      :installed="state?.installed ?? null"
       :available="state?.available ?? false"
       :stats="state?.stats ?? {}"
-      :recreating="recreatingIds"
+      :busy="containerBusyIds"
       @start="doStart"
       @stop="doStop"
       @restart="doRestart"

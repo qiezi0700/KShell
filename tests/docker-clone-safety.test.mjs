@@ -31,6 +31,9 @@ function createOperations(overrides = {}) {
     async run() {
       calls.push('run')
     },
+    async connectNetwork(network, container) {
+      calls.push(`network:${network}->${container}`)
+    },
     async remove(container, force) {
       calls.push(`remove:${container}:${force}`)
     },
@@ -156,5 +159,29 @@ test('不停止原容器时无需读取或恢复原状态', async () => {
     'pull:example/app:latest',
     'run',
     'exists:app-clone',
+  ])
+})
+
+test('附加网络失败时删除克隆容器并恢复原容器', async () => {
+  const { calls, operations } = createOperations({
+    async connectNetwork(network, container) {
+      calls.push(`network:${network}->${container}`)
+      throw new Error('网络不存在')
+    },
+  })
+
+  await assert.rejects(
+    cloneContainerTransaction({ ...plan, additionalNetworks: ['backend'] }, operations),
+    /网络不存在/,
+  )
+  assert.deepEqual(calls, [
+    'exists:app-clone',
+    'pull:example/app:latest',
+    'inspect:app',
+    'stop:app',
+    'run',
+    'network:backend->app-clone',
+    'remove:app-clone:true',
+    'start:app',
   ])
 })

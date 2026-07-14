@@ -6,6 +6,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::state::{AppState, ChannelId, SessionId};
 
+use super::scheduler::ChannelScheduler;
+
 pub enum ChannelCommand {
     Start,
     Data(Vec<u8>),
@@ -16,6 +18,12 @@ pub enum ChannelCommand {
 pub struct ChannelHandle {
     pub tx: UnboundedSender<ChannelCommand>,
     pub session_id: SessionId,
+}
+
+pub struct ExecChannelSpec {
+    pub command: String,
+    pub cols: u32,
+    pub rows: u32,
 }
 
 /// 事件驱动的 channel 循环:
@@ -101,13 +109,14 @@ pub async fn run_channel(
 /// 打开一个交互式 shell channel 并 spawn 事件循环任务。
 pub async fn open_shell(
     session_handle: &russh::client::Handle<super::client::ClientHandler>,
+    scheduler: &ChannelScheduler,
     app: AppHandle,
     id: ChannelId,
     session_id: SessionId,
     cols: u32,
     rows: u32,
 ) -> Result<ChannelHandle> {
-    let channel = session_handle.channel_open_session().await?;
+    let channel = scheduler.open_interactive(session_handle).await?;
     channel
         .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])
         .await?;
@@ -123,19 +132,18 @@ pub async fn open_shell(
 /// 与 open_shell 的区别:用 `channel.exec` 代替 `request_shell`,前端复用同一套数据事件。
 pub async fn open_exec(
     session_handle: &russh::client::Handle<super::client::ClientHandler>,
+    scheduler: &ChannelScheduler,
     app: AppHandle,
     id: ChannelId,
     session_id: SessionId,
-    command: String,
-    cols: u32,
-    rows: u32,
+    spec: ExecChannelSpec,
 ) -> Result<ChannelHandle> {
-    let channel = session_handle.channel_open_session().await?;
+    let channel = scheduler.open_interactive(session_handle).await?;
     // PTY 必须先于 exec 申请,否则远端不会分配终端,-it 的 t 不生效
     channel
-        .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])
+        .request_pty(false, "xterm-256color", spec.cols, spec.rows, 0, 0, &[])
         .await?;
-    channel.exec(true, command.as_bytes()).await?;
+    channel.exec(true, spec.command.as_bytes()).await?;
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(run_channel(channel, rx, app, id));
