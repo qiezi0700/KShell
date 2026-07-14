@@ -37,6 +37,8 @@ import {
   type DockerNetwork,
 } from '@/api/docker'
 
+import { editContainerTransaction } from './edit-container'
+
 const props = defineProps<{
   open: boolean
   sessionId: string
@@ -161,28 +163,51 @@ const canSubmit = computed(
 
 async function submit() {
   if (!canSubmit.value || !props.inspect) return
+  const inspect = props.inspect
+  const originalName = inspect.name
+  const targetName = nameChanged.value ? form.name.trim() : originalName
+  const previousRestart = inspect.restartPolicy && inspect.restartPolicy !== 'no'
+    ? inspect.restartPolicy
+    : 'no'
+  const nextUpdate = {
+    memory: memoryChanged.value ? form.memory.trim() || '0' : undefined,
+    cpus: cpusChanged.value ? form.cpus.trim() || '0' : undefined,
+    restart: restartChanged.value ? form.restart : undefined,
+  }
+  const previousUpdate = {
+    memory: memoryChanged.value ? formatMemory(inspect.memoryBytes) || '0' : undefined,
+    cpus: cpusChanged.value ? (inspect.cpus > 0 ? String(inspect.cpus) : '0') : undefined,
+    restart: restartChanged.value ? previousRestart : undefined,
+  }
+  const disconnectNetworks = [...netsToDisconnect.value]
+  const connectNetworks = [...netsToConnect.value]
+
   busy.value = true
   try {
-    // 顺序:先 rename,再 update。rename 只是元数据变更,几乎不失败;
-    // update 走 docker update,支持热改内存/CPU/重启策略。
-    if (nameChanged.value) {
-      await dockerRename(props.sessionId, currentName.value, form.name.trim())
-    }
-    const target = nameChanged.value ? form.name.trim() : currentName.value
-    if (memoryChanged.value || cpusChanged.value || restartChanged.value) {
-      await dockerUpdateContainer(props.sessionId, target, {
-        memory: memoryChanged.value ? form.memory.trim() : undefined,
-        cpus: cpusChanged.value ? form.cpus.trim() : undefined,
-        restart: restartChanged.value ? form.restart : undefined,
-      })
-    }
-    // 网络变更:先断开、后连接,避免 host/none 与其它网络互斥时旧网络还占着导致连接失败
-    for (const n of netsToDisconnect.value) {
-      await dockerNetworkDisconnect(props.sessionId, n, target)
-    }
-    for (const n of netsToConnect.value) {
-      await dockerNetworkConnect(props.sessionId, n, target)
-    }
+    await editContainerTransaction(
+      {
+        originalName,
+        targetName,
+        nextUpdate,
+        previousUpdate,
+        disconnectNetworks,
+        connectNetworks,
+      },
+      {
+        rename: async (container, newName) => {
+          await dockerRename(props.sessionId, container, newName)
+        },
+        update: async (container, options) => {
+          await dockerUpdateContainer(props.sessionId, container, options)
+        },
+        disconnectNetwork: async (network, container) => {
+          await dockerNetworkDisconnect(props.sessionId, network, container)
+        },
+        connectNetwork: async (network, container) => {
+          await dockerNetworkConnect(props.sessionId, network, container)
+        },
+      },
+    )
     toast.success('已更新')
     emit('updated')
     emit('update:open', false)
@@ -306,7 +331,7 @@ async function submit() {
         </div>
 
         <p class="text-caption text-muted-foreground">
-          docker update 支持热改资源限制;网络变更通过 network connect/disconnect 生效。
+          资源、名称与网络会按顺序应用；任一步失败时自动尝试恢复已完成的变更。
           host / none 与其它网络互斥,同时选中时 docker 会报错。
         </p>
       </div>
