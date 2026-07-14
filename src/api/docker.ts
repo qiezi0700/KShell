@@ -1,3 +1,4 @@
+import { buildComposeStackCommand, validateComposePath } from './docker-compose-command'
 import { sshExec } from './ssh'
 
 const DOCKER_QUERY_TIMEOUT_MS = 15_000
@@ -138,7 +139,7 @@ export interface DockerStack {
   name: string
   /** 例如 "running(2)"、"exited(3)"、"created(1)" */
   status: string
-  /** 逗号分隔的 compose 文件绝对路径,取第一个作为 -f 参数即可 */
+  /** 逗号分隔的 compose 文件绝对路径，执行操作时必须按顺序全部传入 */
   configFiles: string
 }
 
@@ -921,19 +922,6 @@ export async function dockerListRegistries(sessionId: string): Promise<string[]>
 // Compose Stack(仅 v2)
 // ============================================================
 
-// compose 名合法字符与 docker 略有不同(允许小写数字下划线连字符),这里从宽用与容器名同一套白名单
-function validateStackName(name: string): void {
-  if (!name || !NAME_RE.test(name)) throw new Error(`Stack 名不合法: ${name}`)
-}
-
-// compose 文件路径与 dockerLogs 的日志路径同规则(绝对路径 + 常见字符)
-const COMPOSE_PATH_RE = /^\/[a-zA-Z0-9/_.:@#+=-]+$/
-function validateComposePath(path: string): void {
-  if (!COMPOSE_PATH_RE.test(path)) {
-    throw new Error(`compose 文件路径不合法(需绝对路径): ${path}`)
-  }
-}
-
 /** 列出所有 compose 项目(含已停止)。
  * docker compose ls 输出的是**单行 JSON 数组**,不是每行一个 JSON,单独用 JSON.parse。 */
 export async function dockerListStacks(sessionId: string): Promise<DockerStack[]> {
@@ -950,29 +938,16 @@ export async function dockerListStacks(sessionId: string): Promise<DockerStack[]
   }
 }
 
-/** 取 stack 的首个 compose 文件路径作为 -f 参数 */
-function firstConfig(stack: DockerStack): string {
-  const first = stack.configFiles.split(',')[0]?.trim() ?? ''
-  validateComposePath(first)
-  return first
-}
-
 export async function dockerStackUp(sessionId: string, stack: DockerStack): Promise<string> {
-  validateStackName(stack.name)
-  const f = firstConfig(stack)
-  return sshExec(sessionId, `docker compose -f ${f} up -d 2>&1`)
+  return sshExec(sessionId, buildComposeStackCommand(stack, 'up'))
 }
 
 export async function dockerStackDown(sessionId: string, stack: DockerStack): Promise<string> {
-  validateStackName(stack.name)
-  const f = firstConfig(stack)
-  return sshExec(sessionId, `docker compose -f ${f} down 2>&1`)
+  return sshExec(sessionId, buildComposeStackCommand(stack, 'down'))
 }
 
 export async function dockerStackRestart(sessionId: string, stack: DockerStack): Promise<string> {
-  validateStackName(stack.name)
-  const f = firstConfig(stack)
-  return sshExec(sessionId, `docker compose -f ${f} restart 2>&1`)
+  return sshExec(sessionId, buildComposeStackCommand(stack, 'restart'))
 }
 
 /** 用指定 compose 文件部署一个新的 stack;compose ls 之后就能看到它 */
