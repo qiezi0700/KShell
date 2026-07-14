@@ -364,13 +364,23 @@ pub async fn ssh_exec(
 fn finish_exec_result(out: Vec<u8>, exit_status: Option<u32>) -> Result<String, String> {
     let output = String::from_utf8_lossy(&out).to_string();
     match exit_status {
-        Some(0) | None => Ok(output),
+        Some(0) => Ok(output),
         Some(code) => {
             let detail = output.trim();
             if detail.is_empty() {
                 Err(format!("远端命令执行失败(exit {code})"))
             } else {
                 Err(format!("远端命令执行失败(exit {code}):\n{detail}"))
+            }
+        }
+        None => {
+            let detail = output.trim();
+            if detail.is_empty() {
+                Err("远端命令未返回退出状态，无法确认是否执行成功".to_string())
+            } else {
+                Err(format!(
+                    "远端命令未返回退出状态，无法确认是否执行成功:\n{detail}"
+                ))
             }
         }
     }
@@ -480,14 +490,18 @@ mod tests {
     }
 
     #[test]
-    fn exec_result_accepts_success_and_missing_status() {
+    fn exec_result_accepts_zero_status() {
         assert_eq!(
             finish_exec_result(b"ok\n".to_vec(), Some(0)).expect("退出码 0 应成功"),
             "ok\n"
         );
-        assert_eq!(
-            finish_exec_result(b"legacy\n".to_vec(), None).expect("缺少退出码时保持兼容"),
-            "legacy\n"
-        );
+    }
+
+    #[test]
+    fn exec_result_rejects_missing_status() {
+        let error = finish_exec_result(b"legacy output\n".to_vec(), None)
+            .expect_err("缺少退出状态时必须拒绝误判成功");
+        assert!(error.contains("未返回退出状态"));
+        assert!(error.contains("legacy output"));
     }
 }
