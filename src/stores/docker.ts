@@ -15,6 +15,7 @@ import {
   type DockerNetwork,
   type DockerStack,
 } from '@/api/docker'
+import { isDockerPollAvailable } from '@/stores/docker-poll-result'
 
 // 轮询间隔(ms)
 const INTERVAL_MS = 5000
@@ -102,8 +103,7 @@ async function tick(sessionId: string, showLoading: boolean) {
       dockerListNetworks(sessionId),
       dockerListStacks(sessionId),
     ])
-    let anyOk = false
-    const wasAvailable = sessions.value[sessionId]?.available === true
+    const pollAvailable = isDockerPollAvailable([cRes, iRes, vRes, nRes, sRes])
     const applyList = <T,>(
       r: PromiseSettledResult<T>,
       okKey: keyof SessionDocker,
@@ -112,10 +112,9 @@ async function tick(sessionId: string, showLoading: boolean) {
     ) => {
       if (r.status === 'fulfilled') {
         patch(sessionId, { [okKey]: r.value, [errKey]: null } as Partial<SessionDocker>)
-        anyOk = true
       } else {
         patch(sessionId, {
-          [errKey]: wasAvailable
+          [errKey]: pollAvailable
             ? errMsg(r.reason, `${label}刷新失败`)
             : 'Docker 不可用: ' + errMsg(r.reason, label),
         } as Partial<SessionDocker>)
@@ -126,8 +125,7 @@ async function tick(sessionId: string, showLoading: boolean) {
     applyList(vRes, 'volumes', 'volumesError', '卷列表')
     applyList(nRes, 'networks', 'networksError', '网络列表')
     applyList(sRes, 'stacks', 'stacksError', 'Compose 列表')
-    if (anyOk) patch(sessionId, { available: true, loading: false })
-    else patch(sessionId, { loading: false })
+    patch(sessionId, { available: pollAvailable, loading: false })
     // stats 采集较慢(--no-stream 仍需秒级),不阻塞主列表 loading,独立异步刷新
     void refreshStats(sessionId)
   } finally {
