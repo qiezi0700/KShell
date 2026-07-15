@@ -13,6 +13,7 @@ use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
@@ -88,6 +89,8 @@ fn sftp_open_lock(state: &AppState, session_id: &str) -> Arc<Mutex<()>> {
 
 #[tauri::command]
 pub async fn sftp_open(state: State<'_, AppState>, session_id: String) -> Result<String, String> {
+    // 本地家目录不可用时仍允许远端 SFTP 建连，避免两个独立能力互相拖垮。
+    let local_root = super::local_scope::default_root().await.ok();
     let open_lock = sftp_open_lock(state.inner(), &session_id);
     let _open_guard = open_lock.lock().await;
     let ssh = state
@@ -102,6 +105,9 @@ pub async fn sftp_open(state: State<'_, AppState>, session_id: String) -> Result
         .map(|entry| entry.value().clone())
     {
         state.sftp_sessions.insert(sftp_id.clone(), handle);
+        if let Some(root) = local_root {
+            state.local_sftp_roots.insert(sftp_id.clone(), root);
+        }
         return Ok(sftp_id);
     }
     let (ssh_handle, scheduler) = {
@@ -115,6 +121,9 @@ pub async fn sftp_open(state: State<'_, AppState>, session_id: String) -> Result
         .shared_sftp_sessions
         .insert(session_id, handle.clone());
     state.sftp_sessions.insert(sftp_id.clone(), handle);
+    if let Some(root) = local_root {
+        state.local_sftp_roots.insert(sftp_id.clone(), root);
+    }
     Ok(sftp_id)
 }
 
@@ -125,6 +134,7 @@ pub async fn sftp_close(
     sftp_id: String,
 ) -> Result<(), String> {
     abort_transfers_for_sftp(&app, state.inner(), &sftp_id);
+    super::local_scope::remove_root(state.inner(), &sftp_id);
     let Some((_, lease)) = state.sftp_sessions.remove(&sftp_id) else {
         return Ok(());
     };
@@ -556,6 +566,8 @@ pub async fn sftp_home(state: State<'_, AppState>, sftp_id: String) -> Result<St
 // 本地文件操作(供前端双栏的本地栏使用)
 // ============================================================
 
+const MAX_LOCAL_PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
+
 async fn run_local_io<T, F>(operation: F) -> Result<T, String>
 where
     T: Send + 'static,
@@ -566,31 +578,57 @@ where
         .map_err(|e| format!("本地文件任务异常结束: {e}"))?
 }
 
+/// 返回可选文件系统根目录；这里只暴露盘符名称，不读取未授权目录内容。
 #[tauri::command]
-pub async fn local_list(path: String) -> Result<Vec<LocalEntry>, String> {
+pub async fn local_list_roots(
+    state: State<'_, AppState>,
+    sftp_id: String,
+) -> Result<Vec<LocalEntry>, String> {
+    if !state.sftp_sessions.contains_key(&sftp_id) {
+        return Err("SFTP 会话不存在或已关闭".to_string());
+    }
+    run_local_io(local_list_roots_blocking).await
+}
+
+fn local_list_roots_blocking() -> Result<Vec<LocalEntry>, String> {
+    #[cfg(windows)]
+    let names = (b'A'..=b'Z')
+        .filter_map(|letter| {
+            let name = format!("{}:", letter as char);
+            std::fs::metadata(format!(r"{name}\"))
+                .ok()
+                .filter(|metadata| metadata.is_dir())
+                .map(|_| name)
+        })
+        .collect::<Vec<_>>();
+    #[cfg(not(windows))]
+    let names = vec!["/".to_string()];
+
+    Ok(names
+        .into_iter()
+        .map(|name| LocalEntry {
+            name,
+            is_dir: true,
+            is_symlink: false,
+            size: 0,
+            modified: String::new(),
+            permissions: 0,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn local_list(
+    state: State<'_, AppState>,
+    sftp_id: String,
+    path: String,
+) -> Result<Vec<LocalEntry>, String> {
+    let path = super::local_scope::authorize_existing(state.inner(), &sftp_id, &path).await?;
     run_local_io(move || local_list_blocking(path)).await
 }
 
-fn local_list_blocking(path: String) -> Result<Vec<LocalEntry>, String> {
+fn local_list_blocking(path: std::path::PathBuf) -> Result<Vec<LocalEntry>, String> {
     let mut entries = Vec::new();
-    // 空路径:枚举所有盘符(此电脑级别)
-    if path.is_empty() {
-        for c in b'A'..=b'Z' {
-            let root = format!("{}:\\", c as char);
-            if std::fs::metadata(&root).is_ok() {
-                entries.push(LocalEntry {
-                    name: format!("{}:", c as char),
-                    is_dir: true,
-                    is_symlink: false,
-                    size: 0,
-                    modified: String::new(),
-                    permissions: 0,
-                });
-            }
-        }
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-        return Ok(entries);
-    }
     let read = std::fs::read_dir(&path).map_err(|e| format!("读取目录失败: {e}"))?;
     for entry in read {
         let entry = entry.map_err(|e| format!("读取条目失败: {e}"))?;
@@ -634,26 +672,52 @@ fn local_list_blocking(path: String) -> Result<Vec<LocalEntry>, String> {
 }
 
 #[tauri::command]
-pub async fn local_mkdir(path: String) -> Result<(), String> {
-    run_local_io(move || std::fs::create_dir_all(&path).map_err(|e| format!("创建目录失败: {e}")))
-        .await
+pub async fn local_mkdir(
+    state: State<'_, AppState>,
+    sftp_id: String,
+    path: String,
+) -> Result<(), String> {
+    let path = super::local_scope::authorize_target(state.inner(), &sftp_id, &path).await?;
+    run_local_io(move || std::fs::create_dir(&path).map_err(|e| format!("创建目录失败: {e}"))).await
 }
 
 /// 删除本地目录(递归)。前端确认弹窗必须提示"及其全部内容",避免误删。
 #[tauri::command]
-pub async fn local_rmdir(path: String) -> Result<(), String> {
+pub async fn local_rmdir(
+    state: State<'_, AppState>,
+    sftp_id: String,
+    path: String,
+) -> Result<(), String> {
+    let path = super::local_scope::authorize_existing(state.inner(), &sftp_id, &path).await?;
+    let root = super::local_scope::root(state.inner(), &sftp_id)?;
+    if path == root {
+        return Err("不能删除当前授权根目录".to_string());
+    }
     run_local_io(move || std::fs::remove_dir_all(&path).map_err(|e| format!("删除目录失败: {e}")))
         .await
 }
 
 #[tauri::command]
-pub async fn local_rm(path: String) -> Result<(), String> {
+pub async fn local_rm(
+    state: State<'_, AppState>,
+    sftp_id: String,
+    path: String,
+) -> Result<(), String> {
+    let path = super::local_scope::authorize_existing(state.inner(), &sftp_id, &path).await?;
     run_local_io(move || std::fs::remove_file(&path).map_err(|e| format!("删除文件失败: {e}")))
         .await
 }
 
 #[tauri::command]
-pub async fn local_rename(old_path: String, new_path: String) -> Result<(), String> {
+pub async fn local_rename(
+    state: State<'_, AppState>,
+    sftp_id: String,
+    old_path: String,
+    new_path: String,
+) -> Result<(), String> {
+    let old_path =
+        super::local_scope::authorize_existing(state.inner(), &sftp_id, &old_path).await?;
+    let new_path = super::local_scope::authorize_target(state.inner(), &sftp_id, &new_path).await?;
     run_local_io(move || {
         std::fs::rename(&old_path, &new_path).map_err(|e| format!("重命名失败: {e}"))
     })
@@ -662,16 +726,28 @@ pub async fn local_rename(old_path: String, new_path: String) -> Result<(), Stri
 
 /// 复制本地路径。文件走 std::fs::copy;目录递归复制。前端 paste 逻辑不用区分。
 #[tauri::command]
-pub async fn local_copy(old_path: String, new_path: String) -> Result<(), String> {
+pub async fn local_copy(
+    state: State<'_, AppState>,
+    sftp_id: String,
+    old_path: String,
+    new_path: String,
+) -> Result<(), String> {
+    let old_path =
+        super::local_scope::authorize_existing(state.inner(), &sftp_id, &old_path).await?;
+    let new_path = super::local_scope::authorize_target(state.inner(), &sftp_id, &new_path).await?;
     run_local_io(move || local_copy_blocking(old_path, new_path)).await
 }
 
-fn local_copy_blocking(old_path: String, new_path: String) -> Result<(), String> {
-    let src = std::path::Path::new(&old_path);
-    let meta = std::fs::metadata(src).map_err(|e| format!("读取源信息失败: {e}"))?;
+fn local_copy_blocking(
+    old_path: std::path::PathBuf,
+    new_path: std::path::PathBuf,
+) -> Result<(), String> {
+    let meta = std::fs::metadata(&old_path).map_err(|e| format!("读取源信息失败: {e}"))?;
     if meta.is_dir() {
-        copy_dir_recursive(src, std::path::Path::new(&new_path))
-            .map_err(|e| format!("复制目录失败: {e}"))
+        if new_path.starts_with(&old_path) {
+            return Err("不能把目录复制到其自身或子目录中".to_string());
+        }
+        copy_dir_recursive(&old_path, &new_path).map_err(|e| format!("复制目录失败: {e}"))
     } else {
         std::fs::copy(&old_path, &new_path).map_err(|e| format!("复制文件失败: {e}"))?;
         Ok(())
@@ -697,16 +773,21 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
 
 /// 读取本地路径元数据(供前端在拖拽落地前区分文件/目录、获取大小)
 #[tauri::command]
-pub async fn local_stat(path: String) -> Result<LocalEntry, String> {
+pub async fn local_stat(
+    state: State<'_, AppState>,
+    sftp_id: String,
+    path: String,
+) -> Result<LocalEntry, String> {
+    let path = super::local_scope::authorize_existing(state.inner(), &sftp_id, &path).await?;
     run_local_io(move || local_stat_blocking(path)).await
 }
 
-fn local_stat_blocking(path: String) -> Result<LocalEntry, String> {
+fn local_stat_blocking(path: std::path::PathBuf) -> Result<LocalEntry, String> {
     let meta = std::fs::metadata(&path).map_err(|e| format!("读取元数据失败: {e}"))?;
-    let name = std::path::Path::new(&path)
+    let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.clone());
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
     #[cfg(unix)]
     let perms = {
         use std::os::unix::fs::PermissionsExt;
@@ -733,27 +814,82 @@ fn local_stat_blocking(path: String) -> Result<LocalEntry, String> {
     })
 }
 
-/// 获取本地家目录
+/// 返回当前 SFTP 标签页已授权的本地根目录。
 #[tauri::command]
-pub fn local_home() -> Result<String, String> {
-    if let Ok(h) = std::env::var("USERPROFILE") {
-        return Ok(h);
+pub fn local_home(state: State<'_, AppState>, sftp_id: String) -> Result<String, String> {
+    Ok(super::local_scope::display_path(&super::local_scope::root(
+        state.inner(),
+        &sftp_id,
+    )?))
+}
+
+/// 目录选择器由 Rust 端直接发起，只有用户实际确认的目录才能成为新的授权根目录。
+#[tauri::command]
+pub async fn local_select_root(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    sftp_id: String,
+    suggested_path: Option<String>,
+) -> Result<Option<String>, String> {
+    if !state.sftp_sessions.contains_key(&sftp_id) {
+        return Err("SFTP 会话不存在或已关闭".to_string());
     }
-    if let Ok(h) = std::env::var("HOME") {
-        return Ok(h);
-    }
-    Err("无法确定家目录".to_string())
+    let current = suggested_path
+        .as_deref()
+        .and_then(super::local_scope::picker_root_suggestion)
+        .or_else(|| super::local_scope::root(state.inner(), &sftp_id).ok());
+    let selected = tauri::async_runtime::spawn_blocking(move || {
+        let dialog = app.dialog().file().set_title("选择本地工作目录");
+        match current {
+            Some(path) => dialog.set_directory(path).blocking_pick_folder(),
+            None => dialog.blocking_pick_folder(),
+        }
+    })
+    .await
+    .map_err(|e| format!("本地目录选择器异常结束: {e}"))?;
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    let path = selected
+        .into_path()
+        .map_err(|e| format!("读取所选目录失败: {e}"))?;
+    super::local_scope::set_root(state.inner(), &sftp_id, &path)
+        .await
+        .map(Some)
 }
 
 /// 读取本地文件(预览用)
 #[tauri::command]
-pub async fn local_read_file(path: String) -> Result<Vec<u8>, String> {
-    run_local_io(move || std::fs::read(&path).map_err(|e| format!("读取文件失败: {e}"))).await
+pub async fn local_read_file(
+    state: State<'_, AppState>,
+    sftp_id: String,
+    path: String,
+) -> Result<Vec<u8>, String> {
+    let path = super::local_scope::authorize_existing(state.inner(), &sftp_id, &path).await?;
+    run_local_io(move || {
+        let size = std::fs::metadata(&path)
+            .map_err(|e| format!("读取文件信息失败: {e}"))?
+            .len();
+        if size > MAX_LOCAL_PREVIEW_BYTES {
+            return Err("文件过大，最多允许预览 16 MB".to_string());
+        }
+        std::fs::read(&path).map_err(|e| format!("读取文件失败: {e}"))
+    })
+    .await
 }
 
 /// 写入本地文件(保存编辑)
 #[tauri::command]
-pub async fn local_write_file(path: String, content: Vec<u8>) -> Result<(), String> {
+pub async fn local_write_file(
+    state: State<'_, AppState>,
+    sftp_id: String,
+    path: String,
+    content: Vec<u8>,
+) -> Result<(), String> {
+    if content.len() as u64 > MAX_LOCAL_PREVIEW_BYTES {
+        return Err("文件过大，最多允许保存 16 MB".to_string());
+    }
+    let path = super::local_scope::authorize_existing(state.inner(), &sftp_id, &path).await?;
     run_local_io(move || std::fs::write(&path, content).map_err(|e| format!("写入文件失败: {e}")))
         .await
 }
@@ -774,6 +910,10 @@ pub async fn sftp_upload(
     offset: u64,
 ) -> Result<(), String> {
     let sftp = get_sftp(&state, &sftp_id)?;
+    let local_path = super::local_scope::authorize_existing(state.inner(), &sftp_id, &local_path)
+        .await?
+        .to_string_lossy()
+        .to_string();
     let total = tokio::fs::metadata(&local_path)
         .await
         .map_err(|e| format!("读取本地文件信息失败: {e}"))?
@@ -810,6 +950,10 @@ pub async fn sftp_download(
     offset: u64,
 ) -> Result<(), String> {
     let sftp = get_sftp(&state, &sftp_id)?;
+    let local_path = super::local_scope::authorize_target(state.inner(), &sftp_id, &local_path)
+        .await?
+        .to_string_lossy()
+        .to_string();
     let meta = sftp.metadata(&remote_path).await.map_err(err)?;
     let total = meta.len();
     if offset > total {
@@ -1183,6 +1327,10 @@ pub async fn sftp_upload_dir(
     transfer_id: String,
 ) -> Result<(), String> {
     let sftp = get_sftp(&state, &sftp_id)?;
+    let local_dir = super::local_scope::authorize_existing(state.inner(), &sftp_id, &local_dir)
+        .await?
+        .to_string_lossy()
+        .to_string();
     let cancel = Arc::new(AtomicBool::new(false));
     let task_cancel = cancel.clone();
     let app_clone = app.clone();
@@ -1212,6 +1360,10 @@ pub async fn sftp_download_dir(
     transfer_id: String,
 ) -> Result<(), String> {
     let sftp = get_sftp(&state, &sftp_id)?;
+    let local_dir = super::local_scope::authorize_target(state.inner(), &sftp_id, &local_dir)
+        .await?
+        .to_string_lossy()
+        .to_string();
     let cancel = Arc::new(AtomicBool::new(false));
     let task_cancel = cancel.clone();
     let app_clone = app.clone();
@@ -1490,6 +1642,9 @@ async fn walk_remote_dir(
             let name = e.file_name();
             if name == "." || name == ".." {
                 continue;
+            }
+            if name.is_empty() || name.contains(['/', '\\', '\0']) {
+                return Err(anyhow::anyhow!("远端目录包含非法条目名"));
             }
             let meta = e.metadata();
             let sub_rel = if rel.is_empty() {

@@ -69,7 +69,11 @@ pub async fn ssh_key_generate(
         algorithm: algo_str,
         fingerprint,
         key_path: key_path.to_string_lossy().to_string(),
-        comment: if comment.is_empty() { None } else { Some(comment) },
+        comment: if comment.is_empty() {
+            None
+        } else {
+            Some(comment)
+        },
         created_at: crate::store::model::now_iso(),
     };
 
@@ -102,16 +106,14 @@ pub async fn ssh_key_import(
     input: ImportKeyInput,
 ) -> Result<SshKey, String> {
     let pass = input.passphrase.as_deref().filter(|p| !p.is_empty());
-    let (algo_str, fingerprint, _pubkey) =
-        inspect_key(&input.source_path, pass).map_err(err)?;
+    let (algo_str, fingerprint, _pubkey) = inspect_key(&input.source_path, pass).map_err(err)?;
 
     let id = Uuid::new_v4().to_string();
     let keys_dir = keys_dir(&app).map_err(err)?;
     let dest_path = keys_dir.join(format!("{id}.pem"));
 
     // 复制私钥文件到密钥库
-    std::fs::copy(&input.source_path, &dest_path)
-        .map_err(|e| format!("复制密钥文件失败: {e}"))?;
+    std::fs::copy(&input.source_path, &dest_path).map_err(|e| format!("复制密钥文件失败: {e}"))?;
 
     let key = SshKey {
         id: id.clone(),
@@ -141,10 +143,7 @@ pub async fn ssh_key_import(
 
 /// 删除密钥(同时删除私钥文件和 passphrase 文件)
 #[tauri::command]
-pub fn ssh_key_delete(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), String> {
+pub fn ssh_key_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let key = state.store()?.get_ssh_key(&id).map_err(err)?;
 
     // 删除私钥文件
@@ -166,34 +165,26 @@ pub fn ssh_key_delete(
 
 /// 重命名密钥
 #[tauri::command]
-pub fn ssh_key_rename(
-    state: State<'_, AppState>,
-    id: String,
-    name: String,
-) -> Result<(), String> {
+pub fn ssh_key_rename(state: State<'_, AppState>, id: String, name: String) -> Result<(), String> {
     state.store()?.update_ssh_key_name(&id, &name).map_err(err)
 }
 
 /// 获取密钥的 OpenSSH 公钥字符串(用于展示和部署)
 #[tauri::command]
-pub async fn ssh_key_public_key(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<String, String> {
+pub async fn ssh_key_public_key(state: State<'_, AppState>, id: String) -> Result<String, String> {
     let key = state.store()?.get_ssh_key(&id).map_err(err)?;
 
     // 尝试读取 passphrase(如有加密存储)
-    let pass_path = PathBuf::from(&key.key_path)
-        .with_extension("pass");
+    let pass_path = PathBuf::from(&key.key_path).with_extension("pass");
     let passphrase = if pass_path.exists() {
-        let enc = std::fs::read_to_string(&pass_path).map_err(|e| format!("读取 passphrase 失败: {e}"))?;
+        let enc = std::fs::read_to_string(&pass_path)
+            .map_err(|e| format!("读取 passphrase 失败: {e}"))?;
         state.crypto.decrypt(Some(enc.as_str())).map_err(err)?
     } else {
         None
     };
 
-    let (_algo, _fp, pubkey) =
-        inspect_key(&key.key_path, passphrase.as_deref()).map_err(err)?;
+    let (_algo, _fp, pubkey) = inspect_key(&key.key_path, passphrase.as_deref()).map_err(err)?;
     Ok(pubkey)
 }
 
@@ -207,17 +198,16 @@ pub async fn ssh_key_deploy(
     let key = state.store()?.get_ssh_key(&key_id).map_err(err)?;
 
     // 读取公钥
-    let pass_path = PathBuf::from(&key.key_path)
-        .with_extension("pass");
+    let pass_path = PathBuf::from(&key.key_path).with_extension("pass");
     let passphrase = if pass_path.exists() {
-        let enc = std::fs::read_to_string(&pass_path).map_err(|e| format!("读取 passphrase 失败: {e}"))?;
+        let enc = std::fs::read_to_string(&pass_path)
+            .map_err(|e| format!("读取 passphrase 失败: {e}"))?;
         state.crypto.decrypt(Some(enc.as_str())).map_err(err)?
     } else {
         None
     };
 
-    let (_algo, _fp, pubkey) =
-        inspect_key(&key.key_path, passphrase.as_deref()).map_err(err)?;
+    let (_algo, _fp, pubkey) = inspect_key(&key.key_path, passphrase.as_deref()).map_err(err)?;
 
     deploy_public_key(&state, &session_id, &pubkey)
         .await
@@ -231,20 +221,17 @@ pub fn ssh_key_passphrase(
     id: String,
 ) -> Result<Option<String>, String> {
     let key = state.store()?.get_ssh_key(&id).map_err(err)?;
-    let pass_path = PathBuf::from(&key.key_path)
-        .with_extension("pass");
+    let pass_path = PathBuf::from(&key.key_path).with_extension("pass");
     if !pass_path.exists() {
         return Ok(None);
     }
-    let enc = std::fs::read_to_string(&pass_path).map_err(|e| format!("读取 passphrase 失败: {e}"))?;
+    let enc =
+        std::fs::read_to_string(&pass_path).map_err(|e| format!("读取 passphrase 失败: {e}"))?;
     state.crypto.decrypt(Some(enc.as_str())).map_err(err)
 }
 
 fn keys_dir(app: &AppHandle) -> anyhow::Result<PathBuf> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .context("无法定位 app_data_dir")?;
+    let dir = app.path().app_data_dir().context("无法定位 app_data_dir")?;
     let keys_dir = dir.join("keys");
     std::fs::create_dir_all(&keys_dir)
         .with_context(|| format!("创建密钥库目录失败: {}", keys_dir.display()))?;

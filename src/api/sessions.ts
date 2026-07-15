@@ -105,3 +105,11 @@ export function getSessionCredentials(
 ): Promise<{ password: string | null; passphrase: string | null }> {
   return invoke('session_get_credentials', { id })
 }
+
+export function importSessionFile(): Promise<string | null> {
+  return invoke<string | null>('session_import_file')
+}
+
+export function exportSessionFile(content: string): Promise<string | null> {
+  return invoke<string | null>('session_export_file', { content })
+}

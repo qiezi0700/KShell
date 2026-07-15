@@ -95,7 +95,8 @@ async function loadFile(target: FilePreviewTarget, sequence = ++loadSequence) {
       if (!id) throw new Error('SFTP 会话未就绪。')
       bytes = await sftpReadFile(id, target.path)
     } else {
-      bytes = await localReadFile(target.path)
+      if (!props.sftpId) throw new Error('SFTP 会话未就绪')
+      bytes = await localReadFile(props.sftpId, target.path)
     }
 
     if (sequence !== loadSequence || props.target?.path !== target.path) return
@@ -146,7 +147,8 @@ async function saveFile() {
       if (!id) throw new Error('SFTP 会话未就绪。')
       await sftpWriteFile(id, target.path, bytes)
     } else {
-      await localWriteFile(target.path, bytes)
+      if (!props.sftpId) throw new Error('SFTP 会话未就绪')
+      await localWriteFile(props.sftpId, target.path, bytes)
     }
     if (props.target?.path !== target.path) return
     originalContent.value = content.value

@@ -127,7 +127,8 @@ fn generate_key() -> Box<[u8; 32]> {
 /// 尝试从 keychain 读 KEK。返回 Ok(None) 表示 keychain 可用但没有条目;
 /// Err 表示 keychain 本身访问失败(需要降级)。
 fn load_from_keychain() -> Result<Option<Box<[u8; 32]>>> {
-    let entry = Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).context("初始化 keyring entry 失败")?;
+    let entry =
+        Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).context("初始化 keyring entry 失败")?;
     match entry.get_password() {
         Ok(s) => {
             let raw = B64.decode(s.trim()).context("keychain 中 KEK 解码失败")?;
@@ -144,7 +145,8 @@ fn load_from_keychain() -> Result<Option<Box<[u8; 32]>>> {
 }
 
 fn save_to_keychain(key: &[u8; 32]) -> Result<()> {
-    let entry = Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).context("初始化 keyring entry 失败")?;
+    let entry =
+        Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).context("初始化 keyring entry 失败")?;
     entry
         .set_password(&B64.encode(key))
         .map_err(|e| anyhow::anyhow!(e).context("写入 keychain 失败"))

@@ -10,6 +10,7 @@ import {
 } from '@/api/ssh'
 import { openConfirm } from '@/stores/prompt'
 import { syncKnownHostsToSystem } from '@/stores/preferences'
+import { toast } from '@/stores/toast'
 
 let unlistenConfirm: UnlistenFn | null = null
 let unlistenMismatch: UnlistenFn | null = null
@@ -17,8 +18,16 @@ let unlistenMismatch: UnlistenFn | null = null
 /** 在 App.vue onMounted 时调用,注册主机公钥事件监听 */
 export async function initHostKeyGuard(): Promise<void> {
   if (unlistenConfirm && unlistenMismatch) return
-  unlistenConfirm = await onHostKeyConfirm(handleConfirm)
-  unlistenMismatch = await onHostKeyMismatch(handleMismatch)
+  destroyHostKeyGuard()
+  const nextConfirm = await onHostKeyConfirm(handleConfirm)
+  try {
+    const nextMismatch = await onHostKeyMismatch(handleMismatch)
+    unlistenConfirm = nextConfirm
+    unlistenMismatch = nextMismatch
+  } catch (error) {
+    nextConfirm()
+    throw error
+  }
 }
 
 /** 在 App.vue onBeforeUnmount 时调用 */
@@ -37,7 +46,11 @@ async function handleConfirm(p: HostKeyConfirmPayload): Promise<void> {
     confirmText: '信任并连接',
     cancelText: '拒绝',
   })
-  await sshConfirmHost(p.confirmId, accept, syncKnownHostsToSystem.value).catch(() => {})
+  try {
+    await sshConfirmHost(p.confirmId, accept, syncKnownHostsToSystem.value)
+  } catch (error: unknown) {
+    toast.error(error instanceof Error ? error.message : String(error), '主机指纹确认失败')
+  }
 }
 
 /** 公钥不匹配:连接已被后端拒绝,提示用户;用户可选择移除旧记录后重连 */
@@ -50,6 +63,10 @@ async function handleMismatch(p: HostKeyMismatchPayload): Promise<void> {
     destructive: true,
   })
   if (remove) {
-    await sshRemoveKnownHost(p.host, p.port).catch(() => {})
+    try {
+      await sshRemoveKnownHost(p.host, p.port)
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : String(error), '移除主机指纹失败')
+    }
   }
 }

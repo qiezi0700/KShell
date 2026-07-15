@@ -34,10 +34,11 @@ test('重建规格和表单无损透传高级运行配置', () => {
   assert.doesNotMatch(dialogSource, /高级运行时字段不会保留/)
 })
 
-test('docker run 命令安全还原高级运行参数', () => {
+test('docker run 参数数组无损还原高级运行参数', () => {
   assert.match(apiSource, /if \(s\.privileged\) parts\.push\('--privileged'\)/)
-  assert.match(apiSource, /parts\.push\('--cap-add', shq\(capability\)\)/)
-  assert.match(apiSource, /parts\.push\('--cap-drop', shq\(capability\)\)/)
-  assert.match(apiSource, /parts\.push\('--dns', shq\(server\)\)/)
-  assert.match(apiSource, /parts\.push\('--device', shq\(`/)
+  assert.match(apiSource, /parts\.push\('--cap-add', capability\)/)
+  assert.match(apiSource, /parts\.push\('--cap-drop', capability\)/)
+  assert.match(apiSource, /parts\.push\('--dns', server\)/)
+  assert.match(apiSource, /parts\.push\('--device', `\$\{device\.hostPath\}/)
+  assert.match(apiSource, /dockerExec\(sessionId, buildRunArgsFromSpec\(spec\)\)/)
 })

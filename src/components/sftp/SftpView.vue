@@ -14,11 +14,13 @@ import {
   sftpRmdir,
   sftpHome,
   localList,
+  localListRoots,
   localMkdir,
   localRm,
   localRename as apiLocalRename,
   localRmdir,
   localHome,
+  localSelectRoot,
   localCopy,
   localStat,
   sftpCopyFile,
@@ -59,6 +61,7 @@ const splitEl = ref<HTMLDivElement | null>(null)
 
 // 本地栏状态
 const localCwd = ref('')
+const localRoot = ref('')
 const localEntries = ref<RemoteEntry[]>([])
 const localLoading = ref(false)
 
@@ -126,11 +129,15 @@ onMounted(async () => {
   }
   const readySftpId = sftpId.value
   if (!readySftpId || isUnmounted) return
-  // 初始化两个栏的家目录
+  // 本地授权与远端会话相互独立，本地目录异常不能阻断远端文件管理。
   try {
-    localCwd.value = await localHome()
-  } catch {
-    localCwd.value = 'C:\\'
+    localRoot.value = await localHome(readySftpId)
+    localCwd.value = localRoot.value
+  } catch (error: unknown) {
+    toast.warning(
+      error instanceof Error ? error.message : String(error),
+      '请选择本地工作目录',
+    )
   }
   try {
     remoteCwd.value = await sftpHome(readySftpId)
@@ -191,31 +198,49 @@ onBeforeUnmount(() => {
 // ============================================================
 
 async function refreshLocal() {
-  // 注意:localCwd 为空串表示"此电脑"级(枚举盘符),不能用 falsy 判断跳过刷新,
-  // 否则从盘符根 goUp 到此电脑时列表不会更新。
-  if (localCwd.value == null) return
+  if (!sftpId.value) return
   localLoading.value = true
   try {
-    localEntries.value = await localList(localCwd.value)
-  } catch (e: any) {
-    toast.error(String(e), '读取目录失败')
+    localEntries.value = localCwd.value
+      ? await localList(sftpId.value, localCwd.value)
+      : await localListRoots(sftpId.value)
+  } catch (e: unknown) {
+    toast.error(e instanceof Error ? e.message : String(e), '读取目录失败')
   } finally {
     localLoading.value = false
   }
 }
 
 async function localNavigate(path: string) {
-  localCwd.value = path
-  await refreshLocal()
+  if (!sftpId.value || localLoading.value) return
+  localLoading.value = true
+  try {
+    const entries = path
+      ? await localList(sftpId.value, path)
+      : await localListRoots(sftpId.value)
+    localCwd.value = path
+    localEntries.value = entries
+  } catch (error: unknown) {
+    toast.error(error instanceof Error ? error.message : String(error), '读取目录失败')
+  } finally {
+    localLoading.value = false
+  }
 }
 
 async function goLocalHome() {
+  if (localRoot.value) await localNavigate(localRoot.value)
+}
+
+async function selectLocalRoot(suggestedPath?: string) {
+  if (!sftpId.value) return
   try {
-    localCwd.value = await localHome()
-  } catch {
-    localCwd.value = 'C:\\'
+    const selected = await localSelectRoot(sftpId.value, suggestedPath)
+    if (!selected) return
+    localRoot.value = selected
+    await localNavigate(selected)
+  } catch (error: unknown) {
+    toast.error(error instanceof Error ? error.message : String(error), '本地目录授权失败')
   }
-  await refreshLocal()
 }
 
 async function localMkdirAction() {
@@ -223,7 +248,8 @@ async function localMkdirAction() {
   if (!name) return
   const path = joinPath(localCwd.value, name)
   try {
-    await localMkdir(path)
+    if (!sftpId.value) return
+    await localMkdir(sftpId.value, path)
     await refreshLocal()
   } catch (e: any) {
     toast.error(String(e), '创建失败')
@@ -242,8 +268,9 @@ async function localDelete(e: RemoteEntry) {
   if (!ok) return
   const path = joinPath(localCwd.value, e.name)
   try {
-    if (e.isDir) await localRmdir(path)
-    else await localRm(path)
+    if (!sftpId.value) return
+    if (e.isDir) await localRmdir(sftpId.value, path)
+    else await localRm(sftpId.value, path)
     await refreshLocal()
   } catch (err: any) {
     toast.error(String(err), '删除失败')
@@ -256,7 +283,8 @@ async function localRename(e: RemoteEntry) {
   const oldPath = joinPath(localCwd.value, e.name)
   const newPath = joinPath(localCwd.value, name)
   try {
-    await apiLocalRename(oldPath, newPath)
+    if (!sftpId.value) return
+    await apiLocalRename(sftpId.value, oldPath, newPath)
     await refreshLocal()
   } catch (err: any) {
     toast.error(String(err), '重命名失败')
@@ -522,7 +550,8 @@ async function handleExternalDrop(side: 'local' | 'remote', paths: string[]) {
   for (const p of paths) {
     let stat
     try {
-      stat = await localStat(p)
+      if (!sftpId.value) return
+      stat = await localStat(sftpId.value, p)
     } catch (e: any) {
       errors.push(`${basename(p)}: ${String(e)}`)
       continue
@@ -541,7 +570,7 @@ async function handleExternalDrop(side: 'local' | 'remote', paths: string[]) {
           dst.toLowerCase() === p.toLowerCase()
             ? joinPath(localCwd.value, deriveCopyName(stat.name))
             : dst
-        await localCopy(p, finalDst)
+        await localCopy(sftpId.value, p, finalDst)
       }
       ok++
     } catch (e: any) {
@@ -651,9 +680,10 @@ async function doPaste() {
         // 同栏跨目录剪切优先使用重命名,避免目录复制中途留下半成品
         const dstPath = joinPath(dir, entry.name)
         if (to === 'local') {
-          await localCopy(srcPath, dstPath)
-          if (entry.isDir) await localRmdir(srcPath)
-          else await localRm(srcPath)
+          if (!sftpId.value) return
+          await localCopy(sftpId.value, srcPath, dstPath)
+          if (entry.isDir) await localRmdir(sftpId.value, srcPath)
+          else await localRm(sftpId.value, srcPath)
           toast.success(`已移动:${entry.name}`, '剪切完成')
         } else {
           if (!sftpId.value) return
@@ -665,7 +695,8 @@ async function doPaste() {
         const newName = deriveCopyName(entry.name)
         const dstPath = joinPath(dir, newName)
         if (to === 'local') {
-          await localCopy(srcPath, dstPath)
+          if (!sftpId.value) return
+          await localCopy(sftpId.value, srcPath, dstPath)
           toast.success(`已粘贴为 ${newName}`, '粘贴完成')
         } else {
           if (!sftpId.value) return
@@ -690,8 +721,9 @@ async function doPaste() {
               if (!success) return
               try {
                 if (from === 'local') {
-                  if (entry.isDir) await localRmdir(srcPath)
-                  else await localRm(srcPath)
+                  if (!sftpId.value) return
+                  if (entry.isDir) await localRmdir(sftpId.value, srcPath)
+                  else await localRm(sftpId.value, srcPath)
                   await refreshLocal()
                 } else if (sftpId.value) {
                   if (entry.isDir) await sftpRmdir(sftpId.value, srcPath)
@@ -757,11 +789,13 @@ function joinPath(dir: string, name: string): string {
           side="local"
           :entries="localEntries"
           :cwd="localCwd"
+          :root="localRoot"
           :loading="localLoading"
           @navigate="localNavigate"
           @refresh="refreshLocal"
           @mkdir="localMkdirAction"
           @home="goLocalHome"
+          @select-root="selectLocalRoot"
           @transfer="uploadFromLocal"
           @preview="previewFile('local', $event)"
           @rename="localRename"

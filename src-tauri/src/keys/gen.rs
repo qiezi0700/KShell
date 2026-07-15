@@ -8,8 +8,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 // 重命名 ssh_key 的 EcdsaCurve 避免和本地定义冲突
-use ssh_key::{Algorithm, HashAlg, LineEnding, PrivateKey};
 use ssh_key::EcdsaCurve as SshEcdsaCurve;
+use ssh_key::{Algorithm, HashAlg, LineEnding, PrivateKey};
 
 /// 前端传入的密钥算法选择
 #[derive(Clone, Copy, Debug)]
@@ -61,9 +61,15 @@ pub fn parse_algorithm(s: &str) -> Result<GenAlgorithm> {
         "rsa-2048" => Ok(GenAlgorithm::Rsa { bits: 2048 }),
         "rsa-3072" => Ok(GenAlgorithm::Rsa { bits: 3072 }),
         "rsa-4096" => Ok(GenAlgorithm::Rsa { bits: 4096 }),
-        "ecdsa-p256" => Ok(GenAlgorithm::Ecdsa { curve: EcdsaCurve::P256 }),
-        "ecdsa-p384" => Ok(GenAlgorithm::Ecdsa { curve: EcdsaCurve::P384 }),
-        "ecdsa-p521" => Ok(GenAlgorithm::Ecdsa { curve: EcdsaCurve::P521 }),
+        "ecdsa-p256" => Ok(GenAlgorithm::Ecdsa {
+            curve: EcdsaCurve::P256,
+        }),
+        "ecdsa-p384" => Ok(GenAlgorithm::Ecdsa {
+            curve: EcdsaCurve::P384,
+        }),
+        "ecdsa-p521" => Ok(GenAlgorithm::Ecdsa {
+            curve: EcdsaCurve::P521,
+        }),
         other => anyhow::bail!("不支持的密钥算法: {other}"),
     }
 }
@@ -77,14 +83,15 @@ pub fn generate_keypair(
 ) -> Result<(String, String, String)> {
     let mut rng = rand::rng();
     let key = match algo {
-        GenAlgorithm::Ed25519 => {
-            PrivateKey::random(&mut rng, Algorithm::Ed25519)
-                .map_err(|e| anyhow::anyhow!("生成 Ed25519 密钥失败: {e}"))?
-        }
-        GenAlgorithm::Ecdsa { curve } => {
-            PrivateKey::random(&mut rng, Algorithm::Ecdsa { curve: to_ssh_curve(curve) })
-                .map_err(|e| anyhow::anyhow!("生成 ECDSA 密钥失败: {e}"))?
-        }
+        GenAlgorithm::Ed25519 => PrivateKey::random(&mut rng, Algorithm::Ed25519)
+            .map_err(|e| anyhow::anyhow!("生成 Ed25519 密钥失败: {e}"))?,
+        GenAlgorithm::Ecdsa { curve } => PrivateKey::random(
+            &mut rng,
+            Algorithm::Ecdsa {
+                curve: to_ssh_curve(curve),
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("生成 ECDSA 密钥失败: {e}"))?,
         GenAlgorithm::Rsa { bits } => {
             // ssh-key 0.7 的 Algorithm::Rsa 不含 bits,需直接用 RsaKeypair 指定
             use ssh_key::private::RsaKeypair;
@@ -119,10 +126,7 @@ pub fn generate_keypair(
 
 /// 从已有私钥文件加载,返回 (算法标识, SHA256 指纹, OpenSSH 公钥字符串)。
 /// 用于导入外部密钥文件时提取元数据。
-pub fn inspect_key(
-    path: &str,
-    passphrase: Option<&str>,
-) -> Result<(String, String, String)> {
+pub fn inspect_key(path: &str, passphrase: Option<&str>) -> Result<(String, String, String)> {
     let key = russh::keys::load_secret_key(path, passphrase)
         .map_err(|e| anyhow::anyhow!("加载私钥失败: {e}"))?;
 

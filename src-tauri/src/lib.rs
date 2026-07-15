@@ -1,8 +1,9 @@
 mod commands;
 mod crypto;
+mod docker;
 mod keys;
-mod ssh;
 mod sftp;
+mod ssh;
 mod state;
 mod store;
 
@@ -22,7 +23,11 @@ pub fn run() {
 
             // known_hosts 信任库,同目录下 known_hosts.json;附带只读参考系统 ~/.ssh/known_hosts
             let kh_path = dir.join("known_hosts.json");
-            let system_kh = app.path().home_dir().ok().map(|h| h.join(".ssh").join("known_hosts"));
+            let system_kh = app
+                .path()
+                .home_dir()
+                .ok()
+                .map(|h| h.join(".ssh").join("known_hosts"));
             let known_hosts = ssh::known_hosts::KnownHosts::load(kh_path, system_kh)
                 .expect("初始化 known_hosts 失败");
 
@@ -46,6 +51,7 @@ pub fn run() {
             commands::ssh_disconnect,
             commands::ssh_exec,
             commands::ssh_exec_with_stdin,
+            docker::docker_exec,
             // 持久化
             commands::groups_list,
             commands::group_upsert,
@@ -54,6 +60,8 @@ pub fn run() {
             commands::session_upsert,
             commands::session_delete,
             commands::session_get_credentials,
+            commands::session_import_file,
+            commands::session_export_file,
             // 设置 & 快捷指令
             commands::settings_get,
             commands::settings_set,
@@ -91,6 +99,7 @@ pub fn run() {
             sftp::commands::sftp_copy_dir,
             sftp::commands::sftp_cancel_transfer,
             // 本地文件操作
+            sftp::commands::local_list_roots,
             sftp::commands::local_list,
             sftp::commands::local_mkdir,
             sftp::commands::local_rmdir,
@@ -99,6 +108,7 @@ pub fn run() {
             sftp::commands::local_copy,
             sftp::commands::local_stat,
             sftp::commands::local_home,
+            sftp::commands::local_select_root,
             sftp::commands::local_read_file,
             sftp::commands::local_write_file,
             // SSH 密钥库

@@ -6,6 +6,8 @@ import {
   ArrowRight,
   RefreshCw,
   FolderPlus,
+  FolderOpen,
+  HardDrive,
   Home,
   ChevronRight,
   File as FileIcon,
@@ -29,6 +31,7 @@ const props = defineProps<{
   loading: boolean
   host?: string
   user?: string
+  root?: string
 }>()
 
 const emit = defineEmits<{
@@ -36,6 +39,7 @@ const emit = defineEmits<{
   refresh: []
   mkdir: []
   home: []
+  selectRoot: [suggestedPath?: string]
   select: [entry: RemoteEntry | null]
   transfer: [entry: RemoteEntry]  // 双击触发传输
   preview: [entry: RemoteEntry]
@@ -47,11 +51,31 @@ const emit = defineEmits<{
 const selected = ref<string | null>(null)
 const pathInput = ref(props.cwd)
 
-watch(() => props.cwd, (v) => { pathInput.value = v })
+watch(() => props.cwd, (value) => {
+  pathInput.value = value
+  selected.value = null
+  emit('select', null)
+})
 
 function breadcrumbs(): string[] {
-  // 此电脑级别
   if (props.cwd === '') return ['']
+  if (props.side === 'local' && props.root) {
+    const normalizedCwd = props.cwd.replace(/\\/g, '/')
+    const normalizedRoot = props.root.replace(/\\/g, '/').replace(/\/$/, '')
+    const comparableCwd = normalizedCwd.toLocaleLowerCase()
+    const comparableRoot = normalizedRoot.toLocaleLowerCase()
+    if (comparableCwd === comparableRoot || comparableCwd.startsWith(`${comparableRoot}/`)) {
+      const result = [props.root]
+      const relative = normalizedCwd.slice(normalizedRoot.length).split('/').filter(Boolean)
+      const separator = props.root.includes('\\') ? '\\' : '/'
+      let current = props.root.replace(/[\\/]$/, '')
+      for (const part of relative) {
+        current += separator + part
+        result.push(current)
+      }
+      return result
+    }
+  }
   // 统一用 / 分隔;本地 Windows 路径也临时替换便于显示
   const p = props.cwd.replace(/\\/g, '/')
   const parts = p.split('/').filter(Boolean)
@@ -91,9 +115,9 @@ function clearSelect() {
 
 function onItemDblclick(e: RemoteEntry) {
   if (e.isDir) {
-    // 此电脑级别(cwd 为空):盘符条目 name 形如 "C:",进入 "C:\"
-    if (props.cwd === '') {
-      emit('navigate', e.name + '\\')
+    if (props.side === 'local' && props.cwd === '') {
+      const suggestedPath = /^[A-Za-z]:$/.test(e.name) ? `${e.name}\\` : e.name
+      emit('selectRoot', suggestedPath)
       return
     }
     const sep = props.cwd.includes('\\') ? '\\' : '/'
@@ -108,16 +132,20 @@ function onItemDblclick(e: RemoteEntry) {
 // 拖拽起步:把 side + entry 序列化进 dataTransfer,供 SftpView 的 onDrop 解析分派上传/下载
 // (Windows + Tauri 原生 OLE 拦截下 HTML5 DnD 不可用,改由 mousedown 上报父组件模拟拖拽)
 function onItemMouseDown(e: MouseEvent, entry: RemoteEntry) {
+  if (props.side === 'local' && props.cwd === '') return
   emit('itemmousedown', entry, e)
 }
 
 function goUp() {
   const cwd = props.cwd
   if (cwd === '') return
-  // 盘符根目录(如 D:\ 或 D:/):上一级是"此电脑"(空路径)
-  if (/^[A-Za-z]:[\\\/]$/.test(cwd)) {
-    emit('navigate', '')
-    return
+  if (props.side === 'local' && props.root) {
+    const normalizedCwd = cwd.replace(/\\/g, '/').replace(/\/$/, '').toLocaleLowerCase()
+    const normalizedRoot = props.root.replace(/\\/g, '/').replace(/\/$/, '').toLocaleLowerCase()
+    if (normalizedCwd === normalizedRoot) {
+      emit('navigate', '')
+      return
+    }
   }
   const sep = cwd.includes('\\') ? '\\' : '/'
   const idx = cwd.lastIndexOf(sep)
@@ -141,6 +169,7 @@ function onPathEnter() {
 }
 
 function iconFor(e: RemoteEntry) {
+  if (props.side === 'local' && props.cwd === '') return HardDrive
   if (e.isDir) return FolderIcon
   const ext = e.name.split('.').pop()?.toLowerCase()
   if (['txt', 'log', 'md', 'json', 'yaml', 'yml', 'toml', 'rs', 'ts', 'js', 'vue', 'py', 'go', 'c', 'cpp', 'h', 'sh'].includes(ext ?? '')) return FileText
@@ -166,8 +195,13 @@ function fmtDate(s: string) {
   }
 }
 
-// 此电脑级(cwd 为空):条目是盘符伪目录,不允许改名/删除;空白处也不能新建目录
+const isLocalRootMissing = computed(() => props.side === 'local' && !props.root)
 const isThisPcLevel = computed(() => props.side === 'local' && props.cwd === '')
+const isUpDisabled = computed(() => (
+  props.side === 'local'
+    ? isThisPcLevel.value
+    : props.cwd === '' || props.cwd === '/'
+))
 </script>
 
 <template>
@@ -178,19 +212,31 @@ const isThisPcLevel = computed(() => props.side === 'local' && props.cwd === '')
         class="text-caption shrink-0 rounded-sm px-1.5 py-0.5"
         :class="side === 'local' ? 'bg-panel-2 text-muted-foreground' : 'bg-primary/15 text-primary'"
       >{{ side === 'local' ? '本地' : `${user}@${host}` }}</span>
-      <Button variant="ghost" size="icon-sm" @click="goUp" title="上级">
+      <Button variant="ghost" size="icon-sm" :disabled="isUpDisabled" @click="goUp" title="上级">
         <ArrowUp />
       </Button>
-      <Button variant="ghost" size="icon-sm" @click="emit('home')" title="家目录">
+      <Button variant="ghost" size="icon-sm" :disabled="isLocalRootMissing" @click="emit('home')" title="家目录">
         <Home />
+      </Button>
+      <Button v-if="side === 'local'" variant="ghost" size="icon-sm" @click="emit('navigate', '')" title="此电脑">
+        <HardDrive />
       </Button>
       <Button variant="ghost" size="icon-sm" @click="emit('refresh')" title="刷新">
         <RefreshCw />
       </Button>
       <Button
+        v-if="side === 'local'"
         variant="ghost"
         size="icon-sm"
-        :disabled="isThisPcLevel"
+        @click="emit('selectRoot')"
+        title="选择本地工作目录"
+      >
+        <FolderOpen />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        :disabled="isLocalRootMissing || isThisPcLevel"
         @click="emit('mkdir')"
         title="新建目录"
       >
@@ -200,6 +246,7 @@ const isThisPcLevel = computed(() => props.side === 'local' && props.cwd === '')
         v-model="pathInput"
         class="text-body flex-1"
         :style="{ height: 'var(--size-row-sm)' }"
+        :disabled="isLocalRootMissing || isThisPcLevel"
         @keydown.enter="onPathEnter"
       />
       <!-- 条目操作按钮:基于当前选中条目启用 -->
@@ -207,7 +254,7 @@ const isThisPcLevel = computed(() => props.side === 'local' && props.cwd === '')
         <Button
           variant="ghost"
           size="icon-sm"
-          :disabled="!selectedEntry"
+          :disabled="!selectedEntry || isThisPcLevel"
           :title="side === 'local' ? '上传到远端' : '下载到本地'"
           @click="selectedEntry && emit('transfer', selectedEntry)"
         >
@@ -226,7 +273,7 @@ const isThisPcLevel = computed(() => props.side === 'local' && props.cwd === '')
         <Button
           variant="ghost"
           size="icon-sm"
-          :disabled="!selectedEntry || isThisPcLevel"
+          :disabled="!selectedEntry || isLocalRootMissing || isThisPcLevel"
           title="重命名"
           @click="selectedEntry && emit('rename', selectedEntry)"
         >
@@ -235,7 +282,7 @@ const isThisPcLevel = computed(() => props.side === 'local' && props.cwd === '')
         <Button
           variant="ghost"
           size="icon-sm"
-          :disabled="!selectedEntry || isThisPcLevel"
+          :disabled="!selectedEntry || isLocalRootMissing || isThisPcLevel"
           title="删除"
           @click="selectedEntry && emit('delete', selectedEntry)"
         >
@@ -267,10 +314,17 @@ const isThisPcLevel = computed(() => props.side === 'local' && props.cwd === '')
           v-if="loading"
           class="py-8 text-center text-muted-foreground"
         >加载中…</div>
+        <div v-else-if="isLocalRootMissing && !isThisPcLevel" class="flex flex-col items-center gap-2 py-8 text-muted-foreground">
+          <span>请选择本地工作目录</span>
+          <Button variant="outline" size="sm" @click.stop="emit('selectRoot')">
+            <FolderOpen />
+            选择目录
+          </Button>
+        </div>
         <div
           v-else-if="entries.length === 0"
           class="py-8 text-center text-muted-foreground"
-        >空目录</div>
+        >{{ isThisPcLevel ? '未检测到可用磁盘' : '空目录' }}</div>
         <div
           v-for="e in entries"
           :key="e.name"

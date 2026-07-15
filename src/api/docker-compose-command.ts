@@ -32,17 +32,24 @@ function parseConfigFiles(configFiles: string): string[] {
   return paths
 }
 
-export function buildComposeStackCommand(
+export function buildComposeStackArgs(
   stack: ComposeStackCommandInput,
   action: ComposeStackAction,
-): string {
+): string[] {
   validateStackName(stack.name)
-  const parts = ['docker', 'compose', '-p', stack.name]
+  const parts = ['compose', '-p', stack.name]
   for (const configPath of parseConfigFiles(stack.configFiles)) {
     parts.push('-f', configPath)
   }
   parts.push(action)
   if (action === 'up') parts.push('-d')
-  parts.push('2>&1')
-  return parts.join(' ')
+  return parts
+}
+
+/** 仅用于界面预览和兼容旧调用；实际执行统一传参数数组。 */
+export function buildComposeStackCommand(
+  stack: ComposeStackCommandInput,
+  action: ComposeStackAction,
+): string {
+  return ['docker', ...buildComposeStackArgs(stack, action)].join(' ')
 }

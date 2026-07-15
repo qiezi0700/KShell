@@ -110,47 +110,57 @@ export function sftpHome(sftpId: string): Promise<string> {
 // 本地文件操作
 // ============================================================
 
-export function localList(path: string): Promise<LocalEntry[]> {
-  return invoke<LocalEntry[]>('local_list', { path })
+export function localList(sftpId: string, path: string): Promise<LocalEntry[]> {
+  return invoke<LocalEntry[]>('local_list', { sftpId, path })
 }
 
-export function localMkdir(path: string): Promise<void> {
-  return invoke('local_mkdir', { path })
+/** 列出“此电脑”中的可用盘符；不会读取盘内文件。 */
+export function localListRoots(sftpId: string): Promise<LocalEntry[]> {
+  return invoke<LocalEntry[]>('local_list_roots', { sftpId })
 }
 
-export function localRmdir(path: string): Promise<void> {
-  return invoke('local_rmdir', { path })
+export function localMkdir(sftpId: string, path: string): Promise<void> {
+  return invoke('local_mkdir', { sftpId, path })
 }
 
-export function localRm(path: string): Promise<void> {
-  return invoke('local_rm', { path })
+export function localRmdir(sftpId: string, path: string): Promise<void> {
+  return invoke('local_rmdir', { sftpId, path })
 }
 
-export function localRename(oldPath: string, newPath: string): Promise<void> {
-  return invoke('local_rename', { oldPath, newPath })
+export function localRm(sftpId: string, path: string): Promise<void> {
+  return invoke('local_rm', { sftpId, path })
 }
 
-export function localHome(): Promise<string> {
-  return invoke<string>('local_home')
+export function localRename(sftpId: string, oldPath: string, newPath: string): Promise<void> {
+  return invoke('local_rename', { sftpId, oldPath, newPath })
+}
+
+export function localHome(sftpId: string): Promise<string> {
+  return invoke<string>('local_home', { sftpId })
+}
+
+/** 由后端打开原生目录选择器，并将用户确认的目录设为当前本地授权根目录。 */
+export function localSelectRoot(sftpId: string, suggestedPath?: string): Promise<string | null> {
+  return invoke<string | null>('local_select_root', { sftpId, suggestedPath })
 }
 
 /** 读取本地路径元数据(用于拖拽前判断是否为目录、取大小) */
-export function localStat(path: string): Promise<LocalEntry> {
-  return invoke<LocalEntry>('local_stat', { path })
+export function localStat(sftpId: string, path: string): Promise<LocalEntry> {
+  return invoke<LocalEntry>('local_stat', { sftpId, path })
 }
 
-export function localReadFile(path: string): Promise<number[]> {
-  return invoke<number[]>('local_read_file', { path })
+export function localReadFile(sftpId: string, path: string): Promise<number[]> {
+  return invoke<number[]>('local_read_file', { sftpId, path })
 }
 
 /** 写入本地文件(保存编辑) */
-export function localWriteFile(path: string, content: number[]): Promise<void> {
-  return invoke<void>('local_write_file', { path, content })
+export function localWriteFile(sftpId: string, path: string, content: number[]): Promise<void> {
+  return invoke<void>('local_write_file', { sftpId, path, content })
 }
 
 /** 复制本地文件(单文件) */
-export function localCopy(oldPath: string, newPath: string): Promise<void> {
-  return invoke<void>('local_copy', { oldPath, newPath })
+export function localCopy(sftpId: string, oldPath: string, newPath: string): Promise<void> {
+  return invoke<void>('local_copy', { sftpId, oldPath, newPath })
 }
 
 // ============================================================

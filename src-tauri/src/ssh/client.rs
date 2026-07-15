@@ -13,6 +13,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::net::TcpStream;
 use uuid::Uuid;
 
+const USER_INTERACTION_TIMEOUT: Duration = Duration::from_secs(120);
+
 use crate::ssh::known_hosts::HostCheckResult;
 use crate::state::{AppState, HostConfirmResult};
 
@@ -80,6 +82,7 @@ pub struct ClientHandler {
     confirm_rx: Option<tokio::sync::oneshot::Receiver<HostConfirmResult>>,
     /// 公钥被拒绝(mismatch 或用户拒绝)时置 true,供 connect 函数返回中文错误
     rejected: Arc<AtomicBool>,
+    interaction_timed_out: Arc<AtomicBool>,
 }
 
 impl ClientHandler {
@@ -92,10 +95,12 @@ impl ClientHandler {
         tokio::sync::oneshot::Sender<HostConfirmResult>,
         String,
         Arc<AtomicBool>,
+        Arc<AtomicBool>,
     ) {
         let confirm_id = Uuid::new_v4().to_string();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let rejected = Arc::new(AtomicBool::new(false));
+        let interaction_timed_out = Arc::new(AtomicBool::new(false));
         let handler = Self {
             app,
             host,
@@ -103,8 +108,9 @@ impl ClientHandler {
             confirm_id: confirm_id.clone(),
             confirm_rx: Some(rx),
             rejected: rejected.clone(),
+            interaction_timed_out: interaction_timed_out.clone(),
         };
-        (handler, tx, confirm_id, rejected)
+        (handler, tx, confirm_id, rejected, interaction_timed_out)
     }
 }
 
@@ -122,6 +128,7 @@ impl client::Handler for ClientHandler {
         let port = self.port;
         let confirm_id = self.confirm_id.clone();
         let rejected = self.rejected.clone();
+        let interaction_timed_out = self.interaction_timed_out.clone();
         let rx = self.confirm_rx.take();
 
         async move {
@@ -167,10 +174,22 @@ impl client::Handler for ClientHandler {
                     );
 
                     let result = match rx {
-                        Some(rx) => rx.await.unwrap_or(HostConfirmResult {
-                            accepted: false,
-                            sync_to_system: false,
-                        }),
+                        Some(rx) => {
+                            match tokio::time::timeout(USER_INTERACTION_TIMEOUT, rx).await {
+                                Ok(Ok(result)) => result,
+                                Ok(Err(_)) => HostConfirmResult {
+                                    accepted: false,
+                                    sync_to_system: false,
+                                },
+                                Err(_) => {
+                                    interaction_timed_out.store(true, Ordering::Relaxed);
+                                    HostConfirmResult {
+                                        accepted: false,
+                                        sync_to_system: false,
+                                    }
+                                }
+                            }
+                        }
                         None => HostConfirmResult {
                             accepted: false,
                             sync_to_system: false,
@@ -307,7 +326,7 @@ async fn connect_direct(
     .with_context(|| format!("连接 {host}:{port} 失败"))?;
     let _ = stream.set_nodelay(true);
 
-    let (handler, confirm_tx, confirm_id, rejected) =
+    let (handler, confirm_tx, confirm_id, rejected, interaction_timed_out) =
         ClientHandler::new(app.clone(), host.to_string(), port);
     app.state::<AppState>()
         .pending_host_confirms
@@ -319,7 +338,19 @@ async fn connect_direct(
         .pending_host_confirms
         .remove(&confirm_id);
 
-    finish_connect(result, rejected, app, host, port, user, auth).await
+    finish_connect(
+        result,
+        rejected,
+        interaction_timed_out,
+        ConnectContext {
+            app,
+            host,
+            port,
+            user,
+            auth,
+        },
+    )
+    .await
 }
 
 fn connect_timeout(timeout_ms: Option<u64>) -> Duration {
@@ -343,7 +374,7 @@ async fn connect_stream_target<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let (handler, confirm_tx, confirm_id, rejected) =
+    let (handler, confirm_tx, confirm_id, rejected, interaction_timed_out) =
         ClientHandler::new(app.clone(), host.to_string(), port);
     app.state::<AppState>()
         .pending_host_confirms
@@ -355,19 +386,47 @@ where
         .pending_host_confirms
         .remove(&confirm_id);
 
-    finish_connect(result, rejected, app, host, port, user, auth).await
+    finish_connect(
+        result,
+        rejected,
+        interaction_timed_out,
+        ConnectContext {
+            app,
+            host,
+            port,
+            user,
+            auth,
+        },
+    )
+    .await
+}
+
+struct ConnectContext<'a> {
+    app: AppHandle,
+    host: &'a str,
+    port: u16,
+    user: &'a str,
+    auth: &'a AuthMethod,
 }
 
 /// 连接结果到手后的共同处理:检查 known_hosts 拒绝、认证。
 async fn finish_connect(
     connect_result: Result<Handle<ClientHandler>, russh::Error>,
     rejected: Arc<AtomicBool>,
-    app: AppHandle,
-    host: &str,
-    port: u16,
-    user: &str,
-    auth: &AuthMethod,
+    interaction_timed_out: Arc<AtomicBool>,
+    context: ConnectContext<'_>,
 ) -> Result<SshSession> {
+    let ConnectContext {
+        app,
+        host,
+        port,
+        user,
+        auth,
+    } = context;
+
+    if interaction_timed_out.load(Ordering::Relaxed) {
+        return Err(anyhow!("等待主机指纹确认超时,连接已取消"));
+    }
     if rejected.load(Ordering::Relaxed) {
         return Err(anyhow!(HOST_KEY_REJECTED));
     }
@@ -525,13 +584,19 @@ async fn authenticate_keyboard_interactive(
                 });
                 let _ = app.emit("ssh://ki-prompt", payload);
 
-                let answers = match rx.await {
-                    Ok(v) => v,
-                    Err(_) => {
+                let answers = match tokio::time::timeout(USER_INTERACTION_TIMEOUT, rx).await {
+                    Ok(Ok(v)) => v,
+                    Ok(Err(_)) => {
                         app.state::<AppState>()
                             .pending_ki_prompts
                             .remove(&prompt_id);
                         return Err(anyhow!("keyboard-interactive 交互已取消"));
+                    }
+                    Err(_) => {
+                        app.state::<AppState>()
+                            .pending_ki_prompts
+                            .remove(&prompt_id);
+                        return Err(anyhow!("keyboard-interactive 等待用户输入超时"));
                     }
                 };
                 app.state::<AppState>()

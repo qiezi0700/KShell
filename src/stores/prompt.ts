@@ -1,4 +1,4 @@
-import { ref, shallowRef } from 'vue'
+import { nextTick, ref, shallowRef } from 'vue'
 
 // 命令式 confirm/prompt/passwordPrompt。挂到 App.vue 的对应 Dialog 观察这里的 state
 // 并把用户交互结果 resolve 回来。避免使用浏览器原生 window.confirm/prompt。
@@ -61,35 +61,68 @@ export const promptOpen = ref(false)
 export const passwordPromptOpen = ref(false)
 export const multiPromptOpen = ref(false)
 
+const confirmQueue: ConfirmState[] = []
+const promptQueue: PromptState[] = []
+const passwordPromptQueue: PasswordPromptState[] = []
+const multiPromptQueue: MultiPromptState[] = []
+
+function presentNextConfirm() {
+  if (confirmState.value || confirmQueue.length === 0) return
+  confirmState.value = confirmQueue.shift() ?? null
+  confirmOpen.value = confirmState.value != null
+}
+
+function presentNextPrompt() {
+  if (promptState.value || promptQueue.length === 0) return
+  promptState.value = promptQueue.shift() ?? null
+  promptOpen.value = promptState.value != null
+}
+
+function presentNextPasswordPrompt() {
+  if (passwordPromptState.value || passwordPromptQueue.length === 0) return
+  passwordPromptState.value = passwordPromptQueue.shift() ?? null
+  passwordPromptOpen.value = passwordPromptState.value != null
+}
+
+function presentNextMultiPrompt() {
+  if (multiPromptState.value || multiPromptQueue.length === 0) return
+  multiPromptState.value = multiPromptQueue.shift() ?? null
+  multiPromptOpen.value = multiPromptState.value != null
+}
+
+function scheduleNext(present: () => void) {
+  void nextTick(present)
+}
+
 /** 弹一个确认框,返回用户是否点确认。取消或关闭均返回 false。 */
 export function openConfirm(opts: ConfirmOptions): Promise<boolean> {
   return new Promise((resolve) => {
-    confirmState.value = { ...opts, resolve }
-    confirmOpen.value = true
+    confirmQueue.push({ ...opts, resolve })
+    presentNextConfirm()
   })
 }
 
 /** 弹一个文本输入框。取消返回 null,确认返回字符串(可能为空)。 */
 export function openPrompt(opts: PromptOptions): Promise<string | null> {
   return new Promise((resolve) => {
-    promptState.value = { ...opts, resolve }
-    promptOpen.value = true
+    promptQueue.push({ ...opts, resolve })
+    presentNextPrompt()
   })
 }
 
 /** 弹一个密码输入框(掩码显示)。取消返回 null,确认返回字符串。 */
 export function openPasswordPrompt(opts: PasswordPromptOptions): Promise<string | null> {
   return new Promise((resolve) => {
-    passwordPromptState.value = { ...opts, resolve }
-    passwordPromptOpen.value = true
+    passwordPromptQueue.push({ ...opts, resolve })
+    presentNextPasswordPrompt()
   })
 }
 
 /** 弹一个多输入框对话框(用于 keyboard-interactive)。取消返回 null,确认返回字符串数组。 */
 export function openMultiPrompt(opts: MultiPromptOptions): Promise<string[] | null> {
   return new Promise((resolve) => {
-    multiPromptState.value = { ...opts, resolve }
-    multiPromptOpen.value = true
+    multiPromptQueue.push({ ...opts, resolve })
+    presentNextMultiPrompt()
   })
 }
 
@@ -98,6 +131,7 @@ export function resolveMultiPrompt(value: string[] | null) {
   multiPromptOpen.value = false
   multiPromptState.value = null
   s?.resolve(value)
+  scheduleNext(presentNextMultiPrompt)
 }
 
 export function resolveConfirm(value: boolean) {
@@ -105,6 +139,7 @@ export function resolveConfirm(value: boolean) {
   confirmOpen.value = false
   confirmState.value = null
   s?.resolve(value)
+  scheduleNext(presentNextConfirm)
 }
 
 export function resolvePrompt(value: string | null) {
@@ -112,6 +147,7 @@ export function resolvePrompt(value: string | null) {
   promptOpen.value = false
   promptState.value = null
   s?.resolve(value)
+  scheduleNext(presentNextPrompt)
 }
 
 export function resolvePasswordPrompt(value: string | null) {
@@ -119,4 +155,5 @@ export function resolvePasswordPrompt(value: string | null) {
   passwordPromptOpen.value = false
   passwordPromptState.value = null
   s?.resolve(value)
+  scheduleNext(presentNextPasswordPrompt)
 }

@@ -4,6 +4,7 @@
 //! 拿到数据流,交给 russh_sftp::client::SftpSession 驱动。
 
 pub mod commands;
+pub mod local_scope;
 pub mod session;
 
 pub use session::SftpHandle;

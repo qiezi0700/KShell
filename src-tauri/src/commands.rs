@@ -4,12 +4,15 @@ use std::time::Duration;
 use russh::ChannelMsg;
 use serde::Serialize;
 use tauri::{AppHandle, State};
+use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::ssh::{self, ChannelCommand, SshConfig};
 use crate::state::{AppState, ChannelId, HostConfirmResult, SessionId};
 use crate::store::{Group, QuickCommand, Session};
+
+const MAX_SESSION_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 
 fn err<E: std::fmt::Display>(e: E) -> String {
     format!("{e:#}")
@@ -84,6 +87,68 @@ pub fn session_get_credentials(
         password: creds.password,
         passphrase: creds.passphrase,
     })
+}
+
+/// 由 Rust 端打开文件选择器并读取会话配置，避免把任意本地读取命令暴露给 WebView。
+#[tauri::command]
+pub async fn session_import_file(app: AppHandle) -> Result<Option<String>, String> {
+    let selected = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("导入会话配置")
+            .add_filter("JSON", &["json"])
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|e| format!("导入文件选择器异常结束: {e}"))?;
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    let path = selected
+        .into_path()
+        .map_err(|e| format!("读取所选文件路径失败: {e}"))?;
+    let size = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| format!("读取会话配置文件信息失败: {e}"))?
+        .len();
+    if size > MAX_SESSION_CONFIG_BYTES {
+        return Err("会话配置文件过大，最多允许 8 MB".to_string());
+    }
+    tokio::fs::read_to_string(&path)
+        .await
+        .map(Some)
+        .map_err(|e| format!("读取会话配置文件失败: {e}"))
+}
+
+/// 保存路径同样由原生对话框产生，前端不能指定任意文件写入。
+#[tauri::command]
+pub async fn session_export_file(
+    app: AppHandle,
+    content: String,
+) -> Result<Option<String>, String> {
+    if content.len() as u64 > MAX_SESSION_CONFIG_BYTES {
+        return Err("会话配置内容过大，最多允许 8 MB".to_string());
+    }
+    let selected = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("导出会话配置")
+            .set_file_name("kshell-sessions.json")
+            .add_filter("JSON", &["json"])
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|e| format!("导出文件选择器异常结束: {e}"))?;
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    let path = selected
+        .into_path()
+        .map_err(|e| format!("读取保存路径失败: {e}"))?;
+    tokio::fs::write(&path, content)
+        .await
+        .map_err(|e| format!("写入会话配置文件失败: {e}"))?;
+    Ok(Some(path.to_string_lossy().to_string()))
 }
 
 #[derive(Serialize)]
@@ -313,7 +378,7 @@ fn append_exec_output(out: &mut Vec<u8>, data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_exec_stdin(stdin: &[u8]) -> Result<(), String> {
+pub(crate) fn validate_exec_stdin(stdin: &[u8]) -> Result<(), String> {
     if stdin.len() > MAX_EXEC_STDIN_BYTES {
         return Err(format!(
             "命令标准输入过长，最多允许 {MAX_EXEC_STDIN_BYTES} 字节"
@@ -349,7 +414,7 @@ pub async fn ssh_exec_with_stdin(
     execute_ssh_command(state.inner(), session_id, command, Some(stdin), timeout_ms).await
 }
 
-async fn execute_ssh_command(
+pub(crate) async fn execute_ssh_command(
     state: &AppState,
     session_id: SessionId,
     command: String,
@@ -442,7 +507,10 @@ fn frame_exec_command(command: &str) -> (String, String) {
 
 fn extract_framed_exit_status(out: Vec<u8>, marker: &str) -> (Vec<u8>, Option<u32>) {
     let marker = marker.as_bytes();
-    let Some(marker_start) = out.windows(marker.len()).rposition(|window| window == marker) else {
+    let Some(marker_start) = out
+        .windows(marker.len())
+        .rposition(|window| window == marker)
+    else {
         return (out, None);
     };
     let status_start = marker_start + marker.len();
@@ -468,15 +536,14 @@ fn extract_framed_exit_status(out: Vec<u8>, marker: &str) -> (Vec<u8>, Option<u3
         _ => return (out, None),
     };
     // 包装层会在标记前额外输出一个换行，只移除这一层，保留命令原本的结尾格式。
-    let output_prefix_end = if out.get(marker_start.saturating_sub(2)..marker_start)
-        == Some(b"\r\n")
-    {
-        marker_start - 2
-    } else if out.get(marker_start.saturating_sub(1)..marker_start) == Some(b"\n") {
-        marker_start - 1
-    } else {
-        marker_start
-    };
+    let output_prefix_end =
+        if out.get(marker_start.saturating_sub(2)..marker_start) == Some(b"\r\n") {
+            marker_start - 2
+        } else if out.get(marker_start.saturating_sub(1)..marker_start) == Some(b"\n") {
+            marker_start - 1
+        } else {
+            marker_start
+        };
     let mut cleaned = Vec::with_capacity(out.len() - (marker_line_end - output_prefix_end));
     cleaned.extend_from_slice(&out[..output_prefix_end]);
     cleaned.extend_from_slice(&out[marker_line_end..]);
@@ -584,6 +651,7 @@ pub async fn ssh_disconnect(
         .collect();
     for id in sftp_ids {
         crate::sftp::commands::abort_transfers_for_sftp(&app, state.inner(), &id);
+        crate::sftp::local_scope::remove_root(state.inner(), &id);
         state.sftp_sessions.remove(&id);
     }
     if let Some((_, shared)) = state.shared_sftp_sessions.remove(&session_id) {

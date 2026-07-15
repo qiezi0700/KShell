@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -39,6 +40,7 @@ pub struct HostConfirmResult {
 /// - `shared_sftp_sessions`:每个 SSH 会话唯一的底层 SFTP subsystem
 /// - `sftp_open_locks`:SFTP 打开/关闭串行锁,避免重复初始化与末租约关闭竞态
 /// - `transfers`:进行中的传输任务控制项,用于取消以及会话关闭时立即终止
+/// - `local_sftp_roots`:每个 SFTP 标签页经用户授权的本地目录边界
 /// - `tunnels`:M6 端口转发规则,按 tunnel_id 索引;按 session_id 分组清理
 pub struct AppState {
     pub sessions: DashMap<SessionId, Arc<Mutex<SshSession>>>,
@@ -53,6 +55,7 @@ pub struct AppState {
     pub shared_sftp_sessions: DashMap<SessionId, SftpHandle>,
     pub sftp_open_locks: DashMap<SessionId, Arc<Mutex<()>>>,
     pub transfers: DashMap<String, TransferControl>,
+    pub local_sftp_roots: DashMap<String, PathBuf>,
     pub tunnels: DashMap<TunnelId, TunnelEntry>,
 }
 
@@ -70,6 +73,7 @@ impl AppState {
             shared_sftp_sessions: DashMap::new(),
             sftp_open_locks: DashMap::new(),
             transfers: DashMap::new(),
+            local_sftp_roots: DashMap::new(),
             tunnels: DashMap::new(),
         }
     }

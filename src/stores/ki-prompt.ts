@@ -2,6 +2,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event'
 
 import { onKiPrompt, sshKiRespond, type KiPromptPayload } from '@/api/ssh'
 import { openMultiPrompt } from '@/stores/prompt'
+import { toast } from '@/stores/toast'
 
 let unlisten: UnlistenFn | null = null
 
@@ -26,5 +27,9 @@ async function handlePrompt(p: KiPromptPayload): Promise<void> {
     cancelText: '取消',
   })
   // 取消时回传空数组,让后端报错关闭连接;不阻塞
-  await sshKiRespond(p.promptId, answers ?? []).catch(() => {})
+  try {
+    await sshKiRespond(p.promptId, answers ?? [])
+  } catch (error: unknown) {
+    toast.error(error instanceof Error ? error.message : String(error), '交互式认证响应失败')
+  }
 }

@@ -119,10 +119,18 @@ impl Store {
             .query_map([], |row| row.get::<_, String>(1))?
             .collect::<Result<_, _>>()?;
         drop(stmt);
-        for col in ["jump_host", "jump_port", "jump_username", "jump_auth_kind", "jump_key_path"] {
+        for col in [
+            "jump_host",
+            "jump_port",
+            "jump_username",
+            "jump_auth_kind",
+            "jump_key_path",
+        ] {
             if !cols.contains(&col.to_string()) {
                 let sql = match col {
-                    "jump_port" => "ALTER TABLE sessions ADD COLUMN jump_port INTEGER NOT NULL DEFAULT 22",
+                    "jump_port" => {
+                        "ALTER TABLE sessions ADD COLUMN jump_port INTEGER NOT NULL DEFAULT 22"
+                    }
                     _ => &format!("ALTER TABLE sessions ADD COLUMN {col} TEXT"),
                 };
                 conn.execute_batch(sql)
@@ -400,10 +408,8 @@ impl Store {
 
     pub fn update_ssh_key_name(&self, id: &str, name: &str) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let affected = conn.execute(
-            "UPDATE ssh_keys SET name=?2 WHERE id=?1",
-            params![id, name],
-        )?;
+        let affected =
+            conn.execute("UPDATE ssh_keys SET name=?2 WHERE id=?1", params![id, name])?;
         if affected == 0 {
             anyhow::bail!("密钥不存在: {id}");
         }
@@ -485,12 +491,13 @@ impl Store {
             )
             .context("新增快捷指令失败")?;
         } else {
-            let affected = conn.execute(
-                "UPDATE quick_commands SET label=?2, description=?3, command=?4, sort=?5
+            let affected = conn
+                .execute(
+                    "UPDATE quick_commands SET label=?2, description=?3, command=?4, sort=?5
                  WHERE id=?1 AND builtin=0",
-                params![q.id, q.label, q.description, q.command, q.sort],
-            )
-            .context("更新快捷指令失败")?;
+                    params![q.id, q.label, q.description, q.command, q.sort],
+                )
+                .context("更新快捷指令失败")?;
             if affected == 0 {
                 anyhow::bail!("快捷指令不存在或为内置项: {}", q.id);
             }
@@ -501,11 +508,12 @@ impl Store {
     /// 删除快捷指令;内置项不可删。
     pub fn delete_quick_command(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let affected = conn.execute(
-            "DELETE FROM quick_commands WHERE id=?1 AND builtin=0",
-            params![id],
-        )
-        .context("删除快捷指令失败")?;
+        let affected = conn
+            .execute(
+                "DELETE FROM quick_commands WHERE id=?1 AND builtin=0",
+                params![id],
+            )
+            .context("删除快捷指令失败")?;
         if affected == 0 {
             anyhow::bail!("快捷指令不存在或为内置项: {id}");
         }

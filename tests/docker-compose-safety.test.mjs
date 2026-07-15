@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
-import { buildComposeStackCommand } from '../src/api/docker-compose-command.ts'
+import { buildComposeStackArgs } from '../src/api/docker-compose-command.ts'
 
 const dockerSource = await readFile(
   new URL('../src/api/docker.ts', import.meta.url),
@@ -14,31 +14,31 @@ const stack = {
   configFiles: '/srv/my-app/compose.yml,/srv/my-app/compose.prod.yml',
 }
 
-test('Compose Stack 命令固定项目名并保留全部配置文件', () => {
-  assert.equal(
-    buildComposeStackCommand(stack, 'up'),
-    'docker compose -p my-app -f /srv/my-app/compose.yml -f /srv/my-app/compose.prod.yml up -d 2>&1',
+test('Compose Stack 参数固定项目名并保留全部配置文件', () => {
+  assert.deepEqual(
+    buildComposeStackArgs(stack, 'up'),
+    ['compose', '-p', 'my-app', '-f', '/srv/my-app/compose.yml', '-f', '/srv/my-app/compose.prod.yml', 'up', '-d'],
   )
-  assert.equal(
-    buildComposeStackCommand(stack, 'down'),
-    'docker compose -p my-app -f /srv/my-app/compose.yml -f /srv/my-app/compose.prod.yml down 2>&1',
+  assert.deepEqual(
+    buildComposeStackArgs(stack, 'down'),
+    ['compose', '-p', 'my-app', '-f', '/srv/my-app/compose.yml', '-f', '/srv/my-app/compose.prod.yml', 'down'],
   )
-  assert.equal(
-    buildComposeStackCommand(stack, 'restart'),
-    'docker compose -p my-app -f /srv/my-app/compose.yml -f /srv/my-app/compose.prod.yml restart 2>&1',
+  assert.deepEqual(
+    buildComposeStackArgs(stack, 'restart'),
+    ['compose', '-p', 'my-app', '-f', '/srv/my-app/compose.yml', '-f', '/srv/my-app/compose.prod.yml', 'restart'],
   )
 })
 
 test('Compose Stack 拒绝空配置文件列表', () => {
   assert.throws(
-    () => buildComposeStackCommand({ name: 'my-app', configFiles: ' , ' }, 'down'),
+    () => buildComposeStackArgs({ name: 'my-app', configFiles: ' , ' }, 'down'),
     /缺少 compose 配置文件/,
   )
 })
 
 test('Compose Stack 校验每一个配置文件路径', () => {
   assert.throws(
-    () => buildComposeStackCommand(
+    () => buildComposeStackArgs(
       { name: 'my-app', configFiles: '/srv/compose.yml,/srv/prod.yml;touch /tmp/pwn' },
       'down',
     ),
@@ -48,7 +48,7 @@ test('Compose Stack 校验每一个配置文件路径', () => {
 
 test('Compose Stack 拒绝非法项目名', () => {
   assert.throws(
-    () => buildComposeStackCommand(
+    () => buildComposeStackArgs(
       { name: 'my-app;touch-pwn', configFiles: '/srv/compose.yml' },
       'down',
     ),
@@ -58,8 +58,9 @@ test('Compose Stack 拒绝非法项目名', () => {
 
 
 test('Docker API 的 Stack 操作统一使用安全命令生成器', () => {
-  assert.equal(dockerSource.includes("buildComposeStackCommand(stack, 'up')"), true)
-  assert.equal(dockerSource.includes("buildComposeStackCommand(stack, 'down')"), true)
-  assert.equal(dockerSource.includes("buildComposeStackCommand(stack, 'restart')"), true)
+  assert.equal(dockerSource.includes("buildComposeStackArgs(stack, 'up')"), true)
+  assert.equal(dockerSource.includes("buildComposeStackArgs(stack, 'down')"), true)
+  assert.equal(dockerSource.includes("buildComposeStackArgs(stack, 'restart')"), true)
+  assert.match(dockerSource, /dockerExec\(sessionId, buildComposeStackArgs/)
   assert.equal(dockerSource.includes('firstConfig(stack)'), false)
 })

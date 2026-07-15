@@ -16,24 +16,43 @@ import { sidebarVisible, statusBarVisible } from '@/stores/ui'
 import { sidebarWidth, sidebarResizing, initSidebarWidth } from '@/stores/sidebar-panels'
 import { activeMonitorSessionId, startMonitor, stopMonitor } from '@/stores/monitor'
 import { initQuickCommands } from '@/stores/quick-commands'
+import { toast } from '@/stores/toast'
 
 // SQLite 设置加载完毕前不渲染主 UI,避免偏好/布局闪烁
 const settingsReady = ref(false)
 
 onMounted(async () => {
-  // 并行加载全局设置:偏好 / 快捷指令 / 侧栏宽度
-  await Promise.all([
+  const guardPromise = Promise.allSettled([
+    initHostKeyGuard(),
+    initKiGuard(),
+  ])
+  const settingsResults = await Promise.allSettled([
     initPreferences(),
     initQuickCommands(),
     initSidebarWidth(),
   ])
-  // 偏好就位后再应用主题,确保用真实值生效
+  const settingNames = ['偏好设置', '快捷指令', '侧栏布局']
+  settingsResults.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      toast.error(
+        result.reason instanceof Error ? result.reason.message : String(result.reason),
+        `${settingNames[index]}加载失败，已使用默认值`,
+      )
+    }
+  })
   initTheme()
-  // 放行主 UI 渲染
   settingsReady.value = true
-  // 不依赖设置的后台守护,放行后异步启动
-  initHostKeyGuard().catch(() => {})
-  initKiGuard().catch(() => {})
+
+  const guardResults = await guardPromise
+  const guardNames = ['主机指纹确认', '交互式认证']
+  guardResults.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      toast.error(
+        result.reason instanceof Error ? result.reason.message : String(result.reason),
+        `${guardNames[index]}监听初始化失败`,
+      )
+    }
+  })
 })
 
 // 监控轮询跟随活跃终端 tab:切到终端则启动,切走则停止

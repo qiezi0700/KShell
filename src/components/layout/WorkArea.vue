@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Plus, X } from '@lucide/vue'
 import { useMagicKeys, whenever } from '@vueuse/core'
-import { onMounted } from 'vue'
+import { onBeforeUnmount, onMounted } from 'vue'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
@@ -55,26 +55,28 @@ whenever(keys['Ctrl+PageUp'], () => {
 // 阻止 WebView 默认行为:
 // - F5 / Ctrl+R / Ctrl+Shift+R / Cmd+R:刷新会打断 SSH 会话
 // - Ctrl+Shift+C:WebView 默认打开 DevTools,改为终端复制选区
-onMounted(() => {
-  const handler = (e: KeyboardEvent) => {
-    // 刷新拦截
-    if (
-      e.key === 'F5' ||
-      ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R'))
-    ) {
-      e.preventDefault()
-      e.stopPropagation()
-      return
-    }
-    // Ctrl+Shift+C:终端复制(阻止 DevTools)
-    if (e.ctrlKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
-      e.preventDefault()
-      e.stopPropagation()
-      copyTerminalSelection()
-    }
+function preventWebViewShortcut(e: KeyboardEvent) {
+  if (
+    e.key === 'F5' ||
+    ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R'))
+  ) {
+    e.preventDefault()
+    e.stopPropagation()
+    return
   }
-  window.addEventListener('keydown', handler, { capture: true })
-  return () => window.removeEventListener('keydown', handler, { capture: true })
+  if (e.ctrlKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+    e.preventDefault()
+    e.stopPropagation()
+    copyTerminalSelection()
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', preventWebViewShortcut, { capture: true })
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', preventWebViewShortcut, { capture: true })
 })
 </script>
 

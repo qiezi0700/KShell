@@ -1,4 +1,4 @@
-import { buildComposeStackCommand, validateComposePath } from './docker-compose-command'
+import { buildComposeStackArgs, validateComposePath } from './docker-compose-command'
 import {
   DOCKER_PROBE_MARKER,
   parseDockerProbeOutput,
@@ -12,6 +12,7 @@ import {
   validateDockerRegistry,
   validateDockerRegistryUser,
 } from './docker-validation'
+import { dockerExec } from './docker-exec'
 import {
   sshExec as invokeSshExec,
   sshExecWithStdin as invokeSshExecWithStdin,
@@ -20,11 +21,11 @@ import {
 const DOCKER_QUERY_TIMEOUT_MS = 15_000
 const DOCKER_PATH_PREFIX = 'export PATH="$PATH:/usr/local/bin:/usr/bin:/snap/bin"; '
 
-function sshExec(sessionId: string, command: string, timeoutMs?: number): Promise<string> {
+function sshShellExec(sessionId: string, command: string, timeoutMs?: number): Promise<string> {
   return invokeSshExec(sessionId, `${DOCKER_PATH_PREFIX}${command}`, timeoutMs)
 }
 
-function sshExecWithStdin(
+function sshShellExecWithStdin(
   sessionId: string,
   command: string,
   stdin: string,
@@ -240,7 +241,7 @@ export async function dockerProbe(sessionId: string): Promise<DockerProbe> {
     `version="$(docker version --format '{{.Server.Version}}|{{.Server.APIVersion}}' 2>/dev/null)"; ` +
     `printf '${DOCKER_PROBE_MARKER}ready|%s\n' "$version"; ` +
     `else printf '${DOCKER_PROBE_MARKER}unusable\n%s\n' "$info"; fi; fi`
-  const output = await sshExec(sessionId, command, DOCKER_QUERY_TIMEOUT_MS)
+  const output = await sshShellExec(sessionId, command, DOCKER_QUERY_TIMEOUT_MS)
   return parseDockerProbeOutput(output)
 }
 
@@ -310,15 +311,19 @@ export function dockerInstallCommand(opts: DockerInstallOptions): string {
  * 不进入远端命令行参数、进程环境或 shell 历史。 */
 export async function dockerInstall(sessionId: string, opts: DockerInstallOptions): Promise<string> {
   const command = `${dockerInstallCommand(opts)} 2>&1`
-  if (!opts.sudoPassword) return sshExec(sessionId, command, 5 * 60 * 1000)
+  if (!opts.sudoPassword) return sshShellExec(sessionId, command, 5 * 60 * 1000)
   if (opts.sudoPassword.length > 4096) throw new Error('sudo 密码过长(>4096)')
-  return sshExecWithStdin(sessionId, command, `${opts.sudoPassword}\n`, 5 * 60 * 1000)
+  return sshShellExecWithStdin(sessionId, command, `${opts.sudoPassword}\n`, 5 * 60 * 1000)
 }
 
 /** 获取 Docker 服务端版本信息 */
 export async function dockerVersion(sessionId: string): Promise<DockerVersion | null> {
   try {
-    const out = await sshExec(sessionId, 'docker version --format "{{.Server.Version}}|{{.Server.APIVersion}}" 2>/dev/null', DOCKER_QUERY_TIMEOUT_MS)
+    const out = await dockerExec(
+      sessionId,
+      ['version', '--format', '{{.Server.Version}}|{{.Server.APIVersion}}'],
+      { timeoutMs: DOCKER_QUERY_TIMEOUT_MS },
+    )
     const [version, apiVersion] = out.trim().split('|')
     if (!version) return null
     return { version, apiVersion: apiVersion || '' }
@@ -332,8 +337,7 @@ export async function dockerVersion(sessionId: string): Promise<DockerVersion | 
 // ============================================================
 
 // docker 容器 ID / 名称的合法字符集:字母数字开头,后跟字母数字及 _.-。
-// 这里做白名单校验,作为 shell 字符串拼接场景下命令注入的缓解措施。
-// 真正的参数化需在后端单独开 docker 命令,当前仍走 ssh_exec 传整条命令。
+// 标识符仍做语义校验；执行层再把参数数组交给 Rust 统一编码。
 const NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/
 
 function validateName(name: string, label = '容器标识'): void {
@@ -348,7 +352,11 @@ function validateImageId(id: string): void {
 
 /** 列出所有容器(含已停止) */
 export async function dockerListContainers(sessionId: string): Promise<DockerContainer[]> {
-  const out = await sshExec(sessionId, "docker ps -a --format '{{json .}}'", DOCKER_QUERY_TIMEOUT_MS)
+  const out = await dockerExec(
+    sessionId,
+    ['ps', '-a', '--format', '{{json .}}'],
+    { timeoutMs: DOCKER_QUERY_TIMEOUT_MS },
+  )
   return parseJsonLines(out).map(normalizeContainer)
 }
 
@@ -356,7 +364,7 @@ export async function dockerListContainers(sessionId: string): Promise<DockerCon
 export async function dockerContainerExists(sessionId: string, container: string): Promise<boolean> {
   validateName(container)
   try {
-    const out = await sshExec(sessionId, `docker inspect --type container --format '{{.Id}}' ${container}`)
+    const out = await dockerExec(sessionId, ['inspect', '--type', 'container', '--format', '{{.Id}}', container])
     if (/No such (object|container)/i.test(out)) return false
     if (/^Error/i.test(out.trim())) throw new Error(out.trim())
     return out.trim().length > 0
@@ -370,25 +378,25 @@ export async function dockerContainerExists(sessionId: string, container: string
 /** 启动容器 */
 export async function dockerStart(sessionId: string, container: string): Promise<void> {
   validateName(container)
-  await sshExec(sessionId, `docker start ${container}`)
+  await dockerExec(sessionId, ['start', container])
 }
 
 /** 停止容器 */
 export async function dockerStop(sessionId: string, container: string): Promise<void> {
   validateName(container)
-  await sshExec(sessionId, `docker stop ${container}`)
+  await dockerExec(sessionId, ['stop', container])
 }
 
 /** 重启容器 */
 export async function dockerRestart(sessionId: string, container: string): Promise<void> {
   validateName(container)
-  await sshExec(sessionId, `docker restart ${container}`)
+  await dockerExec(sessionId, ['restart', container])
 }
 
 /** 删除容器(-f 强制) */
 export async function dockerRemove(sessionId: string, container: string, force = false): Promise<void> {
   validateName(container)
-  await sshExec(sessionId, `docker rm ${force ? '-f ' : ''}${container}`)
+  await dockerExec(sessionId, ['rm', ...(force ? ['-f'] : []), container])
 }
 
 // 容器内日志文件路径白名单:绝对路径下的字母数字与常见文件名字符,
@@ -414,9 +422,9 @@ export async function dockerLogs(
   const p = path?.trim()
   if (p) {
     validateLogPath(p)
-    return sshExec(sessionId, `docker exec ${container} tail -n ${n} ${p} 2>&1`)
+    return dockerExec(sessionId, ['exec', container, 'tail', '-n', String(n), p])
   }
-  return sshExec(sessionId, `docker logs --tail ${n} ${container} 2>&1`)
+  return dockerExec(sessionId, ['logs', '--tail', String(n), container])
 }
 
 /** 改名(docker rename)。docker 允许在运行时改名,无需停机。 */
@@ -424,7 +432,7 @@ export async function dockerRename(sessionId: string, container: string, newName
   validateName(container)
   validateName(newName, '新容器名')
   if (container === newName) return
-  await sshExec(sessionId, `docker rename ${container} ${newName}`)
+  await dockerExec(sessionId, ['rename', container, newName])
 }
 
 // docker update 支持的字段;传空串/undefined 表示不修改
@@ -446,7 +454,7 @@ export async function dockerUpdateContainer(
   opts: DockerUpdateOpts,
 ): Promise<void> {
   validateName(container)
-  const parts: string[] = ['docker', 'update']
+  const parts: string[] = ['update']
   const mem = opts.memory?.trim()
   const cpu = opts.cpus?.trim()
   const restart = opts.restart?.trim()
@@ -463,9 +471,9 @@ export async function dockerUpdateContainer(
     if (!RESTART_RE.test(restart)) throw new Error(`重启策略不合法: ${restart}`)
     parts.push('--restart', restart)
   }
-  if (parts.length === 2) return // 无任何字段变更,直接返回避免打空 update
+  if (parts.length === 1) return // 无任何字段变更,直接返回避免打空 update
   parts.push(container)
-  await sshExec(sessionId, parts.join(' '))
+  await dockerExec(sessionId, parts)
 }
 
 // ============================================================
@@ -550,43 +558,42 @@ function appendNetworkOptions(parts: string[], attachment: DockerNetworkAttachme
   const aliases = [...new Set(attachment.aliases)]
   for (const alias of aliases) {
     validateName(alias, '网络别名')
-    parts.push('--network-alias', shq(alias))
+    parts.push('--network-alias', alias)
   }
   if (attachment.ipv4Address) {
     validateNetworkAddress(attachment.ipv4Address, '固定 IPv4 地址')
-    parts.push('--ip', shq(attachment.ipv4Address))
+    parts.push('--ip', attachment.ipv4Address)
   }
   if (attachment.ipv6Address) {
     validateNetworkAddress(attachment.ipv6Address, '固定 IPv6 地址')
-    parts.push('--ip6', shq(attachment.ipv6Address))
+    parts.push('--ip6', attachment.ipv6Address)
   }
   for (const address of [...new Set(attachment.linkLocalIps)]) {
     validateNetworkAddress(address, '链路本地地址')
-    parts.push('--link-local-ip', shq(address))
+    parts.push('--link-local-ip', address)
   }
 }
 
-/** 从 DockerRunSpec 组装 docker run -d 命令;所有用户内容都 shq 转义,避免 shell 注入。
- * 与 buildRunCommand(从 inspect 还原)分离:那个是"重建",这个是"新建",输入结构不同。 */
-export function buildRunCommandFromSpec(s: DockerRunSpec): string {
+/** 从 DockerRunSpec 组装参数数组；用户内容始终保持独立参数。 */
+export function buildRunArgsFromSpec(s: DockerRunSpec): string[] {
   validateImageId(s.image)
-  const parts: string[] = ['docker', 'run', '-d']
+  const parts: string[] = ['run', '-d']
 
   if (s.name) {
     validateName(s.name)
-    parts.push('--name', shq(s.name))
+    parts.push('--name', s.name)
   }
-  if (s.hostname) parts.push('--hostname', shq(s.hostname))
+  if (s.hostname) parts.push('--hostname', s.hostname)
   if (s.workingDir) {
     if (!VOLUME_DEST_RE.test(s.workingDir)) throw new Error(`工作目录需绝对路径: ${s.workingDir}`)
-    parts.push('--workdir', shq(s.workingDir))
+    parts.push('--workdir', s.workingDir)
   }
   if (s.restartPolicy) {
     if (!RESTART_RE.test(s.restartPolicy)) throw new Error(`重启策略不合法: ${s.restartPolicy}`)
-    parts.push('--restart', shq(s.restartPolicy))
+    parts.push('--restart', s.restartPolicy)
   }
   if (s.networkMode) {
-    parts.push('--network', shq(s.networkMode))
+    parts.push('--network', s.networkMode)
     appendNetworkOptions(
       parts,
       s.networkAttachments?.find((attachment) => attachment.name === s.networkMode),
@@ -597,17 +604,17 @@ export function buildRunCommandFromSpec(s: DockerRunSpec): string {
     if (!entrypoint || entrypoint.length > 4096 || entrypoint.includes('\0')) {
       throw new Error('容器入口点不合法')
     }
-    parts.push('--entrypoint', shq(entrypoint))
+    parts.push('--entrypoint', entrypoint)
   }
   if (s.user) {
     if (!USER_RE.test(s.user)) throw new Error(`运行用户不合法: ${s.user}`)
-    parts.push('--user', shq(s.user))
+    parts.push('--user', s.user)
   }
   for (const [key, value] of Object.entries(s.labels)) {
     if (!key || key.length > 4096 || /[\0\r\n]/.test(key) || /[\0\r\n]/.test(value)) {
       throw new Error(`容器标签不合法: ${key}`)
     }
-    parts.push('--label', shq(`${key}=${value}`))
+    parts.push('--label', `${key}=${value}`)
   }
   if (s.openStdin) parts.push('-i')
   if (s.tty) parts.push('-t')
@@ -615,43 +622,43 @@ export function buildRunCommandFromSpec(s: DockerRunSpec): string {
   if (s.privileged) parts.push('--privileged')
   for (const capability of s.capAdd) {
     if (!CAPABILITY_RE.test(capability)) throw new Error(`新增能力不合法: ${capability}`)
-    parts.push('--cap-add', shq(capability))
+    parts.push('--cap-add', capability)
   }
   for (const capability of s.capDrop) {
     if (!CAPABILITY_RE.test(capability)) throw new Error(`移除能力不合法: ${capability}`)
-    parts.push('--cap-drop', shq(capability))
+    parts.push('--cap-drop', capability)
   }
   for (const server of s.dns) {
     if (!server || server.length > 253) throw new Error(`DNS 服务器不合法: ${server}`)
-    parts.push('--dns', shq(server))
+    parts.push('--dns', server)
   }
   for (const device of s.devices) {
     if (!VOLUME_DEST_RE.test(device.hostPath)) throw new Error(`宿主设备路径不合法: ${device.hostPath}`)
     if (!VOLUME_DEST_RE.test(device.containerPath)) throw new Error(`容器设备路径不合法: ${device.containerPath}`)
     if (!DEVICE_PERMISSIONS_RE.test(device.permissions)) throw new Error(`设备权限不合法: ${device.permissions}`)
-    parts.push('--device', shq(`${device.hostPath}:${device.containerPath}:${device.permissions}`))
+    parts.push('--device', `${device.hostPath}:${device.containerPath}:${device.permissions}`)
   }
   if (s.logDriver) {
     if (!LOG_DRIVER_RE.test(s.logDriver)) throw new Error(`日志驱动不合法: ${s.logDriver}`)
-    parts.push('--log-driver', shq(s.logDriver))
+    parts.push('--log-driver', s.logDriver)
   }
   for (const [key, value] of Object.entries(s.logOptions ?? {})) {
     if (!LOG_OPTION_KEY_RE.test(key) || value.length > 4096 || /[\0\r\n]/.test(value)) {
       throw new Error(`日志选项不合法: ${key}`)
     }
-    parts.push('--log-opt', shq(`${key}=${value}`))
+    parts.push('--log-opt', `${key}=${value}`)
   }
 
   for (const p of s.ports) {
     validateDockerPortMapping(p.host, p.container)
-    parts.push('-p', shq(`${p.host}:${p.container}`))
+    parts.push('-p', `${p.host}:${p.container}`)
   }
 
   for (const v of s.volumes) {
     if (!VOLUME_SOURCE_RE.test(v.source)) throw new Error(`卷源不合法: ${v.source}`)
     if (!VOLUME_DEST_RE.test(v.destination)) throw new Error(`卷目标需绝对路径: ${v.destination}`)
     const suffix = v.readOnly ? ':ro' : ''
-    parts.push('-v', shq(`${v.source}:${v.destination}${suffix}`))
+    parts.push('-v', `${v.source}:${v.destination}${suffix}`)
   }
 
   for (const kv of s.env) {
@@ -659,7 +666,7 @@ export function buildRunCommandFromSpec(s: DockerRunSpec): string {
     if (eq <= 0) throw new Error(`环境变量需为 KEY=VALUE: ${kv}`)
     const k = kv.slice(0, eq)
     if (!ENV_KEY_RE.test(k)) throw new Error(`环境变量键不合法: ${k}`)
-    parts.push('-e', shq(kv))
+    parts.push('-e', kv)
   }
 
   if (s.memory) {
@@ -671,15 +678,20 @@ export function buildRunCommandFromSpec(s: DockerRunSpec): string {
     parts.push('--cpus', s.cpus)
   }
 
-  parts.push(shq(s.image))
-  for (const argument of s.entrypoint.slice(1)) parts.push(shq(argument))
-  for (const a of s.cmd) parts.push(shq(a))
-  return parts.join(' ')
+  parts.push(s.image)
+  for (const argument of s.entrypoint.slice(1)) parts.push(argument)
+  for (const argument of s.cmd) parts.push(argument)
+  return parts
+}
+
+/** 仅用于表单配置校验和调试展示，实际运行不解析这段字符串。 */
+export function buildRunCommandFromSpec(s: DockerRunSpec): string {
+  return ['docker', ...buildRunArgsFromSpec(s).map(shq)].join(' ')
 }
 
 /** 新建容器(docker run -d)。返回 docker 输出(通常是容器 ID)。 */
 export async function dockerRun(sessionId: string, spec: DockerRunSpec): Promise<string> {
-  return sshExec(sessionId, `${buildRunCommandFromSpec(spec)} 2>&1`)
+  return dockerExec(sessionId, buildRunArgsFromSpec(spec))
 }
 
 /** 把 DockerInspect 转成 DockerRunSpec,用于"更新并重建"时预填编辑弹窗。
@@ -788,9 +800,9 @@ function bytesToMemStr(bytes: number): string {
 /** 查询镜像详情;`docker inspect --type=image --format '{{json .}}'` 拿单行 JSON。 */
 export async function dockerImageInspect(sessionId: string, imageId: string): Promise<DockerImageInspect> {
   validateImageId(imageId)
-  const out = await sshExec(
+  const out = await dockerExec(
     sessionId,
-    `docker inspect --type=image --format '{{json .}}' -- ${shq(imageId)}`,
+    ['inspect', '--type=image', '--format', '{{json .}}', '--', imageId],
   )
   const r = parseJsonLines(out)[0]
   if (!r) throw new Error('未找到镜像信息')
@@ -823,9 +835,9 @@ export async function dockerImageInspect(sessionId: string, imageId: string): Pr
  * 层顺序:docker CLI 默认从新到旧(最上层在前),我们保留原顺序。 */
 export async function dockerImageHistory(sessionId: string, imageId: string): Promise<DockerImageLayer[]> {
   validateImageId(imageId)
-  const out = await sshExec(
+  const out = await dockerExec(
     sessionId,
-    `docker history --no-trunc --format '{{json .}}' -- ${shq(imageId)}`,
+    ['history', '--no-trunc', '--format', '{{json .}}', '--', imageId],
   )
   return parseJsonLines(out).map((r) => ({
     id: str(r.ID),
@@ -850,7 +862,7 @@ export async function dockerFindLogFiles(sessionId: string, container: string): 
     `find $roots -maxdepth 6 -type f ` +
     `\\( -name "*.log" -o -name "*.out" -o -name "*.err" -o -name "*.log.*" -o -name "catalina.out" -o -name "console.txt" \\) ` +
     `-size +0c | head -100 | xargs -r ls -1S | head -30`
-  const out = await sshExec(sessionId, `docker exec ${container} sh -c '${inner}' 2>&1`)
+  const out = await dockerExec(sessionId, ['exec', container, 'sh', '-c', inner])
   const outputLines = out.split('\n').map((line) => line.trim()).filter(Boolean)
   const diagnostics = outputLines.filter((line) => !line.startsWith('/') || !LOG_PATH_RE.test(line))
   if (diagnostics.length > 0) {
@@ -864,7 +876,7 @@ export async function dockerFindLogFiles(sessionId: string, container: string): 
  * 因此用 '{{json .}}' 强制单行 JSON 输出,与 ps/images 走同一套解析。 */
 export async function dockerInspect(sessionId: string, container: string): Promise<DockerInspect> {
   validateName(container)
-  const out = await sshExec(sessionId, `docker inspect --format '{{json .}}' ${container}`)
+  const out = await dockerExec(sessionId, ['inspect', '--format', '{{json .}}', container])
   const arr = parseJsonLines(out)
   const r = arr[0]
   if (!r) throw new Error('未找到容器信息')
@@ -877,14 +889,18 @@ export async function dockerInspect(sessionId: string, container: string): Promi
 
 /** 列出本地镜像 */
 export async function dockerListImages(sessionId: string): Promise<DockerImage[]> {
-  const out = await sshExec(sessionId, "docker images --format '{{json .}}'", DOCKER_QUERY_TIMEOUT_MS)
+  const out = await dockerExec(
+    sessionId,
+    ['images', '--format', '{{json .}}'],
+    { timeoutMs: DOCKER_QUERY_TIMEOUT_MS },
+  )
   return parseJsonLines(out).map(normalizeImage)
 }
 
 /** 删除镜像 */
 export async function dockerRemoveImage(sessionId: string, imageId: string): Promise<void> {
   validateImageId(imageId)
-  await sshExec(sessionId, `docker rmi -- ${shq(imageId)}`)
+  await dockerExec(sessionId, ['rmi', '--', imageId])
 }
 
 // ============================================================
@@ -903,10 +919,12 @@ export interface DockerDfEntry {
 /** docker system df 汇总,输出一张按类型分行的表。
  * 不同 docker 版本支持 --format json 的情况差异较大,这里用 table 稳妥些,四列固定顺序解析。 */
 export async function dockerSystemDf(sessionId: string): Promise<DockerDfEntry[]> {
-  const out = await sshExec(
-    sessionId,
-    "docker system df --format '{{.Type}}\\t{{.TotalCount}}\\t{{.Active}}\\t{{.Size}}\\t{{.Reclaimable}}'",
-  )
+  const out = await dockerExec(sessionId, [
+    'system',
+    'df',
+    '--format',
+    '{{.Type}}\t{{.TotalCount}}\t{{.Active}}\t{{.Size}}\t{{.Reclaimable}}',
+  ])
   const rows: DockerDfEntry[] = []
   for (const line of out.split('\n')) {
     const parts = line.split('\t')
@@ -924,8 +942,7 @@ export async function dockerSystemDf(sessionId: string): Promise<DockerDfEntry[]
 
 /** 一键清理:未使用的容器/网络/镜像/构建缓存;withVolumes=true 时把未挂载的卷也一起删。 */
 export async function dockerSystemPrune(sessionId: string, withVolumes: boolean): Promise<string> {
-  const flags = withVolumes ? '-af --volumes' : '-af'
-  return sshExec(sessionId, `docker system prune ${flags} 2>&1`)
+  return dockerExec(sessionId, ['system', 'prune', '-af', ...(withVolumes ? ['--volumes'] : [])])
 }
 
 // ============================================================
@@ -934,7 +951,11 @@ export async function dockerSystemPrune(sessionId: string, withVolumes: boolean)
 
 /** 列出所有本地卷 */
 export async function dockerListVolumes(sessionId: string): Promise<DockerVolume[]> {
-  const out = await sshExec(sessionId, "docker volume ls --format '{{json .}}'", DOCKER_QUERY_TIMEOUT_MS)
+  const out = await dockerExec(
+    sessionId,
+    ['volume', 'ls', '--format', '{{json .}}'],
+    { timeoutMs: DOCKER_QUERY_TIMEOUT_MS },
+  )
   return parseJsonLines(out).map((r) => ({
     name: str(r.Name),
     driver: str(r.Driver),
@@ -947,17 +968,17 @@ export async function dockerListVolumes(sessionId: string): Promise<DockerVolume
 /** 卷详情;pretty-print 数组同样用 --format '{{json .}}' 拿单行 */
 export async function dockerInspectVolume(sessionId: string, name: string): Promise<Record<string, unknown> | null> {
   validateName(name, '卷名')
-  const out = await sshExec(sessionId, `docker volume inspect --format '{{json .}}' ${name}`)
+  const out = await dockerExec(sessionId, ['volume', 'inspect', '--format', '{{json .}}', name])
   return parseJsonLines(out)[0] ?? null
 }
 
 export async function dockerRemoveVolume(sessionId: string, name: string): Promise<void> {
   validateName(name, '卷名')
-  await sshExec(sessionId, `docker volume rm ${name}`)
+  await dockerExec(sessionId, ['volume', 'rm', name])
 }
 
 export async function dockerPruneVolumes(sessionId: string): Promise<string> {
-  return sshExec(sessionId, 'docker volume prune -af 2>&1')
+  return dockerExec(sessionId, ['volume', 'prune', '-af'])
 }
 
 // ============================================================
@@ -966,7 +987,11 @@ export async function dockerPruneVolumes(sessionId: string): Promise<string> {
 
 /** 列出所有网络 */
 export async function dockerListNetworks(sessionId: string): Promise<DockerNetwork[]> {
-  const out = await sshExec(sessionId, "docker network ls --format '{{json .}}'", DOCKER_QUERY_TIMEOUT_MS)
+  const out = await dockerExec(
+    sessionId,
+    ['network', 'ls', '--format', '{{json .}}'],
+    { timeoutMs: DOCKER_QUERY_TIMEOUT_MS },
+  )
   return parseJsonLines(out).map((r) => ({
     id: str(r.ID),
     name: str(r.Name),
@@ -980,17 +1005,17 @@ export async function dockerListNetworks(sessionId: string): Promise<DockerNetwo
 export async function dockerInspectNetwork(sessionId: string, id: string): Promise<Record<string, unknown> | null> {
   // 网络 id 是短 hash,复用容器名白名单足够
   validateName(id, '网络标识')
-  const out = await sshExec(sessionId, `docker network inspect --format '{{json .}}' ${id}`)
+  const out = await dockerExec(sessionId, ['network', 'inspect', '--format', '{{json .}}', id])
   return parseJsonLines(out)[0] ?? null
 }
 
 export async function dockerRemoveNetwork(sessionId: string, id: string): Promise<void> {
   validateName(id, '网络标识')
-  await sshExec(sessionId, `docker network rm ${id}`)
+  await dockerExec(sessionId, ['network', 'rm', id])
 }
 
 export async function dockerPruneNetworks(sessionId: string): Promise<string> {
-  return sshExec(sessionId, 'docker network prune -f 2>&1')
+  return dockerExec(sessionId, ['network', 'prune', '-f'])
 }
 
 /** 把容器接入指定网络。docker 允许在容器运行时动态 connect。
@@ -1006,10 +1031,10 @@ export async function dockerNetworkConnect(
   if (attachment && attachment.name !== network) {
     throw new Error(`网络附件与目标网络不匹配: ${attachment.name}`)
   }
-  const parts = ['docker', 'network', 'connect']
+  const parts = ['network', 'connect']
   appendNetworkOptions(parts, attachment)
-  parts.push(shq(network), shq(container), '2>&1')
-  await sshExec(sessionId, parts.join(' '))
+  parts.push(network, container)
+  await dockerExec(sessionId, parts)
 }
 
 /** 断开容器与指定网络。运行时也可断,但断掉最后一个网络后容器会失去网络访问。 */
@@ -1020,7 +1045,7 @@ export async function dockerNetworkDisconnect(
 ): Promise<void> {
   validateName(network, '网络名')
   validateName(container)
-  await sshExec(sessionId, `docker network disconnect ${network} ${container} 2>&1`)
+  await dockerExec(sessionId, ['network', 'disconnect', network, container])
 }
 
 // ============================================================
@@ -1044,10 +1069,8 @@ export async function dockerLogin(
   if (!password) throw new Error('密码不能为空')
   if (password.length > 4096) throw new Error('密码过长(>4096)')
 
-  const command = reg
-    ? `docker login -u ${shq(user)} --password-stdin ${shq(reg)} 2>&1`
-    : `docker login -u ${shq(user)} --password-stdin 2>&1`
-  const out = await sshExecWithStdin(sessionId, command, password)
+  const arguments_ = ['login', '-u', user, '--password-stdin', ...(reg ? [reg] : [])]
+  const out = await dockerExec(sessionId, arguments_, { stdin: password })
   if (!/Login Succeeded/i.test(out)) {
     throw new Error(out.trim() || 'Registry 登录失败')
   }
@@ -1058,8 +1081,7 @@ export async function dockerLogin(
 export async function dockerLogout(sessionId: string, registry: string): Promise<string> {
   const reg = registry.trim()
   validateDockerRegistry(reg)
-  const cmd = reg ? `docker logout ${shq(reg)} 2>&1` : 'docker logout 2>&1'
-  return sshExec(sessionId, cmd)
+  return dockerExec(sessionId, ['logout', ...(reg ? [reg] : [])])
 }
 
 /** 读远端 ~/.docker/config.json 的 auths keys,列出当前已登录的 registry 地址。 */
@@ -1073,7 +1095,7 @@ export async function dockerListRegistries(sessionId: string): Promise<string[]>
     `f{if(d==1&&match($0,/^[[:space:]]*"[^"]+"[[:space:]]*:/)){` +
     `key=substr($0,RSTART,RLENGTH);sub(/^[[:space:]]*"/,"",key);sub(/"[[:space:]]*:$/,"",key);print key};` +
     `o=gsub(/\{/,"{");c=gsub(/\}/,"}");d+=o-c;if(d<=0){exit}}' ~/.docker/config.json; fi`
-  const out = await sshExec(sessionId, cmd)
+  const out = await sshShellExec(sessionId, cmd)
   return [...new Set(out.split('\n').map((value) => value.trim()).filter(Boolean))]
 }
 
@@ -1084,7 +1106,11 @@ export async function dockerListRegistries(sessionId: string): Promise<string[]>
 /** 列出所有 compose 项目(含已停止)。
  * docker compose ls 输出的是**单行 JSON 数组**,不是每行一个 JSON,单独用 JSON.parse。 */
 export async function dockerListStacks(sessionId: string): Promise<DockerStack[]> {
-  const out = await sshExec(sessionId, 'docker compose ls --all --format json', DOCKER_QUERY_TIMEOUT_MS)
+  const out = await dockerExec(
+    sessionId,
+    ['compose', 'ls', '--all', '--format', 'json'],
+    { timeoutMs: DOCKER_QUERY_TIMEOUT_MS },
+  )
   try {
     const parsed: unknown = JSON.parse(out.trim())
     if (!Array.isArray(parsed)) throw new Error('响应不是数组')
@@ -1103,36 +1129,35 @@ export async function dockerListStacks(sessionId: string): Promise<DockerStack[]
 }
 
 export async function dockerStackUp(sessionId: string, stack: DockerStack): Promise<string> {
-  return sshExec(sessionId, buildComposeStackCommand(stack, 'up'))
+  return dockerExec(sessionId, buildComposeStackArgs(stack, 'up'))
 }
 
 export async function dockerStackDown(sessionId: string, stack: DockerStack): Promise<string> {
-  return sshExec(sessionId, buildComposeStackCommand(stack, 'down'))
+  return dockerExec(sessionId, buildComposeStackArgs(stack, 'down'))
 }
 
 export async function dockerStackRestart(sessionId: string, stack: DockerStack): Promise<string> {
-  return sshExec(sessionId, buildComposeStackCommand(stack, 'restart'))
+  return dockerExec(sessionId, buildComposeStackArgs(stack, 'restart'))
 }
 
 /** 用指定 compose 文件部署一个新的 stack;compose ls 之后就能看到它 */
 export async function dockerStackDeploy(sessionId: string, composePath: string): Promise<string> {
   validateComposePath(composePath)
-  return sshExec(sessionId, `docker compose -f ${composePath} up -d 2>&1`)
+  return dockerExec(sessionId, ['compose', '-f', composePath, 'up', '-d'])
 }
 
 /** 拉取镜像(新拉取或更新同名标签),返回 docker pull 的输出便于调用方展示。
  * ref 与 imageId 走同一套白名单:允许 registry.host/repo/name:tag、digest 形式,禁 shell 元字符。 */
 export async function dockerPull(sessionId: string, ref: string): Promise<string> {
   validateImageId(ref)
-  return sshExec(sessionId, `docker pull -- ${shq(ref)} 2>&1`)
+  return dockerExec(sessionId, ['pull', '--', ref])
 }
 
 // ============================================================
 // 容器重建(用最新镜像重启)
 // ============================================================
 
-/** bash 单引号安全转义:内容里的 ' 变成 '\'',整体单引号包裹。
- * 用于把 env value / mount 路径 / cmd 参数等"用户内容"塞进拼接的 shell 命令,避免注入。 */
+/** 仅用于安装脚本的固定 shell 片段和调试命令展示，Docker 实际执行不解析展示字符串。 */
 function shq(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`
 }
@@ -1146,7 +1171,11 @@ function shq(s: string): string {
 
 /** 采集所有运行中容器的资源占用(--no-stream 一次性快照) */
 export async function dockerStats(sessionId: string): Promise<DockerStats[]> {
-  const out = await sshExec(sessionId, "docker stats --no-stream --format '{{json .}}'", DOCKER_QUERY_TIMEOUT_MS)
+  const out = await dockerExec(
+    sessionId,
+    ['stats', '--no-stream', '--format', '{{json .}}'],
+    { timeoutMs: DOCKER_QUERY_TIMEOUT_MS },
+  )
   return parseJsonLines(out).map(normalizeStats)
 }
 
